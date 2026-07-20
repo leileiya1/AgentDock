@@ -17,16 +17,17 @@ jobs:
             test: cargo test -p agentflow-contracts -p agentflow-workflow -p agentflow-provider-protocol -p agentflow-release-engine -p agentflow-git-engine
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        with:
+          components: rustfmt
       - run: cargo fmt --all --check
       - run: ${{ matrix.test }}
 
   desktop-contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: oven-sh/setup-bun@v2
