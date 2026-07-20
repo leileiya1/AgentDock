@@ -1,0 +1,5 @@
+{
+  "name": "agentflow-sample-repo",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

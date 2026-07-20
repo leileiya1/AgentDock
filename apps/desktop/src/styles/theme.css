@@ -1,0 +1,288 @@
+@import "tailwindcss";
+
+/* Local fonts (bundled, no runtime network fetch — 02 §2.2). */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+/* Dark is the only theme in v1. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ==================================================================
+ * Design tokens → Tailwind theme (02 §2). Utilities: bg-panel,
+ * text-t2, border-line, text-human, text-agent-claude, …
+ * ================================================================== */
+@theme {
+  /* 米白暖底 + Claude 橙主题 (light) —— 微调后更干净、暖而不黄 */
+  --color-app: #f4f0e8;      /* 米白 应用底（略降饱和，偏中性暖白） */
+  --color-panel: #fcfaf5;    /* 面板（近白，衬托卡片） */
+  --color-raised: #ffffff;   /* 卡片 / hover，靠阴影浮起 */
+  --color-line: #e8e1d4;     /* 暖色发丝线 */
+  --color-line-strong: #d8cebc;
+  --color-t1: #292420;       /* 暖近黑正文 */
+  --color-t2: #6d6459;
+  --color-t3: #9c9284;
+
+  /* 签名：人类介入色 = Claude 橙（与主色同族，靠实心填充+图标+文字凸显） */
+  --color-human: #c96442;
+  --color-human-soft: #d97757;
+  --color-human-bg: #fbe7de;
+
+  /* Agent 身份色（在米白上加深以保证对比） */
+  --color-agent-claude: #c15f3c;
+  --color-agent-codex: #2f857c;
+  --color-agent-gemini: #4e73d6;
+  --color-agent-qwen: #6f58c2;
+
+  /* 状态色：主强调 = Claude 橙（terracotta） */
+  --color-run: #c96442;
+  --color-run-soft: #d97757;
+  --color-review: #7c5cb8;
+  --color-ok: #3f9668;
+  --color-bad: #c24a3a;
+  --color-idle: #8a8072;
+
+  /* diff（浅色 wash） */
+  --color-diff-add: #dceedf;
+  --color-diff-del: #f6ded9;
+
+  --font-sans: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas,
+    monospace;
+
+  --radius-control: 6px;
+  --radius-panel: 10px;
+
+  --text-meta: 12px;
+  --text-dense: 13px;
+
+  --shadow-raised: 0 6px 20px -8px rgba(90, 68, 42, 0.18),
+    0 2px 6px -2px rgba(90, 68, 42, 0.12);
+  --shadow-float: 0 22px 50px -14px rgba(90, 68, 42, 0.28),
+    0 6px 16px -8px rgba(90, 68, 42, 0.18);
+  --shadow-glow-run: 0 0 0 1px rgba(201, 100, 66, 0.3),
+    0 6px 22px -8px rgba(201, 100, 66, 0.38);
+  --shadow-glow-human: 0 0 0 1px rgba(201, 100, 66, 0.4),
+    0 8px 26px -8px rgba(201, 100, 66, 0.34);
+
+  /* motion-friendly easing */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-pulse-dot: pulse-dot 1.5s ease-in-out infinite;
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+  --animate-sheen: sheen 6s linear infinite;
+}
+
+/* shadcn/ui variable bridge (mapped to our palette, HSL-free hex). */
+:root {
+  --background: var(--color-app);
+  --foreground: var(--color-t1);
+  --card: var(--color-panel);
+  --card-foreground: var(--color-t1);
+  --popover: #ffffff;
+  --popover-foreground: var(--color-t1);
+  --primary: var(--color-run);
+  --primary-foreground: #ffffff;
+  --secondary: var(--color-raised);
+  --secondary-foreground: var(--color-t1);
+  --muted: var(--color-panel);
+  --muted-foreground: var(--color-t2);
+  --accent: var(--color-raised);
+  --accent-foreground: var(--color-t1);
+  --destructive: var(--color-bad);
+  --destructive-foreground: #ffffff;
+  --border: var(--color-line);
+  --input: var(--color-line);
+  --ring: var(--color-run);
+  --radius: 0.625rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* ==================================================================
+ * Base layer — a working instrument, quiet + deep (02 §1).
+ * ================================================================== */
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+  html {
+    color-scheme: light;
+  }
+  body {
+    background-color: var(--color-app);
+    /* warm depth: soft Claude-orange glow top-right, amber wash bottom-left */
+    background-image: radial-gradient(
+        1200px 620px at 82% -10%,
+        rgba(217, 119, 87, 0.11),
+        transparent 60%
+      ),
+      radial-gradient(900px 700px at -5% 108%, rgba(201, 100, 66, 0.07), transparent 55%);
+    background-attachment: fixed;
+    color: var(--color-t1);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+  }
+  ::selection {
+    background: rgba(201, 100, 66, 0.22);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-run);
+    outline-offset: 1px;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-line-strong);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* ==================================================================
+ * Reusable surface / depth utilities.
+ * ================================================================== */
+@utility glass {
+  background: color-mix(in srgb, var(--color-panel) 78%, transparent);
+  backdrop-filter: blur(16px) saturate(1.1);
+  -webkit-backdrop-filter: blur(16px) saturate(1.1);
+}
+
+@utility panel-raise {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-raised) 92%, white 3%),
+    var(--color-panel)
+  );
+  border: 1px solid var(--color-line);
+  box-shadow: var(--shadow-raised);
+}
+
+/* thin top highlight that reads as a light source (depth) */
+@utility edge-light {
+  position: relative;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.82);
+  }
+}
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+@keyframes sheen {
+  0% {
+    transform: translateX(-120%);
+  }
+  60%,
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+/* Radix data-state driven enter/exit (select, tooltip, popover). */
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes overlay-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes content-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes content-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

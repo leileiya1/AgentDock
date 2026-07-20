@@ -1,0 +1,29 @@
+[package]
+name = "agentflow-agent-adapters"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentflow-contracts.workspace = true
+agentflow-provider-protocol.workspace = true
+agentflow-process-supervisor.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+jsonschema.workspace = true
+reqwest.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+which.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

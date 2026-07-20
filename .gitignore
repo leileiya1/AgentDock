@@ -1,0 +1,15 @@
+/target/
+/.agentflow-data/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/binaries/agentflowd-*
+
+# Generated dependencies, bundles and local operating-system metadata.
+**/node_modules/
+**/dist/
+**/.DS_Store
+*.log
+
+# Provider credentials belong in Keychain/environment variables, never Git.
+.env
+.env.*
+!.env.example

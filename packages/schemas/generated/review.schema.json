@@ -1,0 +1,103 @@
+{
+  "$defs": {
+    "ReviewDecision": {
+      "enum": [
+        "pass",
+        "request_changes",
+        "block"
+      ],
+      "type": "string"
+    },
+    "ReviewIssueResult": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 4000,
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "line_end": {
+          "format": "int64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "line_start": {
+          "format": "int64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "suggested_action": {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "title"
+      ],
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "commit_sha": {
+      "minLength": 7,
+      "type": "string"
+    },
+    "decision": {
+      "$ref": "#/$defs/ReviewDecision"
+    },
+    "issues": {
+      "items": {
+        "$ref": "#/$defs/ReviewIssueResult"
+      },
+      "type": "array"
+    },
+    "revision": {
+      "format": "int64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "summary": {
+      "maxLength": 4000,
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "revision",
+    "commit_sha",
+    "decision",
+    "summary",
+    "issues"
+  ],
+  "title": "ReviewResult",
+  "type": "object"
+}

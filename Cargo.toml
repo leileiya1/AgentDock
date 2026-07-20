@@ -1,0 +1,70 @@
+[workspace]
+members = [
+  "crates/contracts",
+  "crates/workflow",
+  "crates/persistence",
+  "crates/git-engine",
+  "crates/process-supervisor",
+  "crates/provider-protocol",
+  "crates/release-engine",
+  "crates/agent-adapters",
+  "crates/daemon",
+  "crates/orchestrator",
+  "crates/cli",
+  "crates/xtask",
+]
+exclude = ["apps/desktop/src-tauri"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+agentflow-contracts = { path = "crates/contracts" }
+agentflow-workflow = { path = "crates/workflow" }
+agentflow-persistence = { path = "crates/persistence" }
+agentflow-git-engine = { path = "crates/git-engine" }
+agentflow-process-supervisor = { path = "crates/process-supervisor" }
+agentflow-provider-protocol = { path = "crates/provider-protocol" }
+agentflow-agent-adapters = { path = "crates/agent-adapters" }
+agentflow-daemon = { path = "crates/daemon" }
+agentflow-orchestrator = { path = "crates/orchestrator" }
+anyhow = "1.0"
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+futures = "0.3"
+ed25519-dalek = "2.1"
+globset = "0.4"
+hex = "0.4"
+jsonschema = "0.33"
+libc = "0.2"
+regex = "1.11"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+schemars = { version = "1.0", features = ["chrono04", "uuid1"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
+specta = { version = "2.0.0-rc.25", features = ["derive", "chrono", "serde_json"] }
+specta-typescript = "0.0.12"
+sysinfo = "0.36"
+tempfile = "3.20"
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["full"] }
+tokio-util = "0.7"
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.17", features = ["v7", "serde"] }
+which = "8.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

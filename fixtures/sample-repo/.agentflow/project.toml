@@ -1,0 +1,13 @@
+schema_version = 1
+
+[[validate.steps]]
+name = "test"
+argv = ["bun", "test"]
+timeout_secs = 60
+
+[review]
+exclude_globs = ["*.lock", "dist/**"]
+max_patch_bytes = 262144
+
+[agents]
+extra_allowed_commands = ["bun test"]

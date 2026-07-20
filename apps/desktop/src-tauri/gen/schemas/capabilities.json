@@ -1,0 +1,1 @@
+{"desktop-default":{"identifier":"desktop-default","description":"Permissions required by the AgentFlow main desktop window.","local":true,"windows":["main"],"permissions":["core:default","dialog:default"]}}

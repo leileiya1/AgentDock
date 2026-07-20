@@ -1,0 +1,45 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            test: cargo test --workspace
+          - os: macos-latest
+            test: cargo test --workspace
+          # Windows IPC/service supervision is still being completed. Keep every portable
+          # contract, protocol, workflow and release-security boundary compiling there now.
+          - os: windows-latest
+            test: cargo test -p agentflow-contracts -p agentflow-workflow -p agentflow-provider-protocol -p agentflow-release-engine -p agentflow-git-engine
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - run: cargo fmt --all --check
+      - run: ${{ matrix.test }}
+
+  desktop-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: bun install --frozen-lockfile
+        working-directory: apps/desktop
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Tauri requires a host-target-suffixed sidecar even when xtask only
+      # launches the desktop binary to export TypeScript bindings.
+      - run: bun run prepare:sidecar
+        working-directory: apps/desktop
+      - run: cargo run -p xtask
+      - run: git diff --exit-code
+      - run: bun run typecheck
+        working-directory: apps/desktop

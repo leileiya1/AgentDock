@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "DevelopmentStatus": {
+      "enum": [
+        "completed",
+        "failed",
+        "needs_clarification"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "changed_files": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "question": {
+      "type": "string"
+    },
+    "revision": {
+      "format": "int64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "$ref": "#/$defs/DevelopmentStatus"
+    },
+    "summary": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "revision",
+    "status",
+    "summary"
+  ],
+  "title": "DevelopmentResult",
+  "type": "object"
+}

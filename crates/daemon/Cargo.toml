@@ -1,0 +1,30 @@
+[package]
+name = "agentflow-daemon"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "agentflowd"
+path = "src/main.rs"
+
+[dependencies]
+agentflow-contracts.workspace = true
+agentflow-orchestrator.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+fs2 = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
