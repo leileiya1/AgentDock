@@ -13,6 +13,7 @@ agentflow-process-supervisor.workspace = true
 agentflow-workflow.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+globset.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

@@ -14,7 +14,7 @@ impl Orchestrator {
         let project = self.project(&task.project_id).await?;
         let wt = required_path(&task.worktree_path)?;
         reset_input_dir(&wt).await?;
-        let config = load_config(&project.repo).await?;
+        let config = self.load_trusted_config(&project).await?;
         let sha: String = sqlx::query_scalar(
             "SELECT commit_sha FROM task_revisions WHERE task_id=? AND revision=?",
         )
@@ -103,10 +103,11 @@ impl Orchestrator {
             if self.enforce_budget(&self.task(&task.id).await?).await? {
                 return Ok(());
             }
-            match adapter
+            let collected = adapter
                 .collect_result(&running.run_dir, RunRole::Reviewer)
-                .await
-            {
+                .await;
+            self.protect_run_files(&running.run_dir).await?;
+            match collected {
                 Ok(CollectedResult::Review(review)) => {
                     let commit_matches = is_hex_commit_reference(&review.commit_sha)
                         && self
@@ -175,10 +176,24 @@ impl Orchestrator {
             .await?;
             return Ok(());
         };
+        self.finalize_review_result(&task, review, &run_dir, reviewer_agent, &sha)
+            .await
+    }
+
+    /// Persist an already-completed review using the same quality and state gates for normal and
+    /// crash-adopted executions.
+    async fn finalize_review_result(
+        &self,
+        task: &TaskRow,
+        review: ReviewResult,
+        run_dir: &Path,
+        reviewer_agent: AgentKind,
+        sha: &str,
+    ) -> Result<(), OrchestratorError> {
         let review_id = Uuid::now_v7().to_string();
-        let run_id = run_id_from_dir(&run_dir)?;
+        let run_id = run_id_from_dir(run_dir)?;
         sqlx::query("INSERT INTO reviews(id,task_id,revision,run_id,commit_sha,decision,summary,raw_path,reviewer_agent,is_aggregate,reviewer_agents_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?)")
-            .bind(&review_id).bind(&task.id).bind(task.revision).bind(run_id).bind(&sha)
+            .bind(&review_id).bind(&task.id).bind(task.revision).bind(run_id).bind(sha)
             .bind(review.decision.to_string()).bind(&review.summary)
             .bind(run_dir.join("last-message.json").to_string_lossy().as_ref())
             .bind(reviewer_agent.to_string())
@@ -192,9 +207,9 @@ impl Orchestrator {
         for issue in &review.issues {
             sqlx::query("INSERT INTO review_issues(id,review_id,severity,file,line_start,line_end,title,description,suggested_action,reported_by_json,agreement_count) VALUES(?,?,?,?,?,?,?,?,?,?,1)").bind(Uuid::now_v7().to_string()).bind(&review_id).bind(issue.severity.to_string()).bind(&issue.file).bind(issue.line_start).bind(issue.line_end).bind(&issue.title).bind(&issue.description).bind(&issue.suggested_action).bind(serde_json::to_string(&vec![reviewer_agent.clone()]).map_err(|error| OrchestratorError::Config(error.to_string()))?).execute(self.store.pool()).await?;
         }
-        self.reconcile_review_issues(&task, &current_issue_keys).await?;
+        self.reconcile_review_issues(task, &current_issue_keys).await?;
         let quality = self
-            .evaluate_quality(&task, &self.stored_test_report(&task.id, task.revision).await?, false)
+            .evaluate_quality(task, &self.stored_test_report(&task.id, task.revision).await?, false)
             .await?;
         let (to, reason, event) = match review.decision {
             ReviewDecision::Pass if !quality.passed => (
@@ -414,6 +429,7 @@ impl Orchestrator {
         task: &TaskRow,
         project: &ProjectRow,
         history_digest: Option<&str>,
+        approved_plan: Option<&ApprovedPlanSeal>,
     ) -> Result<String, OrchestratorError> {
         let rules = load_rules(&project.repo).await?;
         let schema = serde_json::to_string_pretty(&development_result_schema())
@@ -426,6 +442,16 @@ impl Orchestrator {
                 )
             })
             .unwrap_or_default();
+        let plan = approved_plan
+            .map(|plan| {
+                format!(
+                    "## 已批准编码计划（不可变）\n\nplan_id=`{}`，version={}，SHA-256=`{}`。你必须严格限制在 `allowed_paths` 内，并在结果的 `plan_sha256` 原样回传此哈希。\n\n```json\n{}\n```",
+                    plan.id, plan.version, plan.sha256, plan.rendered_json
+                )
+            })
+            .unwrap_or_else(|| {
+                "## 编码计划\n\n此任务未启用计划审批；结果的 `plan_sha256` 必须为 null。".into()
+            });
         Ok(include_str!("../templates/input.md")
             .replace("{{TASK_SEQ}}", &task.seq.to_string())
             .replace("{{TASK_ID}}", &task.id)
@@ -435,6 +461,7 @@ impl Orchestrator {
             .replace("{{GUIDANCE}}", task.blocked_detail.as_deref().unwrap_or(""))
             .replace("{{RULES}}", &rules)
             .replace("{{HISTORY}}", &history)
+            .replace("{{APPROVED_PLAN}}", &plan)
             .replace("{{RESULT_SCHEMA}}", &schema))
     }
     async fn build_review_input(
@@ -484,6 +511,13 @@ impl Orchestrator {
         )
         .await
         .unwrap_or_else(|_| "{}".into());
+        let integrity = tokio::fs::read_to_string(
+            self.task_dir(&task.id)
+                .join("artifacts")
+                .join(format!("r{}-integrity.json", task.revision)),
+        )
+        .await
+        .unwrap_or_else(|_| "{}".into());
         let schema = serde_json::to_string_pretty(&review_result_schema())
             .map_err(|e| OrchestratorError::Config(e.to_string()))?;
         Ok(include_str!("../templates/review-input.md")
@@ -504,6 +538,7 @@ impl Orchestrator {
             .replace("{{FLAGGED_WARNING}}", &flagged)
             .replace("{{DIFF}}", &diff_text)
             .replace("{{TEST_REPORT}}", &report)
+            .replace("{{INTEGRITY_REPORT}}", &integrity)
             .replace("{{REVIEW_SCHEMA}}", &schema))
     }
     async fn block(

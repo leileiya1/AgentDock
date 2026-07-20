@@ -4,6 +4,14 @@ impl Orchestrator {
         self.refresh_provider_registry().await;
         loop {
             let task = self.task(task_id).await?;
+            if self.adopt_active_run(&task).await? {
+                continue;
+            }
+            if matches!(task.status, TaskStatus::Planning | TaskStatus::ReadyForDevelopment | TaskStatus::ReadyForRevision | TaskStatus::Validating | TaskStatus::ReadyForReview)
+                && self.enforce_global_budget(&task).await?
+            {
+                return self.store.task_summary(task_id).await.map_err(Into::into);
+            }
             if matches!(task.status, TaskStatus::Planning | TaskStatus::ReadyForDevelopment | TaskStatus::ReadyForRevision | TaskStatus::Validating | TaskStatus::ReadyForReview)
                 && self.enforce_budget(&task).await?
             {
@@ -12,7 +20,9 @@ impl Orchestrator {
             match task.status {
                 TaskStatus::Planning => self.plan(task).await?,
                 TaskStatus::ReadyForDevelopment | TaskStatus::ReadyForRevision => {
-                    self.develop(task).await?
+                    let task_id = task.id.clone();
+                    self.develop(task).await?;
+                    self.complete_development_operations(&task_id).await?;
                 }
                 TaskStatus::Validating => self.validate(task).await?,
                 TaskStatus::ReadyForReview => self.review(task).await?,
@@ -28,21 +38,7 @@ impl Orchestrator {
         } else {
             TaskStatus::Revising
         };
-        sqlx::query("UPDATE tasks SET current_revision=? WHERE id=?")
-            .bind(revision)
-            .bind(&task.id)
-            .execute(self.store.pool())
-            .await?;
-        self.store
-            .transition(
-                &task.id,
-                &[from],
-                to,
-                None,
-                Actor::Orchestrator,
-                "scheduler:slot",
-                &json!({"revision":revision}),
-            )
+        self.enter_development_stage(&task, from, to, revision)
             .await?;
         task.revision = revision;
         task.status = to;
@@ -50,9 +46,10 @@ impl Orchestrator {
         let wt = required_path(&task.worktree_path)?;
         reset_io_dirs(&wt).await?;
         let history = self.write_history(&task, &wt).await?;
-        let config = load_config(&project.repo).await?;
+        let config = self.load_trusted_config(&project).await?;
+        let approved_plan = self.approved_plan_seal(&task).await?;
         let input = self
-            .build_input(&task, &project, history.as_deref())
+            .build_input(&task, &project, history.as_deref(), approved_plan.as_ref())
             .await?;
         tokio::fs::write(wt.join(".agentflow-in/input.md"), input).await?;
         let baseline = self.git.resolve(&wt, "HEAD").await?;
@@ -73,7 +70,7 @@ impl Orchestrator {
                 reset_io_dirs(&wt).await?;
                 let history = self.write_history(&task, &wt).await?;
                 let input = self
-                    .build_input(&task, &project, history.as_deref())
+                    .build_input(&task, &project, history.as_deref(), approved_plan.as_ref())
                     .await?;
                 tokio::fs::write(wt.join(".agentflow-in/input.md"), input).await?;
                 self.record_provider_fallback(
@@ -146,6 +143,7 @@ impl Orchestrator {
             let collected = adapter
                 .collect_result(&running.run_dir, RunRole::Developer)
                 .await;
+            self.protect_run_files(&running.run_dir).await?;
             match collected {
                 Ok(CollectedResult::Development(value))
                     if value.task_id == task.id
@@ -207,9 +205,34 @@ impl Orchestrator {
             .await?;
             return Ok(());
         };
+        self.finalize_development_result(
+            &task,
+            &project,
+            result,
+            selected_developer,
+            &baseline,
+        )
+        .await
+    }
+
+    /// Accept a validated Provider contract and turn its existing worktree edits into a revision.
+    /// Crash recovery calls the same path, so adoption cannot bypass plan or commit protection.
+    async fn finalize_development_result(
+        &self,
+        task: &TaskRow,
+        project: &ProjectRow,
+        result: DevelopmentResult,
+        selected_developer: AgentKind,
+        baseline: &str,
+    ) -> Result<(), OrchestratorError> {
+        let revision = task.revision;
+        let to = task.status;
+        let wt = required_path(&task.worktree_path)?;
+        let config = self.load_trusted_config(project).await?;
+        let approved_plan = self.approved_plan_seal(task).await?;
         if result.task_id != task.id || result.revision != task.revision {
             self.block(
-                &task,
+                task,
                 BlockedReason::RunFailed,
                 "result task_id or revision does not match the active run",
             )
@@ -218,7 +241,7 @@ impl Orchestrator {
         }
         if result.status == DevelopmentStatus::NeedsClarification {
             self.block(
-                &task,
+                task,
                 BlockedReason::NeedsClarification,
                 result
                     .question
@@ -228,14 +251,52 @@ impl Orchestrator {
             .await?;
             return Ok(());
         }
+        let expected_plan_sha = approved_plan.as_ref().map(|plan| plan.sha256.as_str());
+        if result.plan_sha256.as_deref() != expected_plan_sha {
+            if let Some(plan) = approved_plan.as_ref() {
+                self.return_plan_for_reapproval(
+                    task,
+                    plan,
+                    baseline,
+                    &wt,
+                    &["developer result did not echo the approved plan SHA-256".into()],
+                )
+                .await?;
+            } else {
+                self.block(
+                    task,
+                    BlockedReason::RunFailed,
+                    "developer returned a plan SHA for a task without plan approval",
+                )
+                .await?;
+            }
+            return Ok(());
+        }
         if !self.git.has_changes(&wt).await? {
             self.block(
-                &task,
+                task,
                 BlockedReason::NoChanges,
                 "agent completed without changes",
             )
             .await?;
             return Ok(());
+        }
+        if let Some(plan) = approved_plan.as_ref() {
+            // Re-read the DB seal immediately before accepting filesystem changes. This catches
+            // a plan edited while a provider was running, while path matching catches provider
+            // deviation independently of its self-reported changed_files.
+            let current = self.approved_plan_seal(task).await?;
+            if current.as_ref().map(|value| value.sha256.as_str()) != Some(plan.sha256.as_str()) {
+                return Err(OrchestratorError::InvalidState(
+                    "approved coding plan changed during development".into(),
+                ));
+            }
+            let deviations = self.plan_deviations(&wt, plan).await?;
+            if !deviations.is_empty() {
+                self.return_plan_for_reapproval(task, plan, baseline, &wt, &deviations)
+                    .await?;
+                return Ok(());
+            }
         }
         let sha = match self
             .git
@@ -252,7 +313,7 @@ impl Orchestrator {
             Err(GitError::UnsafeCommit(detail)) => {
                 // The files stay in the isolated worktree so the user can inspect or repair them;
                 // only the Git index is cleared by GitEngine before the task becomes BLOCKED.
-                self.block(&task, BlockedReason::CommitGuard, &detail)
+                self.block(task, BlockedReason::CommitGuard, &detail)
                     .await?;
                 return Ok(());
             }
@@ -302,7 +363,20 @@ impl Orchestrator {
     async fn validate(&self, task: TaskRow) -> Result<(), OrchestratorError> {
         let wt = required_path(&task.worktree_path)?;
         let project = self.project(&task.project_id).await?;
-        let config = load_config(&project.repo).await?;
+        let config = self.load_trusted_config(&project).await?;
+        let integrity = self.integrity_guard(&task, &config).await?;
+        if !integrity.hard_violations.is_empty() {
+            self.block(
+                &task,
+                BlockedReason::QualityGate,
+                &format!(
+                    "完整性门禁拒绝：{}",
+                    integrity.hard_violations.join("；")
+                ),
+            )
+            .await?;
+            return Ok(());
+        }
         let report = match self.execute_validation(&task, &wt, &config.validate.steps).await {
             Ok(report) => report,
             Err(OrchestratorError::RemoteNodeUnavailable(detail)) => {

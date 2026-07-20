@@ -77,13 +77,60 @@ impl Git {
         self.output(path, &["rev-parse", "--git-dir"]).await.is_ok()
     }
     pub async fn default_branch(&self, repo: &Path) -> Result<String, GitError> {
-        let symbolic = self
+        if let Ok(symbolic) = self
             .output(repo, &["symbolic-ref", "--short", "HEAD"])
-            .await?;
-        text(symbolic)
+            .await
+        {
+            return text(symbolic);
+        }
+        if let Ok(symbolic) = self
+            .output(
+                repo,
+                &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            )
+            .await
+        {
+            return text(symbolic).map(|value| value.trim_start_matches("origin/").to_string());
+        }
+        for candidate in ["main", "master", "trunk"] {
+            if self.resolve(repo, candidate).await.is_ok() {
+                return Ok(candidate.into());
+            }
+        }
+        Err(GitError::InvalidOutput(
+            "cannot determine a default branch from detached HEAD".into(),
+        ))
     }
     pub async fn resolve(&self, repo: &Path, reference: &str) -> Result<String, GitError> {
         text(self.output(repo, &["rev-parse", reference]).await?)
+    }
+    /// Returns whether `ancestor` is reachable from `descendant`.
+    ///
+    /// Delivery uses this instead of trusting a caller-provided "merged" flag: a Git
+    /// commit is only considered delivered after the target branch proves ancestry.
+    pub async fn is_ancestor(
+        &self,
+        repo: &Path,
+        ancestor: &str,
+        descendant: &str,
+    ) -> Result<bool, GitError> {
+        let status = Command::new(&self.executable)
+            .args(["merge-base", "--is-ancestor", ancestor, descendant])
+            .current_dir(repo)
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .status()
+            .await?;
+        match status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(GitError::Failed {
+                operation: "merge-base --is-ancestor".into(),
+                stderr: format!("git exited with {status}"),
+            }),
+        }
     }
     pub async fn worktree_add(
         &self,
@@ -152,6 +199,30 @@ impl Git {
             .output(worktree, &["status", "--porcelain", "-z"])
             .await?
             .is_empty())
+    }
+    /// Lists tracked and untracked files changed from `HEAD`, excluding ignored runtime files.
+    pub async fn changed_paths(&self, worktree: &Path) -> Result<Vec<String>, GitError> {
+        let tracked = self
+            .output(worktree, &["diff", "HEAD", "--name-only", "-z"])
+            .await?;
+        let untracked = self
+            .output(
+                worktree,
+                &["ls-files", "--others", "--exclude-standard", "-z"],
+            )
+            .await?;
+        let mut paths = tracked
+            .split(|byte| *byte == 0)
+            .chain(untracked.split(|byte| *byte == 0))
+            .filter(|path| !path.is_empty())
+            .map(|path| {
+                String::from_utf8(path.to_vec())
+                    .map_err(|error| GitError::InvalidOutput(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
     }
     pub async fn working_patch(&self, worktree: &Path) -> Result<Vec<u8>, GitError> {
         self.output(worktree, &["diff", "--binary", "HEAD"]).await
@@ -352,6 +423,7 @@ impl Git {
 }
 
 include!("operations.rs");
+include!("compatibility.rs");
 
 fn text(bytes: Vec<u8>) -> Result<String, GitError> {
     String::from_utf8(bytes)
@@ -500,90 +572,4 @@ pub fn summarize(payload: &DiffPayload) -> DiffStat {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn flags_control_plane() {
-        assert!(is_flagged(".agentflow/project.toml"));
-        assert!(is_flagged(".github/workflows/ci.yml"));
-        assert!(!is_flagged("src/main.rs"));
-    }
-
-    #[test]
-    fn commit_guard_recognizes_generated_and_secret_paths() {
-        assert!(unsafe_path("node_modules/pkg/index.js"));
-        assert!(unsafe_path("frontend/node_modules/pkg/index.js"));
-        assert!(unsafe_path(".env.local"));
-        assert!(unsafe_path("certificates/client.pem"));
-        assert!(!unsafe_path(".env.example"));
-        assert!(!unsafe_path("src/main.rs"));
-        assert_eq!(
-            detected_secret("OPENAI_API_KEY=sk-thisIsARealLookingToken987654"),
-            Some("API key")
-        );
-        assert_eq!(
-            detected_secret("OPENAI_API_KEY=sk-test-placeholder-key"),
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn commit_ignores_dependencies_and_blocks_credentials()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempfile::tempdir()?;
-        let repo = temp.path();
-        let git = Git::default();
-        for args in [
-            vec!["init", "-b", "main"],
-            vec!["config", "user.email", "test@example.com"],
-            vec!["config", "user.name", "AgentFlow Test"],
-        ] {
-            git.output(repo, &args).await?;
-        }
-        tokio::fs::write(repo.join("README.md"), "initial\n").await?;
-        git.output(repo, &["add", "README.md"]).await?;
-        git.output(repo, &["commit", "-m", "initial"]).await?;
-        git.ensure_agentflow_excluded(repo).await?;
-
-        tokio::fs::create_dir_all(repo.join("node_modules/pkg")).await?;
-        tokio::fs::create_dir_all(repo.join("src")).await?;
-        tokio::fs::write(repo.join("node_modules/pkg/index.js"), "generated\n").await?;
-        tokio::fs::write(repo.join("src/main.ts"), "export {};\n").await?;
-        git.commit_revision(repo, 1, 1, "safe", "codex").await?;
-        let tree = text(
-            git.output(repo, &["ls-tree", "-r", "--name-only", "HEAD"])
-                .await?,
-        )?;
-        assert!(tree.contains("src/main.ts"));
-        assert!(!tree.contains("node_modules"));
-
-        tokio::fs::write(repo.join(".env"), "TOKEN=secret\n").await?;
-        let error = match git.commit_revision(repo, 1, 2, "unsafe", "codex").await {
-            Err(error) => error,
-            Ok(_) => return Err("credential file was unexpectedly committed".into()),
-        };
-        assert!(matches!(error, GitError::UnsafeCommit(_)));
-        assert!(repo.join(".env").exists());
-        assert!(
-            git.output(repo, &["diff", "--cached", "--quiet"])
-                .await
-                .is_ok()
-        );
-
-        tokio::fs::remove_file(repo.join(".env")).await?;
-        tokio::fs::write(
-            repo.join("src/config.ts"),
-            "export const key = 'sk-thisIsARealLookingToken987654';\n",
-        )
-        .await?;
-        let error = match git
-            .commit_revision(repo, 1, 2, "leaked token", "codex")
-            .await
-        {
-            Err(error) => error,
-            Ok(_) => return Err("credential content was unexpectedly committed".into()),
-        };
-        assert!(matches!(error, GitError::UnsafeCommit(detail) if detail.contains("API key")));
-        Ok(())
-    }
-}
+mod tests;

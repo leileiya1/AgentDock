@@ -58,17 +58,32 @@ impl ApiProviderAdapter {
     async fn call_api(
         &self,
         prompt: &str,
+        budget: &RunBudget,
         cancel: &CancellationToken,
         tx: &mpsc::Sender<AgentEvent>,
     ) -> Result<ApiCallResult, AdapterError> {
         let key = self.api_key()?;
-        let attempts = self.settings.max_retries.saturating_add(1);
+        let max_output_tokens = self.budgeted_max_output_tokens(prompt, budget)?;
+        // Retrying an ambiguous network failure can be billed twice. A hard dollar
+        // budget therefore gets exactly one request; ordinary soft-budget runs keep
+        // the configured transport retries.
+        let attempts = if budget.remaining_cost_usd.is_some()
+            && self.budget_capabilities().cost == BudgetMode::Hard
+        {
+            1
+        } else {
+            self.settings.max_retries.saturating_add(1)
+        };
         for attempt in 0..attempts {
             let request = match self.kind {
-                AgentKind::OpenAiApi | AgentKind::GrokApi => self.responses_request(prompt, &key),
-                AgentKind::AnthropicApi => self.anthropic_request(prompt, &key),
+                AgentKind::OpenAiApi | AgentKind::GrokApi => {
+                    self.responses_request(prompt, &key, max_output_tokens)
+                }
+                AgentKind::AnthropicApi => {
+                    self.anthropic_request(prompt, &key, max_output_tokens)
+                }
                 AgentKind::DeepSeekApi | AgentKind::MiniMaxApi | AgentKind::KimiApi => {
-                    self.chat_completions_request(prompt, &key)
+                    self.chat_completions_request(prompt, &key, max_output_tokens)
                 }
                 _ => return Err(AdapterError::Incompatible("not an API provider".into())),
             };
@@ -194,7 +209,12 @@ impl ApiProviderAdapter {
         })
     }
 
-    fn responses_request(&self, prompt: &str, key: &str) -> reqwest::RequestBuilder {
+    fn responses_request(
+        &self,
+        prompt: &str,
+        key: &str,
+        max_output_tokens: u32,
+    ) -> reqwest::RequestBuilder {
         self.client
             .post(format!(
                 "{}/responses",
@@ -205,6 +225,7 @@ impl ApiProviderAdapter {
                 "model": self.settings.model,
                 "input": prompt,
                 "store": false,
+                "max_output_tokens": max_output_tokens,
                 "text": {
                     "format": {
                         "type": "json_schema",
@@ -217,7 +238,12 @@ impl ApiProviderAdapter {
             }))
     }
 
-    fn anthropic_request(&self, prompt: &str, key: &str) -> reqwest::RequestBuilder {
+    fn anthropic_request(
+        &self,
+        prompt: &str,
+        key: &str,
+        max_output_tokens: u32,
+    ) -> reqwest::RequestBuilder {
         let schema = serde_json::to_string(&review_result_schema()).unwrap_or_default();
         self.client
             .post(format!("{}/messages", self.settings.base_url.trim_end_matches('/')))
@@ -225,7 +251,7 @@ impl ApiProviderAdapter {
             .header("anthropic-version", "2023-06-01")
             .json(&json!({
                 "model": self.settings.model,
-                "max_tokens": self.settings.max_output_tokens,
+                "max_tokens": max_output_tokens,
                 "system": format!(
                     "You are AgentFlow's read-only code reviewer. Return only one JSON object matching this schema: {schema}"
                 ),
@@ -233,11 +259,16 @@ impl ApiProviderAdapter {
             }))
     }
 
-    fn chat_completions_request(&self, prompt: &str, key: &str) -> reqwest::RequestBuilder {
+    fn chat_completions_request(
+        &self,
+        prompt: &str,
+        key: &str,
+        max_output_tokens: u32,
+    ) -> reqwest::RequestBuilder {
         let schema = serde_json::to_string(&review_result_schema()).unwrap_or_default();
         let mut body = json!({
             "model": self.settings.model,
-            "max_tokens": self.settings.max_output_tokens,
+            "max_tokens": max_output_tokens,
             "stream": false,
             "response_format": {"type": "json_object"},
             "messages": [
@@ -267,6 +298,60 @@ impl ApiProviderAdapter {
                 concat!("AgentFlow/", env!("CARGO_PKG_VERSION")),
             )
             .json(&body)
+    }
+
+    /// Returns a conservative output cap. UTF-8 bytes are an upper bound for BPE
+    /// token count; schema/system bytes and fixed request overhead are included so
+    /// the Provider cannot cross the saved token or price-snapshot budget.
+    fn budgeted_max_output_tokens(
+        &self,
+        prompt: &str,
+        budget: &RunBudget,
+    ) -> Result<u32, AdapterError> {
+        let schema_bytes = serde_json::to_vec(&review_result_schema())
+            .map_err(|error| AdapterError::InvalidResult(error.to_string()))?
+            .len() as u64;
+        let input_upper = (prompt.len() as u64)
+            .saturating_add(schema_bytes)
+            .saturating_add(self.settings.model.len() as u64)
+            .saturating_add(1_024);
+        let mut cap = u64::from(self.settings.max_output_tokens);
+        if let Some(remaining) = budget.remaining_tokens {
+            cap = cap.min(remaining.saturating_sub(input_upper));
+        }
+        if let Some(remaining_cost) = budget.remaining_cost_usd
+            && let (Some(input_rate), Some(output_rate)) = (
+                self.settings.input_cost_per_million,
+                self.settings.output_cost_per_million,
+            )
+        {
+            if !input_rate.is_finite()
+                || !output_rate.is_finite()
+                || input_rate < 0.0
+                || output_rate <= 0.0
+            {
+                return Err(self.budget_error("invalid API pricing snapshot"));
+            }
+            let input_cost = input_upper as f64 * input_rate / 1_000_000.0;
+            let output_allowance = (remaining_cost - input_cost).max(0.0);
+            let cost_cap = (output_allowance * 1_000_000.0 / output_rate).floor() as u64;
+            cap = cap.min(cost_cap);
+        }
+        if cap == 0 {
+            return Err(self.budget_error(
+                "remaining hard budget cannot cover request context plus one output token",
+            ));
+        }
+        Ok(cap.min(u64::from(u32::MAX)) as u32)
+    }
+
+    fn budget_error(&self, message: &str) -> AdapterError {
+        AdapterError::Provider {
+            provider: self.kind.clone(),
+            status: None,
+            message: format!("BUDGET_EXCEEDED: {message}"),
+            retryable: false,
+        }
     }
 
     fn extract_output(&self, value: &Value) -> Result<String, AdapterError> {
@@ -396,6 +481,24 @@ impl AgentProvider for ApiProviderAdapter {
         }
     }
 
+    fn budget_capabilities(&self) -> BudgetCapabilities {
+        let priced = self
+            .settings
+            .input_cost_per_million
+            .zip(self.settings.output_cost_per_million)
+            .is_some_and(|(input, output)| {
+                input.is_finite() && output.is_finite() && input >= 0.0 && output > 0.0
+            });
+        BudgetCapabilities {
+            tokens: BudgetMode::Hard,
+            cost: if priced {
+                BudgetMode::Hard
+            } else {
+                BudgetMode::Soft
+            },
+        }
+    }
+
     async fn start(
         &self,
         req: AgentRunRequest,
@@ -414,7 +517,10 @@ impl AgentProvider for ApiProviderAdapter {
             format!("calling {} model {}", self.kind, self.settings.model),
         )
         .await;
-        let output = tokio::time::timeout(req.timeout, self.call_api(&prompt, &cancel, &tx))
+        let output = tokio::time::timeout(
+            req.timeout,
+            self.call_api(&prompt, &req.budget, &cancel, &tx),
+        )
             .await
             .map_err(|_| AdapterError::Provider {
                 provider: self.kind.clone(),
@@ -472,124 +578,8 @@ impl AgentProvider for ApiProviderAdapter {
     }
 }
 
-fn retry_delay(attempt: u32) -> Duration {
-    Duration::from_millis(500_u64.saturating_mul(1_u64 << attempt.min(6)))
-}
-
-async fn emit_provider_event(tx: &mpsc::Sender<AgentEvent>, summary: String) {
-    let _ = tx
-        .send(AgentEvent {
-            ts: Utc::now().to_rfc3339(),
-            stream: EventStream::Stdout,
-            kind: AgentEventKind::System,
-            summary,
-            text: None,
-        })
-        .await;
-}
-
-fn safe_error_body(body: &str) -> String {
-    agentflow_process_supervisor::redact(body.chars().take(2_000).collect())
-}
-
-pub fn api_provider_status(settings: &ApiProviderSettings) -> ProviderStatus {
-    let configured = !settings.model.trim().is_empty()
-        && !settings.base_url.trim().is_empty()
-        && !settings.api_key_env.trim().is_empty();
-    let key_available = resolve_api_key(settings).is_ok();
-    ProviderStatus {
-        configured,
-        available: configured && key_available,
-        model: settings.model.clone(),
-        base_url: settings.base_url.clone(),
-        key_env: settings.api_key_env.clone(),
-        problem: if !configured {
-            Some("base URL, model, and key environment variable are required".into())
-        } else if !key_available {
-            Some(format!(
-                "{} is not set and Keychain service {} has no key",
-                settings.api_key_env, settings.keychain_service
-            ))
-        } else {
-            None
-        },
-    }
-}
+include!("api_provider/support.rs");
 
 #[cfg(test)]
-mod api_telemetry_tests {
-    use super::*;
-
-    #[test]
-    fn extracts_openai_compatible_usage_and_estimates_configured_cost() {
-        let mut settings = ApiProviderSettings::deepseek_default();
-        settings.input_cost_per_million = Some(1.0);
-        settings.output_cost_per_million = Some(2.0);
-        let adapter = ApiProviderAdapter::new(AgentKind::DeepSeekApi, settings);
-        let (input, output, cost) = adapter.extract_telemetry(&json!({
-            "usage": {"prompt_tokens": 1000, "completion_tokens": 500}
-        }));
-        assert_eq!((input, output), (Some(1000), Some(500)));
-        assert_eq!(cost, Some(0.002));
-    }
-
-    #[test]
-    fn provider_reported_cost_wins_over_estimate_and_anthropic_cache_is_counted() {
-        let adapter = ApiProviderAdapter::new(
-            AgentKind::AnthropicApi,
-            ApiProviderSettings::anthropic_default(),
-        );
-        let (input, output, cost) = adapter.extract_telemetry(&json!({
-            "usage": {
-                "input_tokens": 100,
-                "cache_creation_input_tokens": 30,
-                "cache_read_input_tokens": 20,
-                "output_tokens": 10,
-                "cost_usd": 0.03
-            }
-        }));
-        assert_eq!((input, output), (Some(150), Some(10)));
-        assert_eq!(cost, Some(0.03));
-    }
-}
-
-fn resolve_api_key(settings: &ApiProviderSettings) -> Result<String, String> {
-    if let Ok(key) = std::env::var(&settings.api_key_env)
-        && !key.trim().is_empty()
-    {
-        return Ok(key);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // New desktop credentials use Security.framework directly so the secret never appears in
-        // a process argument. Keep the `security` fallback for credentials created by older builds.
-        if let Ok(bytes) = security_framework::passwords::get_generic_password(
-            &settings.keychain_service,
-            "AgentFlow",
-        ) && let Ok(key) = String::from_utf8(bytes)
-            && !key.trim().is_empty()
-        {
-            return Ok(key.trim().to_string());
-        }
-        let output = std::process::Command::new("/usr/bin/security")
-            .args([
-                "find-generic-password",
-                "-s",
-                &settings.keychain_service,
-                "-w",
-            ])
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| error.to_string())?;
-        if output.status.success() {
-            let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !key.is_empty() {
-                return Ok(key);
-            }
-        }
-    }
-    Err(format!(
-        "{} is not set and no Keychain credential is available",
-        settings.api_key_env
-    ))
-}
+#[path = "api_provider/api_telemetry_tests.rs"]
+mod api_telemetry_tests;

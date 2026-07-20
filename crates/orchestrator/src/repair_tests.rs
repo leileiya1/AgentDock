@@ -119,3 +119,16 @@ async fn repair_refuses_a_path_outside_the_owned_worktree_slot()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn repair_still_accepts_the_exact_legacy_slot_for_existing_tasks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_root, orchestrator, task) = fixture().await?;
+    let row = orchestrator.task(&task.id).await?;
+    let project = orchestrator.project(&row.project_id).await?;
+    let legacy = project
+        .worktree_root
+        .join(format!("p{}/t{}", project.seq, row.seq));
+    orchestrator.validate_owned_worktree(&row, &project, &legacy)?;
+    Ok(())
+}

@@ -74,6 +74,313 @@ mod failure_tests {
         Ok(sha)
     }
 
+    async fn approve_revision_fixture(
+        orchestrator: &Orchestrator,
+        task: &TaskSummary,
+        worktree: &Path,
+        content: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let sha = commit_revision_fixture(orchestrator, task, worktree, content).await?;
+        let diff = orchestrator.diff_get(&task.id, 1).await?;
+        orchestrator
+            .approve(&task.id, 1, &sha, &diff.diff_sha256)
+            .await?;
+        Ok(sha)
+    }
+
+    #[tokio::test]
+    async fn approval_rejects_a_client_sha_that_is_not_the_recorded_revision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let repo = init_repo(root.path()).await?;
+        let orchestrator = Orchestrator::open(root.path().join("data")).await?;
+        let (_, task, worktree) = prepared_task(&orchestrator, &repo, 2).await?;
+        commit_revision_fixture(&orchestrator, &task, &worktree, "reviewed version\n").await?;
+
+        // Fault injection: move the mutable branch and submit its valid diff hash while the
+        // orchestrator's revision row still points to the reviewed commit.
+        tokio::fs::write(worktree.join("shared.txt"), "unreviewed version\n").await?;
+        git(&worktree, &["add", "shared.txt"]).await?;
+        git(&worktree, &["commit", "-q", "-m", "unreviewed change"]).await?;
+        let injected_sha = git(&worktree, &["rev-parse", "HEAD"]).await?;
+        let row = orchestrator.task(&task.id).await?;
+        let injected_diff = orchestrator
+            .git
+            .diff(
+                &worktree,
+                row.base_commit.as_deref().ok_or("base commit missing")?,
+                &injected_sha,
+                &default_excludes(),
+                default_patch_bytes(),
+            )
+            .await?;
+        let error = match orchestrator
+            .approve(&task.id, 1, &injected_sha, &injected_diff.diff_sha256)
+            .await
+        {
+            Ok(_) => return Err("a client replaced the authoritative revision SHA".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(error, OrchestratorError::DiffStale));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM approvals WHERE task_id=?")
+                .bind(&task.id)
+                .fetch_one(orchestrator.store.pool())
+                .await?,
+            0
+        );
+        assert_eq!(
+            orchestrator.task_get(&task.id).await?.summary.status,
+            TaskStatus::WaitingForHumanApproval
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn merge_rejects_a_branch_that_advanced_after_approval()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let repo = init_repo(root.path()).await?;
+        let orchestrator = Orchestrator::open(root.path().join("data")).await?;
+        let (_, task, worktree) = prepared_task(&orchestrator, &repo, 2).await?;
+        approve_revision_fixture(&orchestrator, &task, &worktree, "approved version\n").await?;
+        let main_before = git(&repo, &["rev-parse", "HEAD"]).await?;
+
+        // Fault injection: simulate a provider writing one more commit after the user clicked
+        // approve but before the merge command was handled.
+        tokio::fs::write(worktree.join("shared.txt"), "post-approval mutation\n").await?;
+        git(&worktree, &["add", "shared.txt"]).await?;
+        git(&worktree, &["commit", "-q", "-m", "post approval mutation"]).await?;
+        let error = match orchestrator.merge(&task.id).await {
+            Ok(_) => return Err("a post-approval commit was merged".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(error, OrchestratorError::MergePrecondition(_)));
+        assert_eq!(git(&repo, &["rev-parse", "HEAD"]).await?, main_before);
+        assert_eq!(
+            orchestrator.task_get(&task.id).await?.summary.status,
+            TaskStatus::Approved
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn external_merge_requires_git_ancestry_proof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let repo = init_repo(root.path()).await?;
+        let orchestrator = Orchestrator::open(root.path().join("data")).await?;
+        let (_, task, worktree) = prepared_task(&orchestrator, &repo, 2).await?;
+        approve_revision_fixture(&orchestrator, &task, &worktree, "approved version\n").await?;
+
+        let error = match orchestrator.mark_merged_external(&task.id).await {
+            Ok(_) => return Err("a UI signal bypassed Git ancestry proof".into()),
+            Err(error) => error,
+        };
+        assert!(matches!(error, OrchestratorError::MergePrecondition(_)));
+
+        let branch = orchestrator
+            .task(&task.id)
+            .await?
+            .branch
+            .ok_or("task branch missing")?;
+        git(
+            &repo,
+            &["merge", "--no-ff", &branch, "-m", "external merge"],
+        )
+        .await?;
+        let merged = orchestrator.mark_merged_external(&task.id).await?;
+        assert_eq!(merged.status, TaskStatus::Merged);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn start_saga_rolls_forward_after_git_succeeds_but_database_state_is_missing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let data = root.path().join("data");
+        let repo = init_repo(root.path()).await?;
+        let orchestrator = Orchestrator::open(&data).await?;
+        let project = orchestrator.project_import(&repo).await?;
+        let task = orchestrator
+            .task_create(
+                &project.id,
+                "start saga",
+                "recover a partial start",
+                AgentKind::Codex,
+                AgentKind::ClaudeCode,
+                None,
+                Some(2),
+            )
+            .await?;
+        let row = orchestrator.task(&task.id).await?;
+        let project_row = orchestrator.project(&project.id).await?;
+        let base = orchestrator.git.resolve(&repo, "main").await?;
+        let branch = format!("agentflow/TASK-{}", task.seq);
+        let worktree = project_row
+            .worktree_root
+            .join(format!("p{}/t{}", project_row.seq, task.seq));
+        let intent = StartTaskIntent {
+            base_commit: base.clone(),
+            branch: branch.clone(),
+            worktree_path: worktree.to_string_lossy().into_owned(),
+            target_status: TaskStatus::ReadyForDevelopment.to_string(),
+        };
+        let (operation_id, _) = orchestrator.begin_start_operation(&row, &intent).await?;
+
+        // Fault injection: emulate a power loss after Git worktree creation but before the task
+        // row and event transaction.
+        if let Some(parent) = worktree.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        orchestrator
+            .git
+            .worktree_add(&repo, &worktree, &branch, &base)
+            .await?;
+        drop(orchestrator);
+
+        let recovered = Orchestrator::open(&data).await?;
+        let detail = recovered.task_get(&task.id).await?;
+        assert_eq!(detail.summary.status, TaskStatus::ReadyForDevelopment);
+        assert_eq!(detail.branch.as_deref(), Some(branch.as_str()));
+        assert_eq!(detail.base_commit.as_deref(), Some(base.as_str()));
+        let status: String = sqlx::query_scalar("SELECT status FROM task_operations WHERE id=?")
+            .bind(&operation_id)
+            .fetch_one(recovered.store.pool())
+            .await?;
+        assert_eq!(status, "COMPLETED");
+        assert!(
+            recovered
+                .events_list(&task.id, None, None)
+                .await?
+                .iter()
+                .any(|event| event.event_type == "recovery:saga_completed")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn orphaned_development_stage_preserves_then_resets_residual_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let data = root.path().join("data");
+        let repo = init_repo(root.path()).await?;
+        let orchestrator = Orchestrator::open(&data).await?;
+        let (_, task, worktree) = prepared_task(&orchestrator, &repo, 2).await?;
+        let row = orchestrator.task(&task.id).await?;
+        let operation_id = orchestrator
+            .enter_development_stage(
+                &row,
+                TaskStatus::ReadyForDevelopment,
+                TaskStatus::Developing,
+                1,
+            )
+            .await?;
+        tokio::fs::write(worktree.join("partial.txt"), "survived only in checkpoint\n").await?;
+        drop(orchestrator);
+
+        let recovered = Orchestrator::open(&data).await?;
+        let detail = recovered.task_get(&task.id).await?;
+        assert_eq!(detail.summary.status, TaskStatus::ReadyForDevelopment);
+        assert_eq!(detail.summary.current_revision, 0);
+        assert!(!worktree.join("partial.txt").exists());
+        let checkpoint_phase: String = sqlx::query_scalar(
+            "SELECT phase FROM task_checkpoints WHERE task_id=? ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&task.id)
+        .fetch_one(recovered.store.pool())
+        .await?;
+        assert_eq!(checkpoint_phase, "orphaned-stage");
+        let operation_status: String =
+            sqlx::query_scalar("SELECT status FROM task_operations WHERE id=?")
+                .bind(&operation_id)
+                .fetch_one(recovered.store.pool())
+                .await?;
+        assert_eq!(operation_status, "COMPLETED");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn orphaned_stage_with_a_durable_revision_rolls_forward_to_validation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let data = root.path().join("data");
+        let repo = init_repo(root.path()).await?;
+        let orchestrator = Orchestrator::open(&data).await?;
+        let (_, task, worktree) = prepared_task(&orchestrator, &repo, 2).await?;
+        let row = orchestrator.task(&task.id).await?;
+        orchestrator
+            .enter_development_stage(
+                &row,
+                TaskStatus::ReadyForDevelopment,
+                TaskStatus::Developing,
+                1,
+            )
+            .await?;
+        tokio::fs::write(worktree.join("shared.txt"), "durable revision\n").await?;
+        git(&worktree, &["add", "shared.txt"]).await?;
+        git(&worktree, &["commit", "-q", "-m", "durable revision"]).await?;
+        let sha = git(&worktree, &["rev-parse", "HEAD"]).await?;
+        sqlx::query("INSERT INTO task_revisions(id,task_id,revision,commit_sha,created_at) VALUES(?,?,1,?,?)")
+            .bind(Uuid::now_v7().to_string()).bind(&task.id).bind(&sha)
+            .bind(Utc::now().to_rfc3339()).execute(orchestrator.store.pool()).await?;
+        drop(orchestrator);
+
+        let recovered = Orchestrator::open(&data).await?;
+        let detail = recovered.task_get(&task.id).await?;
+        assert_eq!(detail.summary.status, TaskStatus::Validating);
+        assert_eq!(detail.summary.current_revision, 1);
+        assert_eq!(git(&worktree, &["rev-parse", "HEAD"]).await?, sha);
+        assert!(
+            recovered
+                .events_list(&task.id, None, None)
+                .await?
+                .iter()
+                .any(|event| event.event_type == "recovery:stage_roll_forward")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn orphaned_merge_rolls_forward_only_when_the_approved_commit_is_reachable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let data = root.path().join("data");
+        let repo = init_repo(root.path()).await?;
+        let orchestrator = Orchestrator::open(&data).await?;
+        let (_, task, worktree) = prepared_task(&orchestrator, &repo, 2).await?;
+        let approved_sha =
+            approve_revision_fixture(&orchestrator, &task, &worktree, "approved merge\n").await?;
+        let branch = orchestrator
+            .task(&task.id)
+            .await?
+            .branch
+            .ok_or("task branch missing")?;
+        sqlx::query("UPDATE tasks SET status='MERGING' WHERE id=?")
+            .bind(&task.id)
+            .execute(orchestrator.store.pool())
+            .await?;
+
+        // Fault injection: Git completed the merge, but power failed before merge:succeeded.
+        git(&repo, &["merge", "--no-ff", &branch, "-m", "interrupted merge"]).await?;
+        drop(orchestrator);
+        let recovered = Orchestrator::open(&data).await?;
+        assert_eq!(
+            recovered.task_get(&task.id).await?.summary.status,
+            TaskStatus::Merged
+        );
+        let head = git(&repo, &["rev-parse", "HEAD"]).await?;
+        assert!(recovered.git.is_ancestor(&repo, &approved_sha, &head).await?);
+        assert!(
+            recovered
+                .events_list(&task.id, None, None)
+                .await?
+                .iter()
+                .any(|event| event.event_type == "recovery:merge_roll_forward")
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn rejection_enters_rework_and_is_carried_into_next_round_memory()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -113,11 +420,7 @@ mod failure_tests {
         let repo = init_repo(root.path()).await?;
         let orchestrator = Orchestrator::open(root.path().join("data")).await?;
         let (_, task, worktree) = prepared_task(&orchestrator, &repo, 2).await?;
-        commit_revision_fixture(&orchestrator, &task, &worktree, "agent version\n").await?;
-        sqlx::query("UPDATE tasks SET status='APPROVED' WHERE id=?")
-            .bind(&task.id)
-            .execute(orchestrator.store.pool())
-            .await?;
+        approve_revision_fixture(&orchestrator, &task, &worktree, "agent version\n").await?;
 
         tokio::fs::write(repo.join("shared.txt"), "main version\n").await?;
         git(&repo, &["add", "shared.txt"]).await?;

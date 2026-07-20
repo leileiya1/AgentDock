@@ -16,13 +16,15 @@ mod daemon_client;
 mod error;
 mod event_bridge;
 mod governance_commands;
+mod management_commands;
 mod view_types;
 #[macro_use]
 mod repair_commands;
 use daemon_client::{ensure_daemon, mutate as daemon_mutate};
 use error::app_error;
 use governance_commands::*;
-use view_types::{ExportPath, RunLogPage};
+use management_commands::*;
+use view_types::ExportPath;
 use provider_setup::{
     api_credential_delete, api_credential_set, cli_credential_delete, cli_credential_set,
     cli_install,
@@ -108,13 +110,6 @@ struct ProjectSettingsArgs {
 #[serde(rename_all = "camelCase")]
 struct GlobalSettingsArgs {
     patch: agentflow_contracts::GlobalSettings,
-}
-#[derive(Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-struct RunLogArgs {
-    run_id: String,
-    from_line: u32,
-    max_lines: u32,
 }
 #[derive(Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -494,33 +489,17 @@ async fn review_get(
         .await
         .map_err(app_error)
 }
-#[tauri::command]
-#[specta::specta]
-async fn run_log_tail(state: State<'_, Backend>, args: RunLogArgs) -> Result<RunLogPage, AppError> {
-    state
-        .0
-        .run_log_tail(
-            &args.run_id,
-            args.from_line as usize,
-            args.max_lines as usize,
-        )
-        .await
-        .map(|(lines, next_from_line, eof)| RunLogPage {
-            lines,
-            next_from_line: next_from_line as u32,
-            eof,
-        })
-        .map_err(app_error)
-}
-
-fn main() {
-    let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
+fn command_builder() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new().commands(collect_commands![
         env_check,
         provider_list,
         onboarding_check,
         onboarding_complete,
         storage_report,
         storage_cleanup,
+        database_backup_list,
+        database_backup_create,
+        database_backup_restore,
         task_cleanup,
         trash_list,
         task_restore,
@@ -533,11 +512,15 @@ fn main() {
         api_credential_delete,
         project_import,
         project_list,
+        project_git_compatibility,
         task_create,
         task_list,
         task_get,
         task_start,
         task_cancel,
+        queue_task_pause,
+        queue_task_resume,
+        queue_task_priority,
         task_resume_with_guidance,
         task_repair_inspect,
         task_repair_apply,
@@ -564,11 +547,18 @@ fn main() {
         events_export,
         project_settings_get,
         project_settings_update,
+        project_config_trust_get,
+        project_config_trust_approve,
+        project_config_trust_revoke,
         settings_get,
         settings_update,
         review_get,
         run_log_tail,
-    ]);
+    ])
+}
+
+fn main() {
+    let builder = command_builder();
     if std::env::args().any(|arg| arg == "--export-bindings") {
         // Only the explicit xtask may update checked-in bindings. Otherwise launching an older
         // debug app can silently overwrite newer generated types in the shared source tree.

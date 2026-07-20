@@ -74,7 +74,7 @@ impl Orchestrator {
     ) -> Result<DiffPayload, OrchestratorError> {
         let task = self.task(task_id).await?;
         let project = self.project(&task.project_id).await?;
-        let config = load_config(&project.repo).await?;
+        let config = self.load_trusted_config(&project).await?;
         let sha: String = sqlx::query_scalar(
             "SELECT commit_sha FROM task_revisions WHERE task_id=? AND revision=?",
         )
@@ -258,6 +258,9 @@ impl Orchestrator {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
         }
         let project = self.project(&task.project_id).await?;
+        let seal = self.approval_seal(&task).await?;
+        self.verify_sealed_task_heads(&task, &project, &seal)
+            .await?;
         if self.git.default_branch(&project.repo).await? != task.target_branch {
             return Err(OrchestratorError::MergePrecondition(
                 "main checkout is not on target branch".into(),
@@ -288,9 +291,6 @@ impl Orchestrator {
         match self.git.merge(&project.repo, branch, &message).await {
             Ok(()) => {
                 let merge_commit = self.git.resolve(&project.repo, "HEAD").await?;
-                if let Some(wt) = task.worktree_path.as_ref() {
-                    let _ = self.git.worktree_remove(&project.repo, wt).await;
-                }
                 self.store
                     .transition(
                         task_id,
@@ -302,6 +302,9 @@ impl Orchestrator {
                         &json!({"pre_merge_commit":pre_merge_commit,"merge_commit":merge_commit}),
                     )
                     .await?;
+                if let Some(wt) = task.worktree_path.as_ref() {
+                    let _ = self.git.worktree_remove(&project.repo, wt).await;
+                }
                 sqlx::query("UPDATE delivery_records SET state='merged',ci_status='passed',pre_merge_commit=?,merge_commit=?,updated_at=? WHERE task_id=?")
                     .bind(&pre_merge_commit).bind(&merge_commit).bind(Utc::now().to_rfc3339())
                     .bind(task_id).execute(self.store.pool()).await?;
@@ -335,9 +338,16 @@ impl Orchestrator {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
         }
         let project = self.project(&task.project_id).await?;
-        let merge_commit = self.git.resolve(&project.repo, "HEAD").await.ok();
-        if let Some(wt) = task.worktree_path.as_ref() {
-            let _ = self.git.worktree_remove(&project.repo, wt).await;
+        let seal = self.approval_seal(&task).await?;
+        let merge_commit = self.git.resolve(&project.repo, "HEAD").await?;
+        if !self
+            .git
+            .is_ancestor(&project.repo, &seal.commit_sha, &merge_commit)
+            .await?
+        {
+            return Err(OrchestratorError::MergePrecondition(
+                "approved commit is not contained in the target branch".into(),
+            ));
         }
         self.store
             .transition(
@@ -350,8 +360,11 @@ impl Orchestrator {
                 &json!({}),
             )
             .await?;
+        if let Some(wt) = task.worktree_path.as_ref() {
+            let _ = self.git.worktree_remove(&project.repo, wt).await;
+        }
         sqlx::query("UPDATE delivery_records SET state='merged',ci_status='passed',merge_commit=COALESCE(?,merge_commit),updated_at=? WHERE task_id=?")
-            .bind(merge_commit).bind(Utc::now().to_rfc3339()).bind(task_id)
+            .bind(Some(merge_commit)).bind(Utc::now().to_rfc3339()).bind(task_id)
             .execute(self.store.pool()).await?;
         self.store.task_summary(task_id).await.map_err(Into::into)
     }
@@ -436,8 +449,10 @@ impl Orchestrator {
             .bind(run_id)
             .fetch_one(self.store.pool())
             .await?;
-        let text = tokio::fs::read_to_string(Path::new(&run_dir).join("agent-events.jsonl"))
+        let text = self
+            .read_run_file(&Path::new(&run_dir).join("agent-events.jsonl"))
             .await
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .unwrap_or_default();
         let all = text.lines().collect::<Vec<_>>();
         let take = max_lines.clamp(1, 1000);
@@ -452,6 +467,17 @@ impl Orchestrator {
         // subscriber to the same cursor forever and hides all later valid output.
         let next = end;
         Ok((lines, next, next >= all.len()))
+    }
+    pub async fn run_log_line_count(&self, run_id: &str) -> Result<usize, OrchestratorError> {
+        let run_dir: String = sqlx::query_scalar("SELECT run_dir FROM agent_runs WHERE id=?")
+            .bind(run_id)
+            .fetch_one(self.store.pool())
+            .await?;
+        let bytes = self
+            .read_run_file(&Path::new(&run_dir).join("agent-events.jsonl"))
+            .await
+            .unwrap_or_default();
+        Ok(bytes.iter().filter(|byte| **byte == b'\n').count())
     }
     pub async fn project_settings_get(
         &self,
@@ -534,6 +560,7 @@ impl Orchestrator {
             .fetch_one(self.store.pool())
             .await?;
         Ok(ProjectRow {
+            id: r.get("id"),
             seq: r.get("seq"),
             repo: r.get::<String, _>("repo_path").into(),
             default_branch: r.get("default_branch"),

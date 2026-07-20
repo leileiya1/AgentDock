@@ -76,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             question: None,
                             changed_files: Some(Vec::new()),
                             notes: None,
+                            plan_sha256: None,
                         }),
                         session_id: Some("fixture-session".into()),
                         cost_usd: Some(0.01),

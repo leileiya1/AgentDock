@@ -167,7 +167,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn owner_recovery_terminates_a_matching_orphan_process_group()
+    async fn owner_recovery_adopts_a_matching_live_process_without_terminating_it()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let owner = Orchestrator::open(dir.path()).await?;
@@ -247,17 +247,26 @@ mod tests {
         let recovered = Orchestrator::open(dir.path()).await?;
         assert_eq!(
             agentflow_process_supervisor::inspect_process_lease(&lease),
-            agentflow_process_supervisor::LeaseState::Exited
+            agentflow_process_supervisor::LeaseState::Alive
         );
-        let run_status: String =
-            sqlx::query_scalar("SELECT status FROM agent_runs WHERE id='run-live-orphan'")
-                .fetch_one(recovered.store.pool())
-                .await?;
-        assert_eq!(run_status, "INTERRUPTED");
+        let (run_status, recovery_state): (String, Option<String>) = sqlx::query_as(
+            "SELECT status,recovery_state FROM agent_runs WHERE id='run-live-orphan'",
+        )
+        .fetch_one(recovered.store.pool())
+        .await?;
+        assert_eq!(run_status, "RUNNING");
+        assert_eq!(recovery_state.as_deref(), Some("ADOPTING"));
         assert_eq!(
             recovered.task_get(&task.id).await?.summary.status,
-            TaskStatus::ReadyForDevelopment
+            TaskStatus::Developing
         );
+        assert!(recovered
+            .events_list(&task.id, None, None)
+            .await?
+            .iter()
+            .any(|event| event.event_type == "recovery:run_adopted"));
+        agentflow_process_supervisor::terminate_process_lease(&lease, Duration::from_secs(2))
+            .await?;
         tokio::time::timeout(Duration::from_secs(2), drain).await??;
         Ok(())
     }
@@ -474,6 +483,7 @@ mod tests {
                 question: None,
                 changed_files: None,
                 notes: None,
+                plan_sha256: None,
             })?,
         )
         .await?;
@@ -510,7 +520,7 @@ mod tests {
 
         let project = orchestrator.project(&project.id).await?;
         let input = orchestrator
-            .build_input(&task, &project, Some(&history))
+            .build_input(&task, &project, Some(&history), None)
             .await?;
         assert!(input.contains("跨轮记忆（权威快照）"));
         assert!(input.contains("missing test"));

@@ -5,12 +5,19 @@ string_enum!(CiStatus { Unknown => "unknown", Pending => "pending", Passed => "p
 string_enum!(RollbackStrategy { Undo => "undo", Revert => "revert" });
 string_enum!(NodeStatus { Unknown => "unknown", Online => "online", Offline => "offline" });
 string_enum!(QualityGrade { A => "A", B => "B", C => "C", D => "D" });
+// Whether a budget is enforced before/during a Provider run or only reconciled
+// after the Provider exits. The desktop must not present `soft` as a guarantee.
+string_enum!(BudgetEnforcement { Hard => "hard", Soft => "soft", Unavailable => "unavailable" });
+string_enum!(ReproducibilityLevel { #[default] FixedCommit => "fixed_commit", EnvironmentLocked => "environment_locked", Hermetic => "hermetic" });
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub struct TaskPolicy {
     pub require_plan_approval: bool,
+    /// Scheduler order from -100 (background) to 100 (urgent).
+    #[specta(type = i32)]
+    pub priority: i16,
     #[specta(type = Option<i32>)]
     pub token_budget: Option<i64>,
     pub cost_budget_usd: Option<f64>,
@@ -25,6 +32,7 @@ impl Default for TaskPolicy {
     fn default() -> Self {
         Self {
             require_plan_approval: true,
+            priority: 0,
             token_budget: Some(500_000),
             cost_budget_usd: Some(25.0),
             time_budget_secs: Some(7_200),
@@ -53,6 +61,8 @@ pub struct CodingPlan {
     pub summary: String,
     pub steps: Vec<PlanStep>,
     pub risks: Vec<String>,
+    pub allowed_paths: Vec<String>,
+    pub plan_sha256: Option<String>,
     pub created_at: String,
     pub approved_at: Option<String>,
 }
@@ -66,9 +76,11 @@ pub struct PlanResult {
     pub summary: String,
     pub steps: Vec<PlanStep>,
     pub risks: Vec<String>,
+    /// Repository-relative glob patterns that define the approved implementation boundary.
+    pub allowed_paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BudgetUsage {
     #[specta(type = i32)]
@@ -81,6 +93,18 @@ pub struct BudgetUsage {
     pub cost_budget_usd: Option<f64>,
     #[specta(type = Option<i32>)]
     pub time_budget_secs: Option<i64>,
+    /// Unknown usage is tracked explicitly instead of silently becoming zero.
+    pub tokens_known: bool,
+    pub cost_known: bool,
+    #[specta(type = i32)]
+    pub unknown_token_runs: i64,
+    #[specta(type = i32)]
+    pub unknown_cost_runs: i64,
+    #[specta(type = i32)]
+    pub tokens_reserved: i64,
+    pub cost_reserved_usd: f64,
+    pub token_enforcement: BudgetEnforcement,
+    pub cost_enforcement: BudgetEnforcement,
     pub exceeded: bool,
 }
 
@@ -96,6 +120,26 @@ pub struct BudgetLimitPatch {
     pub time_budget_secs: Option<i64>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCompatibilityReport {
+    pub repo_path: String,
+    pub repository_identity: String,
+    pub shallow: bool,
+    pub sparse_checkout: bool,
+    pub sparse_patterns: Vec<String>,
+    pub submodules: Vec<String>,
+    pub lfs_tracked: bool,
+    pub lfs_available: bool,
+    pub ssh_remote: bool,
+    pub ssh_agent_available: bool,
+    pub network_filesystem: bool,
+    pub case_insensitive: bool,
+    pub case_collisions: Vec<String>,
+    pub warnings: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReproducibilityManifest {
@@ -105,6 +149,26 @@ pub struct ReproducibilityManifest {
     pub commit_sha: String,
     pub manifest_sha256: String,
     pub environment: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub reproducibility_level: ReproducibilityLevel,
+    #[serde(default)]
+    pub tool_versions: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub environment_variables: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub system_dependencies: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub container_image_digests: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub git_submodules: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub git_lfs_objects: Vec<String>,
+    #[serde(default)]
+    pub external_dependencies: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub limitations: Vec<String>,
+    #[serde(default)]
+    pub environment_sha256: String,
     pub input_sha256: String,
     pub patch_sha256: String,
     pub validation_config_sha256: String,

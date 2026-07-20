@@ -83,6 +83,15 @@ export function PlanApprovalBar({ task }: { task: TaskDetail }) {
                 </li>
               ))}
             </ol>
+            <div className="rounded-md border border-line bg-raised p-3">
+              <div className="font-medium text-t1">允许修改的路径</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {plan.allowedPaths.map((path) => (
+                  <span key={path} className="rounded bg-app px-2 py-1 font-mono text-[11px] text-t2">{path}</span>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] text-t3">Agent 修改范围超出这些路径时，本轮会被重置并重新请求你的计划审批。</p>
+            </div>
             {plan.risks.length > 0 && (
               <div className="rounded-md border border-human/40 bg-human-bg p-3">
                 <div className="font-medium text-human">计划风险</div>

@@ -1,6 +1,21 @@
 pub const CLAUDE_CLI_KEYCHAIN_SERVICE: &str = "com.agentflow.claude-cli-api-key";
 pub const CODEX_CLI_KEYCHAIN_SERVICE: &str = "com.agentflow.codex-cli-api-key";
 
+/// Local trust decision for repository-owned AgentFlow configuration. The approved hash lives
+/// outside the repository, so an Agent cannot grant itself command execution permissions by
+/// editing `.agentflow/project.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectConfigTrust {
+    pub exists: bool,
+    pub path: String,
+    pub sha256: Option<String>,
+    pub trusted: bool,
+    pub validation_steps: Vec<String>,
+    pub extra_allowed_commands: Vec<String>,
+    pub approved_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]

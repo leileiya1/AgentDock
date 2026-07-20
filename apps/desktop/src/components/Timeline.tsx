@@ -43,6 +43,7 @@ function classify(
   if (t === "plan:proposed") return { label: `编码计划待审批${rtag}`, tone: "human", glyph: "◉", agent: developerAgent };
   if (t === "human:plan_approve") return { label: "你批准了编码计划", tone: "human", glyph: "✓", agent: null };
   if (t === "human:plan_reject") return { label: "你驳回了编码计划", tone: "human", glyph: "↩", agent: null };
+  if (t === "plan:deviation") return { label: "改动超出计划，等待重新审批", tone: "bad", glyph: "!", agent: developerAgent };
   if (t === "budget:exceeded") return { label: "预算已用完，任务暂停", tone: "bad", glyph: "!", agent: null };
   if (t === "quality:gate_failed") return { label: `质量门禁未通过${rtag}`, tone: "bad", glyph: "✕", agent: reviewerAgent };
   if (t === "quality:replayed") return { label: `固定提交质量复验完成${rtag}`, tone: "ok", glyph: "✓", agent: null };

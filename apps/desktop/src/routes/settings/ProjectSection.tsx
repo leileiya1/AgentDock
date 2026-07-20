@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { ShieldOff } from "lucide-react";
+import { GitBranch, ShieldAlert, ShieldCheck, ShieldOff } from "lucide-react";
 import type { AgentKind, Project, ProjectSettings } from "@/generated/bindings";
-import { useProjectSettings, useUpdateProjectSettings } from "@/hooks/useSettings";
+import { useProjectGitCompatibility, useProjectSettings, useUpdateProjectSettings } from "@/hooks/useSettings";
 import { useProviders } from "@/hooks/useProviders";
 import { AGENT_META, ALL_AGENTS, agentLabel } from "@/copy/agents";
 import { Toggle } from "@/routes/Settings";
@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { ApiRuntimeSettings } from "@/routes/settings/ApiRuntimeSettings";
+import { ProjectConfigTrustPanel } from "@/routes/settings/ProjectConfigTrustPanel";
 
 const FALLBACK_DEVELOPERS = ALL_AGENTS.filter((a) => AGENT_META[a].cli);
 const FALLBACK_REVIEWERS = ALL_AGENTS;
@@ -25,6 +26,7 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
   const [projectId, setProjectId] = useState(projects[0].id);
   const project = projects.find((p) => p.id === projectId)!;
   const settings = useProjectSettings(projectId);
+  const gitCompatibility = useProjectGitCompatibility(projectId);
   const update = useUpdateProjectSettings(projectId);
   const providers = useProviders();
   const developerAgents = providers.data
@@ -127,6 +129,29 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
         <ErrorState error={settings.error} onRetry={() => settings.refetch()} compact />
       ) : (
         <>
+          <ProjectConfigTrustPanel projectId={projectId} />
+          {gitCompatibility.isError ? (
+            <ErrorState error={gitCompatibility.error} onRetry={() => gitCompatibility.refetch()} compact />
+          ) : gitCompatibility.data ? (
+            <div className={`rounded-[var(--radius-panel)] border p-3 ${gitCompatibility.data.blockers.length ? "border-danger/50 bg-danger/5" : "border-line bg-app"}`}>
+              <div className="flex items-center gap-2 font-semibold">
+                <GitBranch className="size-4" /> Git 兼容性预检
+                {gitCompatibility.data.blockers.length ? <ShieldAlert className="size-4 text-danger" /> : <ShieldCheck className="size-4 text-ok" />}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-t3">
+                {gitCompatibility.data.shallow && <span className="rounded bg-raised px-2 py-1">shallow</span>}
+                {gitCompatibility.data.sparseCheckout && <span className="rounded bg-raised px-2 py-1">sparse</span>}
+                {!!gitCompatibility.data.submodules.length && <span className="rounded bg-raised px-2 py-1">submodule × {gitCompatibility.data.submodules.length}</span>}
+                {gitCompatibility.data.lfsTracked && <span className="rounded bg-raised px-2 py-1">Git LFS</span>}
+                {gitCompatibility.data.networkFilesystem && <span className="rounded bg-raised px-2 py-1">网络磁盘</span>}
+                {gitCompatibility.data.sshRemote && <span className="rounded bg-raised px-2 py-1">SSH remote</span>}
+                {!gitCompatibility.data.shallow && !gitCompatibility.data.sparseCheckout && !gitCompatibility.data.submodules.length && !gitCompatibility.data.lfsTracked && <span>标准本地仓库</span>}
+              </div>
+              {gitCompatibility.data.blockers.map((message) => <p key={message} className="mt-2 text-[12px] text-danger">阻断：{message}</p>)}
+              {gitCompatibility.data.warnings.map((message) => <p key={message} className="mt-1 text-[12px] text-human">{message}</p>)}
+            </div>
+          ) : null}
+
           <FallbackPicker
             title="开发 Agent 降级顺序"
             hint="首选失败（额度/限流/报错）时按勾选顺序降级。这里只显示支持开发能力的 Provider。"

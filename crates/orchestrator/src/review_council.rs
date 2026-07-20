@@ -21,6 +21,30 @@ struct CouncilAggregate {
 impl Orchestrator {
     async fn review(&self, task: TaskRow) -> Result<(), OrchestratorError> {
         let settings = self.project(&task.project_id).await?.settings;
+        let security_required = self
+            .stored_integrity_report(&task)
+            .await?
+            .is_some_and(|report| report.requires_security_review);
+        if security_required && !settings.review_council.enabled {
+            let detail = "本轮修改涉及测试、CI、权限或安全控制面，必须启用至少两个独立 Provider 的审查委员会后再继续";
+            sqlx::query("UPDATE tasks SET blocked_detail=? WHERE id=?")
+                .bind(detail)
+                .bind(&task.id)
+                .execute(self.store.pool())
+                .await?;
+            self.store
+                .transition(
+                    &task.id,
+                    &[TaskStatus::ReadyForReview],
+                    TaskStatus::Blocked,
+                    Some(BlockedReason::QualityGate),
+                    Actor::Orchestrator,
+                    "integrity:security_review_required",
+                    &json!({"detail":detail}),
+                )
+                .await?;
+            return Ok(());
+        }
         if !settings.review_council.enabled {
             return self.review_single(task).await;
         }
@@ -40,7 +64,7 @@ impl Orchestrator {
             )
             .await?;
         let project = self.project(&task.project_id).await?;
-        let config = load_config(&project.repo).await?;
+        let config = self.load_trusted_config(&project).await?;
         let sha: String = sqlx::query_scalar(
             "SELECT commit_sha FROM task_revisions WHERE task_id=? AND revision=?",
         )
@@ -211,8 +235,9 @@ impl Orchestrator {
                 running.outcome.exit_code
             )));
         }
-        if let Ok(CollectedResult::Review(review)) =
-            adapter.collect_result(&running.run_dir, RunRole::Reviewer).await
+        let collected = adapter.collect_result(&running.run_dir, RunRole::Reviewer).await;
+        self.protect_run_files(&running.run_dir).await?;
+        if let Ok(CollectedResult::Review(review)) = collected
             && self.valid_council_review(task, sha, &review).await
         {
             return Ok(CouncilMemberReview {

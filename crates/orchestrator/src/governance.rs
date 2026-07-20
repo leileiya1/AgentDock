@@ -1,7 +1,7 @@
 impl Orchestrator {
     async fn task_policy(&self, task_id: &str) -> Result<TaskPolicy, OrchestratorError> {
         let row = sqlx::query(
-            "SELECT require_plan_approval,token_budget,cost_budget_usd,time_budget_secs,\
+            "SELECT require_plan_approval,priority,token_budget,cost_budget_usd,time_budget_secs,\
              minimum_quality_score,delivery_mode,execution_node_id FROM task_policies WHERE task_id=?",
         )
         .bind(task_id)
@@ -15,6 +15,7 @@ impl Orchestrator {
         };
         Ok(TaskPolicy {
             require_plan_approval: row.get::<i64, _>("require_plan_approval") != 0,
+            priority: row.get::<i64, _>("priority").clamp(-100, 100) as i16,
             token_budget: row.get("token_budget"),
             cost_budget_usd: row.get("cost_budget_usd"),
             time_budget_secs: row.get("time_budget_secs"),
@@ -28,7 +29,7 @@ impl Orchestrator {
 
     async fn latest_plan(&self, task_id: &str) -> Result<Option<CodingPlan>, OrchestratorError> {
         let row = sqlx::query(
-            "SELECT id,version,status,summary,steps_json,risks_json,created_at,approved_at \
+            "SELECT id,version,status,summary,steps_json,risks_json,allowed_paths_json,plan_sha256,created_at,approved_at \
              FROM task_plans WHERE task_id=? ORDER BY version DESC LIMIT 1",
         )
         .bind(task_id)
@@ -44,6 +45,9 @@ impl Orchestrator {
                     .map_err(|error| OrchestratorError::Config(error.to_string()))?,
                 risks: serde_json::from_str(&row.get::<String, _>("risks_json"))
                     .map_err(|error| OrchestratorError::Config(error.to_string()))?,
+                allowed_paths: serde_json::from_str(&row.get::<String, _>("allowed_paths_json"))
+                    .map_err(|error| OrchestratorError::Config(error.to_string()))?,
+                plan_sha256: row.get("plan_sha256"),
                 created_at: row.get("created_at"),
                 approved_at: row.get("approved_at"),
             })
@@ -54,7 +58,9 @@ impl Orchestrator {
     pub async fn budget_usage(&self, task_id: &str) -> Result<BudgetUsage, OrchestratorError> {
         let policy = self.task_policy(task_id).await?;
         let rows = sqlx::query(
-            "SELECT cost_usd,tokens_in,tokens_out,started_at,finished_at FROM agent_runs WHERE task_id=?",
+            "SELECT status,cost_usd,tokens_in,tokens_out,started_at,finished_at,\
+             token_budget_mode,cost_budget_mode,reserved_tokens,reserved_cost_usd \
+             FROM agent_runs WHERE task_id=?",
         )
         .bind(task_id)
         .fetch_all(self.store.pool())
@@ -63,11 +69,36 @@ impl Orchestrator {
         let mut tokens = 0_i64;
         let mut cost = 0.0_f64;
         let mut seconds = 0_i64;
+        let mut unknown_token_runs = 0_i64;
+        let mut unknown_cost_runs = 0_i64;
+        let mut tokens_reserved = 0_i64;
+        let mut cost_reserved_usd = 0.0_f64;
+        let mut token_modes = Vec::new();
+        let mut cost_modes = Vec::new();
         for row in rows {
-            tokens = tokens
-                .saturating_add(row.get::<Option<i64>, _>("tokens_in").unwrap_or(0))
-                .saturating_add(row.get::<Option<i64>, _>("tokens_out").unwrap_or(0));
-            cost += row.get::<Option<f64>, _>("cost_usd").unwrap_or(0.0);
+            let tokens_in = row.get::<Option<i64>, _>("tokens_in");
+            let tokens_out = row.get::<Option<i64>, _>("tokens_out");
+            match (tokens_in, tokens_out) {
+                (Some(input), Some(output)) => {
+                    tokens = tokens.saturating_add(input).saturating_add(output);
+                }
+                _ => unknown_token_runs = unknown_token_runs.saturating_add(1),
+            }
+            match row.get::<Option<f64>, _>("cost_usd") {
+                Some(value) if value.is_finite() && value >= 0.0 => cost += value,
+                _ => unknown_cost_runs = unknown_cost_runs.saturating_add(1),
+            }
+            let status: String = row.get("status");
+            if status == "RUNNING" {
+                tokens_reserved = tokens_reserved.saturating_add(
+                    row.get::<Option<i64>, _>("reserved_tokens").unwrap_or(0),
+                );
+                cost_reserved_usd += row
+                    .get::<Option<f64>, _>("reserved_cost_usd")
+                    .unwrap_or(0.0);
+            }
+            token_modes.push(row.get::<String, _>("token_budget_mode"));
+            cost_modes.push(row.get::<String, _>("cost_budget_mode"));
             let started = row
                 .get::<Option<String>, _>("started_at")
                 .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
@@ -86,8 +117,12 @@ impl Orchestrator {
                 );
             }
         }
-        let exceeded = policy.token_budget.is_some_and(|limit| tokens >= limit)
-            || policy.cost_budget_usd.is_some_and(|limit| cost >= limit)
+        let exceeded = policy
+            .token_budget
+            .is_some_and(|limit| tokens.saturating_add(tokens_reserved) >= limit)
+            || policy
+                .cost_budget_usd
+                .is_some_and(|limit| cost + cost_reserved_usd >= limit)
             || policy.time_budget_secs.is_some_and(|limit| seconds >= limit);
         Ok(BudgetUsage {
             tokens_used: tokens,
@@ -96,6 +131,14 @@ impl Orchestrator {
             token_budget: policy.token_budget,
             cost_budget_usd: policy.cost_budget_usd,
             time_budget_secs: policy.time_budget_secs,
+            tokens_known: unknown_token_runs == 0,
+            cost_known: unknown_cost_runs == 0,
+            unknown_token_runs,
+            unknown_cost_runs,
+            tokens_reserved,
+            cost_reserved_usd,
+            token_enforcement: aggregate_budget_mode(&token_modes),
+            cost_enforcement: aggregate_budget_mode(&cost_modes),
             exceeded,
         })
     }
@@ -329,7 +372,7 @@ impl Orchestrator {
         let patch = tokio::fs::read(artifact_dir.join(format!("r{}.patch", task.revision)))
             .await
             .unwrap_or_default();
-        let input = latest_run_input(self.store.pool(), &task.id, task.revision).await?;
+        let input = latest_run_input(&self.store, &task.id, task.revision).await?;
         let validation = serde_json::to_vec(&config.validate.steps)
             .map_err(|error| OrchestratorError::Config(error.to_string()))?;
         tokio::fs::create_dir_all(&artifact_dir).await?;
@@ -338,11 +381,33 @@ impl Orchestrator {
             &validation,
         )
         .await?;
-        let git_version = command_version("git", &["--version"]).await;
+        tokio::fs::write(
+            artifact_dir.join(format!("r{}-reproducibility-config.json", task.revision)),
+            serde_json::to_vec(&json!({
+                "lock_environment": config.reproducibility.lock_environment,
+                "hermetic": config.reproducibility.hermetic,
+                "env_allowlist": config.reproducibility.env_allowlist,
+                "external_dependencies": config.reproducibility.external_dependencies,
+                "container_images": config.reproducibility.container_images,
+            }))
+            .map_err(|error| OrchestratorError::Config(error.to_string()))?,
+        )
+        .await?;
+        let worktree = required_path(&task.worktree_path)?;
+        let capture = self
+            .capture_reproducibility_environment(&worktree, config)
+            .await?;
         let mut environment = std::collections::BTreeMap::new();
         environment.insert("orchestrator_os".into(), std::env::consts::OS.into());
         environment.insert("orchestrator_arch".into(), std::env::consts::ARCH.into());
-        environment.insert("orchestrator_git".into(), git_version);
+        environment.insert(
+            "orchestrator_git".into(),
+            capture
+                .tool_versions
+                .get("git")
+                .cloned()
+                .unwrap_or_else(|| "unavailable".into()),
+        );
         environment.insert("developer_provider".into(), task.developer.to_string());
         environment.insert("reviewer_provider".into(), task.reviewer.to_string());
         if let Some(node_id) = task.policy.execution_node_id.as_deref() {
@@ -365,11 +430,14 @@ impl Orchestrator {
             ));
         }
         let created_at = Utc::now().to_rfc3339();
+        let environment_sha256 = capture.sha256();
         let unsigned = json!({
             "task_id": task.id,
             "revision": task.revision,
             "commit_sha": commit_sha,
             "environment": environment,
+            "reproducibility_level": capture.level,
+            "environment_sha256": environment_sha256,
             "input_sha256": sha256_hex(&input),
             "patch_sha256": sha256_hex(&patch),
             "validation_config_sha256": sha256_hex(&validation),
@@ -381,6 +449,16 @@ impl Orchestrator {
             commit_sha,
             manifest_sha256,
             environment,
+            reproducibility_level: capture.level,
+            tool_versions: capture.tool_versions,
+            environment_variables: capture.environment_variables,
+            system_dependencies: capture.system_dependencies,
+            container_image_digests: capture.container_image_digests,
+            git_submodules: capture.git_submodules,
+            git_lfs_objects: capture.git_lfs_objects,
+            external_dependencies: capture.external_dependencies,
+            limitations: capture.limitations,
+            environment_sha256,
             input_sha256: sha256_hex(&input),
             patch_sha256: sha256_hex(&patch),
             validation_config_sha256: sha256_hex(&validation),
@@ -463,73 +541,4 @@ impl Orchestrator {
             .map_err(|error| OrchestratorError::Config(error.to_string()))
     }
 
-    pub async fn task_quality_replay(
-        &self,
-        task_id: &str,
-        revision: Option<i64>,
-    ) -> Result<QualityEvaluation, OrchestratorError> {
-        let mut task = self.task(task_id).await?;
-        task.revision = revision.unwrap_or(task.revision);
-        if task.revision <= 0 {
-            return Err(OrchestratorError::InvalidState(
-                "replay requires a committed revision".into(),
-            ));
-        }
-        let project = self.project(&task.project_id).await?;
-        let sha: String = sqlx::query_scalar(
-            "SELECT commit_sha FROM task_revisions WHERE task_id=? AND revision=?",
-        )
-        .bind(task_id).bind(task.revision).fetch_one(self.store.pool()).await?;
-        let steps_path = self.task_dir(task_id).join("artifacts")
-            .join(format!("r{}-validation-config.json", task.revision));
-        let steps: Vec<ValidateStep> = serde_json::from_slice(&tokio::fs::read(steps_path).await?)
-            .map_err(|error| OrchestratorError::Config(error.to_string()))?;
-        let replay_root = self.app_data.join("replays");
-        tokio::fs::create_dir_all(&replay_root).await?;
-        let replay_path = replay_root.join(Uuid::now_v7().to_string());
-        self.git.worktree_add_detached(&project.repo, &replay_path, &sha).await?;
-        let report_result = self.execute_validation(&task, &replay_path, &steps).await;
-        let _ = self.git.worktree_remove(&project.repo, &replay_path).await;
-        let report = report_result?;
-        let artifact = self.task_dir(task_id).join("artifacts").join(format!(
-            "r{}-replay-{}.json",
-            task.revision,
-            Utc::now().format("%Y%m%dT%H%M%SZ")
-        ));
-        tokio::fs::write(
-            artifact,
-            serde_json::to_vec_pretty(&report)
-                .map_err(|error| OrchestratorError::Config(error.to_string()))?,
-        ).await?;
-        let quality = self.evaluate_quality(&task, &report, true).await?;
-        sqlx::query("INSERT INTO events(task_id,revision,actor,event_type,payload_json,created_at) VALUES(?,?,'human','quality:replayed',?,?)")
-            .bind(task_id).bind(task.revision)
-            .bind(json!({"score":quality.score,"passed":quality.passed}).to_string())
-            .bind(Utc::now().to_rfc3339()).execute(self.store.pool()).await?;
-        Ok(quality)
-    }
-}
-
-async fn latest_run_input(
-    pool: &sqlx::SqlitePool,
-    task_id: &str,
-    revision: i64,
-) -> Result<Vec<u8>, OrchestratorError> {
-    let run_dir: Option<String> = sqlx::query_scalar(
-        "SELECT run_dir FROM agent_runs WHERE task_id=? AND revision=? AND role='developer' ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(task_id).bind(revision).fetch_optional(pool).await?;
-    let Some(run_dir) = run_dir else { return Ok(Vec::new()) };
-    Ok(tokio::fs::read(Path::new(&run_dir).join("input.md")).await.unwrap_or_default())
-}
-
-async fn command_version(program: &str, args: &[&str]) -> String {
-    Command::new(program).args(args).output().await.ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .unwrap_or_else(|| "unavailable".into())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 }

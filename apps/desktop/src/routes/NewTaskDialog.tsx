@@ -72,6 +72,7 @@ export function NewTaskDialog() {
   const [costBudgetUsd, setCostBudgetUsd] = useState(25);
   const [timeBudgetSecs, setTimeBudgetSecs] = useState(7_200);
   const [minimumQualityScore, setMinimumQualityScore] = useState(70);
+  const [priority, setPriority] = useState(0);
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("local_merge");
   const [executionNodeId, setExecutionNodeId] = useState("local");
 
@@ -106,6 +107,7 @@ export function NewTaskDialog() {
     setCostBudgetUsd(25);
     setTimeBudgetSecs(7_200);
     setMinimumQualityScore(70);
+    setPriority(0);
     setDeliveryMode("local_merge");
     setExecutionNodeId("local");
   };
@@ -128,6 +130,7 @@ export function NewTaskDialog() {
         allowApiEgress,
         policy: {
           requirePlanApproval,
+          priority,
           tokenBudget,
           costBudgetUsd,
           timeBudgetSecs,
@@ -292,6 +295,17 @@ export function NewTaskDialog() {
                   {(nodes.data ?? []).filter((node) => node.enabled).map((node) => (
                     <SelectItem key={node.id} value={node.id}>{node.name}{node.status === "online" ? " · 在线" : " · 待检查"}</SelectItem>
                   ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>队列优先级</Label>
+              <Select value={String(priority)} onValueChange={(value) => setPriority(Number(value))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="50">高（优先调度）</SelectItem>
+                  <SelectItem value="0">普通</SelectItem>
+                  <SelectItem value="-20">后台</SelectItem>
                 </SelectContent>
               </Select>
             </div>

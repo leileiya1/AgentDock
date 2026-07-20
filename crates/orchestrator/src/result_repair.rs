@@ -113,7 +113,9 @@ impl Orchestrator {
         if output.exists() {
             tokio::fs::copy(&output, running.run_dir.join("result.json")).await?;
         }
-        match adapter.collect_result(&running.run_dir, role).await {
+        let collected = adapter.collect_result(&running.run_dir, role).await;
+        self.protect_run_files(&running.run_dir).await?;
+        match collected {
             Ok(value) => {
                 self.record_result_repair(task, role, adapter.kind(), "succeeded", "")
                     .await?;

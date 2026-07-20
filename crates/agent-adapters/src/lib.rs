@@ -17,6 +17,36 @@ use thiserror::Error;
 use tokio::{process::Command, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetMode {
+    Hard,
+    Soft,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BudgetCapabilities {
+    pub tokens: BudgetMode,
+    pub cost: BudgetMode,
+}
+
+impl Default for BudgetCapabilities {
+    fn default() -> Self {
+        Self {
+            tokens: BudgetMode::Soft,
+            cost: BudgetMode::Soft,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunBudget {
+    /// Remaining total tokens, including request/context and generated output.
+    pub remaining_tokens: Option<u64>,
+    /// Remaining dollars according to the user-owned pricing snapshot.
+    pub remaining_cost_usd: Option<f64>,
+}
+
 mod credentials;
 mod dynamic;
 use credentials::cli_credential_env;
@@ -68,6 +98,7 @@ pub struct AgentRunRequest {
     pub resume_session_id: Option<String>,
     pub extra_allowed_commands: Vec<String>,
     pub env_denylist: Vec<String>,
+    pub budget: RunBudget,
 }
 #[derive(Debug, Clone)]
 pub struct RunningAgent {
@@ -109,6 +140,9 @@ pub trait AgentProvider: Send + Sync {
     fn kind(&self) -> AgentKind;
     async fn detect(&self, env: &CliEnv) -> Result<AgentInstallation, AdapterError>;
     fn capabilities(&self) -> AgentCapabilities;
+    fn budget_capabilities(&self) -> BudgetCapabilities {
+        BudgetCapabilities::default()
+    }
     async fn start(
         &self,
         req: AgentRunRequest,

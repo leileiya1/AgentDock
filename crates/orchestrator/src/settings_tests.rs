@@ -167,3 +167,160 @@ async fn api_pricing_snapshots_require_a_complete_non_negative_pair()
     assert_eq!(saved.deepseek.output_cost_per_million, Some(1.5));
     Ok(())
 }
+
+#[tokio::test]
+async fn provider_slots_enforce_concurrency_and_rate_limits_across_tasks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let orchestrator = Arc::new(Orchestrator::open(dir.path()).await?);
+    let project = orchestrator
+        .store
+        .import_project("dispatch", "/tmp/dispatch", "main", "/tmp/dispatch-wt")
+        .await?;
+    let first = orchestrator
+        .task_create(
+            &project.id,
+            "first",
+            "dispatch",
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            None,
+            None,
+        )
+        .await?;
+    let second = orchestrator
+        .task_create(
+            &project.id,
+            "second",
+            "dispatch",
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            None,
+            None,
+        )
+        .await?;
+    let project_row = orchestrator.project(&project.id).await?;
+    let mut settings = GlobalSettings {
+        default_provider_max_concurrent: 1,
+        default_provider_requests_per_minute: 600,
+        ..GlobalSettings::default()
+    };
+    orchestrator.settings_update(&settings).await?;
+    orchestrator
+        .acquire_provider_dispatch(
+            &first.id,
+            "slot-first",
+            &AgentKind::ClaudeCode,
+            &project_row,
+        )
+        .await?;
+    let waiting_owner = Arc::clone(&orchestrator);
+    let waiting_project = project_row.clone();
+    let second_id = second.id.clone();
+    let waiting = tokio::spawn(async move {
+        waiting_owner
+            .acquire_provider_dispatch(
+                &second_id,
+                "slot-second",
+                &AgentKind::ClaudeCode,
+                &waiting_project,
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !waiting.is_finished(),
+        "second task bypassed provider concurrency"
+    );
+    orchestrator.release_provider_dispatch("slot-first").await?;
+    tokio::time::timeout(Duration::from_secs(2), waiting).await???;
+    orchestrator
+        .release_provider_dispatch("slot-second")
+        .await?;
+
+    settings.default_provider_requests_per_minute = 1;
+    orchestrator.settings_update(&settings).await?;
+    sqlx::query("DELETE FROM provider_dispatch_history")
+        .execute(orchestrator.store.pool())
+        .await?;
+    orchestrator
+        .acquire_provider_dispatch(
+            &first.id,
+            "rate-first",
+            &AgentKind::ClaudeCode,
+            &project_row,
+        )
+        .await?;
+    orchestrator.release_provider_dispatch("rate-first").await?;
+    let rate_owner = Arc::clone(&orchestrator);
+    let rate_project = project_row.clone();
+    let rate_task = second.id.clone();
+    let rate_wait = tokio::spawn(async move {
+        rate_owner
+            .acquire_provider_dispatch(
+                &rate_task,
+                "rate-second",
+                &AgentKind::ClaudeCode,
+                &rate_project,
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!rate_wait.is_finished(), "RPM limit was not enforced");
+    sqlx::query("UPDATE provider_dispatch_history SET dispatched_at=?")
+        .bind((Utc::now() - chrono::Duration::seconds(61)).to_rfc3339())
+        .execute(orchestrator.store.pool())
+        .await?;
+    tokio::time::timeout(Duration::from_secs(2), rate_wait).await???;
+    orchestrator
+        .release_provider_dispatch("rate-second")
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn exhausted_global_daily_budget_blocks_new_work() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let orchestrator = Orchestrator::open(dir.path()).await?;
+    orchestrator
+        .settings_update(&GlobalSettings {
+            global_daily_cost_usd: Some(1.0),
+            ..GlobalSettings::default()
+        })
+        .await?;
+    let project = orchestrator
+        .store
+        .import_project(
+            "budget",
+            "/tmp/global-budget",
+            "main",
+            "/tmp/global-budget-wt",
+        )
+        .await?;
+    let task = orchestrator
+        .task_create(
+            &project.id,
+            "budget",
+            "global",
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            None,
+            None,
+        )
+        .await?;
+    sqlx::query("UPDATE tasks SET status='READY_FOR_DEVELOPMENT' WHERE id=?")
+        .bind(&task.id)
+        .execute(orchestrator.store.pool())
+        .await?;
+    sqlx::query("INSERT INTO agent_runs(id,task_id,revision,role,agent,status,cost_usd,run_dir,timeout_secs,idle_timeout_secs,created_at) VALUES('spent-global',?,0,'planner','claude_code','SUCCEEDED',1.0,'/tmp/spent',1,1,?)")
+        .bind(&task.id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(orchestrator.store.pool())
+        .await?;
+    let row = orchestrator.task(&task.id).await?;
+    assert!(orchestrator.enforce_global_budget(&row).await?);
+    let summary = orchestrator.task_get(&task.id).await?.summary;
+    assert_eq!(summary.status, TaskStatus::Blocked);
+    assert_eq!(summary.blocked_reason, Some(BlockedReason::BudgetExceeded));
+    Ok(())
+}

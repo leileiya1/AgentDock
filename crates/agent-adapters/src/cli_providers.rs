@@ -13,6 +13,13 @@ impl AgentProvider for ClaudeCodeAdapter {
             supports_review: true,
         }
     }
+    fn budget_capabilities(&self) -> BudgetCapabilities {
+        BudgetCapabilities {
+            tokens: BudgetMode::Soft,
+            // Claude Code enforces this inside the CLI with --max-budget-usd.
+            cost: BudgetMode::Hard,
+        }
+    }
     async fn detect(&self, env: &CliEnv) -> Result<AgentInstallation, AdapterError> {
         detect_cli(
             "claude",
@@ -95,6 +102,9 @@ fn claude_args(req: &AgentRunRequest) -> Vec<String> {
     }
     if let Some(session_id) = &req.resume_session_id {
         args.extend(["--resume".into(), session_id.clone()]);
+    }
+    if let Some(remaining) = req.budget.remaining_cost_usd {
+        args.extend(["--max-budget-usd".into(), format!("{remaining:.6}")]);
     }
     args
 }

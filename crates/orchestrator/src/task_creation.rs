@@ -9,16 +9,34 @@ impl Orchestrator {
             .and_then(|value| value.to_str())
             .unwrap_or("project");
         let branch = self.git.default_branch(&canonical).await?;
+        let compatibility = self.git.compatibility_report(&canonical).await?;
         let root = self.app_data.join("wt");
         Ok(self
             .store
-            .import_project(
+            .import_project_identified(
                 name,
                 &canonical.to_string_lossy(),
                 &branch,
                 &root.to_string_lossy(),
+                Some(&compatibility.repository_identity),
             )
             .await?)
+    }
+
+    pub async fn project_git_compatibility(
+        &self,
+        project_id: &str,
+    ) -> Result<GitCompatibilityReport, OrchestratorError> {
+        let project = self.project(project_id).await?;
+        if !project.repo.exists() {
+            return Err(OrchestratorError::InvalidState(
+                "PROJECT_RELOCATED: re-import the repository from its new path".into(),
+            ));
+        }
+        self.git
+            .compatibility_report(&project.repo)
+            .await
+            .map_err(Into::into)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -213,7 +231,8 @@ impl Orchestrator {
 }
 
 fn validate_task_policy(policy: &TaskPolicy) -> Result<(), OrchestratorError> {
-    if policy.token_budget.is_some_and(|value| value <= 0)
+    if !(-100..=100).contains(&policy.priority)
+        || policy.token_budget.is_some_and(|value| value <= 0)
         || policy.cost_budget_usd.is_some_and(|value| value <= 0.0 || !value.is_finite())
         || policy.time_budget_secs.is_some_and(|value| value <= 0)
         || policy.minimum_quality_score > 100
