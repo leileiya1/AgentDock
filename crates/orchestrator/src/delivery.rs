@@ -54,8 +54,8 @@ impl Orchestrator {
             ),
             DeliveryMode::LocalMerge => return Ok(()),
         };
-        let create_output = run_scm_allow_failure(program, &create).await?;
-        let view_output = run_scm(program, &view).await.or_else(|_| {
+        let create_output = run_scm_allow_failure(program, &create, &project.repo).await?;
+        let view_output = run_scm(program, &view, &project.repo).await.or_else(|_| {
             if create_output.status.success() {
                 Ok(String::from_utf8_lossy(&create_output.stdout).to_string())
             } else {
@@ -87,6 +87,7 @@ impl Orchestrator {
         if task.policy.delivery_mode == DeliveryMode::LocalMerge {
             return self.store.task_summary(task_id).await.map_err(Into::into);
         }
+        let project = self.project(&task.project_id).await?;
         let branch = task.branch.as_deref()
             .ok_or_else(|| OrchestratorError::InvalidState("branch missing".into()))?;
         let (program, args) = match task.policy.delivery_mode {
@@ -94,7 +95,10 @@ impl Orchestrator {
             DeliveryMode::GitLabMr => ("glab", vec!["mr", "view", branch, "--output", "json"]),
             DeliveryMode::LocalMerge => unreachable!(),
         };
-        let snapshot = parse_delivery_snapshot(task.policy.delivery_mode, &run_scm(program, &args).await?);
+        let snapshot = parse_delivery_snapshot(
+            task.policy.delivery_mode,
+            &run_scm(program, &args, &project.repo).await?,
+        );
         let now = Utc::now().to_rfc3339();
         sqlx::query("UPDATE delivery_records SET state=?,remote_url=?,request_number=?,ci_status=?,merge_commit=COALESCE(?,merge_commit),updated_at=? WHERE task_id=?")
             .bind(snapshot.state.to_string()).bind(&snapshot.url).bind(snapshot.number)
@@ -104,7 +108,6 @@ impl Orchestrator {
             && snapshot.ci_status == CiStatus::Passed
             && matches!(task.status, TaskStatus::Approved | TaskStatus::MergeConflict)
         {
-            let project = self.project(&task.project_id).await?;
             if let Some(worktree) = task.worktree_path.as_ref() {
                 let _ = self.git.worktree_remove(&project.repo, worktree).await;
             }
@@ -233,8 +236,8 @@ fn parse_delivery_snapshot(mode: DeliveryMode, text: &str) -> DeliverySnapshot {
     }
 }
 
-async fn run_scm(program: &str, args: &[&str]) -> Result<String, OrchestratorError> {
-    let output = run_scm_allow_failure(program, args).await?;
+async fn run_scm(program: &str, args: &[&str], cwd: &Path) -> Result<String, OrchestratorError> {
+    let output = run_scm_allow_failure(program, args, cwd).await?;
     if !output.status.success() {
         return Err(OrchestratorError::InvalidState(
             agentflow_process_supervisor::redact(
@@ -248,10 +251,15 @@ async fn run_scm(program: &str, args: &[&str]) -> Result<String, OrchestratorErr
 async fn run_scm_allow_failure(
     program: &str,
     args: &[&str],
+    cwd: &Path,
 ) -> Result<std::process::Output, OrchestratorError> {
     tokio::time::timeout(
         Duration::from_secs(120),
-        Command::new(program).args(args).stdin(std::process::Stdio::null()).output(),
+        Command::new(program)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .output(),
     ).await.map_err(|_|OrchestratorError::InvalidState(format!("{program} timed out")))?
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -272,6 +280,29 @@ fn extract_http_url(text: &str) -> Option<String> {
 #[cfg(test)]
 mod delivery_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn scm_commands_run_inside_the_project_repository() -> anyhow::Result<()> {
+        let repository = tempfile::tempdir()?;
+        let init = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(repository.path())
+            .output()
+            .await?;
+        anyhow::ensure!(init.status.success(), "git init failed");
+
+        let actual = run_scm(
+            "git",
+            &["rev-parse", "--show-toplevel"],
+            repository.path(),
+        )
+        .await?;
+        assert_eq!(
+            Path::new(actual.trim()).canonicalize()?,
+            repository.path().canonicalize()?,
+        );
+        Ok(())
+    }
 
     #[test]
     fn github_snapshot_maps_ci_and_merge_state() {

@@ -1,5 +1,10 @@
 name: CI
-on: [push, pull_request]
+on:
+  # Branch work is validated by its pull request. Restricting push builds to main
+  # avoids running the same commit twice after a PR has been opened.
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
   core:
