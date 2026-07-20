@@ -38,7 +38,51 @@ impl Orchestrator {
             .await?
             .map_or(configured_timeout, |remaining| configured_timeout.min(remaining));
         let idle_timeout_secs = settings.idle_timeout_secs.unwrap_or(300);
-        sqlx::query("INSERT INTO agent_runs(id,task_id,revision,role,agent,status,run_dir,timeout_secs,idle_timeout_secs,started_at,created_at) VALUES(?,?,?,?,?,'RUNNING',?,?,?,?,?)")
+        let usage = self.budget_usage(&task.id).await?;
+        let remaining_tokens = usage.token_budget.map(|limit| {
+            limit
+                .saturating_sub(usage.tokens_used)
+                .saturating_sub(usage.tokens_reserved)
+                .max(0) as u64
+        });
+        let task_remaining_cost = usage
+            .cost_budget_usd
+            .map(|limit| (limit - usage.cost_usd - usage.cost_reserved_usd).max(0.0));
+        let global_remaining_cost = self.global_daily_cost_remaining().await?;
+        if global_remaining_cost.is_some()
+            && adapter.budget_capabilities().cost != BudgetMode::Hard
+        {
+            return Err(OrchestratorError::InvalidState(format!(
+                "GLOBAL_BUDGET_UNENFORCEABLE: {} cannot enforce a hard cost ceiling",
+                adapter.kind()
+            )));
+        }
+        let remaining_cost_usd = match (task_remaining_cost, global_remaining_cost) {
+            (Some(task), Some(global)) => Some(task.min(global)),
+            (Some(task), None) => Some(task),
+            (None, Some(global)) => Some(global),
+            (None, None) => None,
+        };
+        if remaining_tokens == Some(0) || remaining_cost_usd == Some(0.0) {
+            return Err(OrchestratorError::InvalidState(
+                "BUDGET_EXCEEDED: no budget remains for another Provider run".into(),
+            ));
+        }
+        let budget = RunBudget {
+            remaining_tokens,
+            remaining_cost_usd,
+        };
+        let budget_capabilities = adapter.budget_capabilities();
+        let token_mode = budget_mode_text(budget_capabilities.tokens);
+        let cost_mode = budget_mode_text(budget_capabilities.cost);
+        let reserved_tokens = (budget_capabilities.tokens == BudgetMode::Hard)
+            .then_some(remaining_tokens)
+            .flatten()
+            .map(|value| value.min(i64::MAX as u64) as i64);
+        let reserved_cost = (budget_capabilities.cost == BudgetMode::Hard)
+            .then_some(remaining_cost_usd)
+            .flatten();
+        sqlx::query("INSERT INTO agent_runs(id,task_id,revision,role,agent,status,run_dir,timeout_secs,idle_timeout_secs,started_at,created_at,token_budget_mode,cost_budget_mode,reserved_tokens,reserved_cost_usd) VALUES(?,?,?,?,?,'RUNNING',?,?,?,?,?,?,?,?,?)")
             .bind(&run_id)
             .bind(&task.id)
             .bind(task.revision)
@@ -49,13 +93,24 @@ impl Orchestrator {
             .bind(idle_timeout_secs as i64)
             .bind(&now)
             .bind(&now)
+            .bind(token_mode)
+            .bind(cost_mode)
+            .bind(reserved_tokens)
+            .bind(reserved_cost)
             .execute(self.store.pool())
             .await?;
+        let cancellation = CancellationToken::new();
         let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);
         let events_path = run_dir.join("agent-events.jsonl");
+        let live_cancel = cancellation.clone();
+        let live_provider = adapter.kind();
+        let live_budget = budget.clone();
         let sink = tokio::spawn(async move {
             let mut file = tokio::fs::File::create(events_path).await?;
             while let Some(event) = rx.recv().await {
+                if live_budget_exceeded(&live_provider, &event, &live_budget) {
+                    live_cancel.cancel();
+                }
                 let mut line = serde_json::to_vec(&event)?;
                 line.push(b'\n');
                 file.write_all(&line).await?;
@@ -110,8 +165,19 @@ impl Orchestrator {
             resume_session_id,
             extra_allowed_commands: config.agents.extra_allowed_commands.clone(),
             env_denylist: project.settings.env_denylist.clone(),
+            budget,
         };
-        let cancellation = CancellationToken::new();
+        if let Err(error) = self
+            .acquire_provider_dispatch(&task.id, &run_id, &adapter.kind(), project)
+            .await
+        {
+            sqlx::query("UPDATE agent_runs SET status='FAILED',finished_at=? WHERE id=?")
+                .bind(Utc::now().to_rfc3339())
+                .bind(&run_id)
+                .execute(self.store.pool())
+                .await?;
+            return Err(error);
+        }
         self.register_cancellation(&task.id, cancellation.clone());
         let task_status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?")
             .bind(&task.id)
@@ -149,16 +215,65 @@ impl Orchestrator {
         let running = match started {
             Ok(running) => running,
             Err(error) => {
-                sqlx::query("UPDATE agent_runs SET status='FAILED',finished_at=? WHERE id=?")
+                let failed = sqlx::query(
+                    "UPDATE agent_runs SET status='FAILED',finished_at=? WHERE id=?",
+                )
                     .bind(Utc::now().to_rfc3339())
                     .bind(&run_id)
                     .execute(self.store.pool())
-                    .await?;
+                    .await;
+                let released = self.release_provider_dispatch(&run_id).await;
+                failed?;
+                released?;
+                self.protect_run_files(run_dir).await?;
                 return Err(error.into());
             }
         };
-        self.finish_agent_run(&run_id, adapter.kind(), &running)
-            .await?;
+        let finished = self.finish_agent_run(&run_id, adapter.kind(), &running).await;
+        let released = self.release_provider_dispatch(&run_id).await;
+        finished?;
+        released?;
+        if running.outcome.exit_code != Some(0)
+            || running.outcome.cancelled
+            || running.outcome.timed_out
+        {
+            self.protect_run_files(&running.run_dir).await?;
+        }
         Ok(running)
     }
+}
+
+fn budget_mode_text(mode: BudgetMode) -> &'static str {
+    match mode {
+        BudgetMode::Hard => "hard",
+        BudgetMode::Soft => "soft",
+        BudgetMode::Unavailable => "unavailable",
+    }
+}
+
+/// Providers that emit cumulative usage before exit can be cancelled immediately.
+/// Providers without such events remain explicitly `soft`; API and Claude cost caps
+/// are enforced inside the Provider request/CLI instead.
+fn live_budget_exceeded(provider: &AgentKind, event: &AgentEvent, budget: &RunBudget) -> bool {
+    let Some(raw) = event.text.as_deref() else {
+        return false;
+    };
+    let telemetry = if provider == &AgentKind::ClaudeCode {
+        parse_claude_telemetry(raw)
+    } else if provider == &AgentKind::Codex {
+        parse_codex_telemetry(raw)
+    } else {
+        return false;
+    };
+    let tokens = telemetry
+        .tokens_in
+        .zip(telemetry.tokens_out)
+        .map(|(input, output)| input.saturating_add(output).max(0) as u64);
+    tokens
+        .zip(budget.remaining_tokens)
+        .is_some_and(|(used, remaining)| used > remaining)
+        || telemetry
+            .cost_usd
+            .zip(budget.remaining_cost_usd)
+            .is_some_and(|(used, remaining)| used > remaining)
 }

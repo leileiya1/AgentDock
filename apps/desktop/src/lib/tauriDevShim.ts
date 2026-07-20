@@ -13,9 +13,11 @@ import type {
   DiffPayload,
   EnvReport,
   ExecutionNode,
+  GitCompatibilityReport,
   GlobalSettings,
   OnboardingReport,
   Project,
+  ProjectConfigTrust,
   ProjectSettings,
   ProviderDescriptor,
   Review,
@@ -149,6 +151,7 @@ const SUMMARIES: TaskSummary[] = [
 
 const DEMO_POLICY = {
   requirePlanApproval: true,
+  priority: 0,
   tokenBudget: 500_000,
   costBudgetUsd: 25,
   timeBudgetSecs: 7_200,
@@ -164,6 +167,14 @@ const DEMO_BUDGET = {
   tokenBudget: 500_000,
   costBudgetUsd: 25,
   timeBudgetSecs: 7_200,
+  tokensKnown: true,
+  costKnown: true,
+  unknownTokenRuns: 0,
+  unknownCostRuns: 0,
+  tokensReserved: 0,
+  costReservedUsd: 0,
+  tokenEnforcement: "hard" as const,
+  costEnforcement: "hard" as const,
   exceeded: false,
 };
 
@@ -309,6 +320,13 @@ const REVIEW: Review = {
 
 const SETTINGS: GlobalSettings = {
   maxConcurrentRuns: 2,
+  schedulerPaused: false,
+  runWindowStart: null,
+  runWindowEnd: null,
+  globalDailyCostUsd: null,
+  defaultProviderMaxConcurrent: 1,
+  defaultProviderRequestsPerMinute: 30,
+  providerLimits: [],
   developerTimeoutSecs: 1800,
   reviewerTimeoutSecs: 900,
   idleTimeoutSecs: 300,
@@ -327,6 +345,34 @@ const PROJECT_SETTINGS: ProjectSettings = {
   reviewerFallbacks: ["codex", "deepseek_api"],
 };
 
+const PROJECT_CONFIG_TRUST: ProjectConfigTrust = {
+  exists: true,
+  path: "/Users/dev/project/.agentflow/project.toml",
+  sha256: "3ea76c270b7f8aa6500d05bb8d8c6bb18f36cb23db72a62254d70b93cb61c323",
+  trusted: false,
+  validationSteps: ["unit tests", "typecheck"],
+  extraAllowedCommands: ["bun test"],
+  approvedAt: null,
+};
+
+const GIT_COMPATIBILITY: GitCompatibilityReport = {
+  repoPath: "/Users/dev/project",
+  repositoryIdentity: "8a9e2d7f3c1b",
+  shallow: false,
+  sparseCheckout: false,
+  sparsePatterns: [],
+  submodules: [],
+  lfsTracked: false,
+  lfsAvailable: true,
+  sshRemote: true,
+  sshAgentAvailable: true,
+  networkFilesystem: false,
+  caseInsensitive: true,
+  caseCollisions: [],
+  warnings: [],
+  blockers: [],
+};
+
 const STORAGE: StorageReport = {
   dataDir: "/Users/dev/Library/Application Support/com.agentflow.desktop",
   totalBytes: 348 * 1024 ** 2,
@@ -337,6 +383,10 @@ const STORAGE: StorageReport = {
   cacheBytes: 14 * 1024 ** 2,
   trashBytes: 0,
   trashEntries: 0,
+  databaseIntegrityOk: true,
+  encryptedBackups: 3,
+  latestBackupAt: iso(-HOUR),
+  runLogsEncrypted: true,
 };
 
 const ONBOARDING: OnboardingReport = {
@@ -401,6 +451,8 @@ function handle(cmd: string, payload: any): unknown {
       return [PROJECT];
     case "project_import":
       return PROJECT;
+    case "project_git_compatibility":
+      return GIT_COMPATIBILITY;
     case "task_list":
       return SUMMARIES;
     case "task_get":
@@ -421,6 +473,12 @@ function handle(cmd: string, payload: any): unknown {
       return DETAILS.get(args.taskId) ?? DETAILS.get("t12");
     case "task_create":
       return DETAILS.get("t12");
+    case "queue_task_pause":
+      return { taskId: args.taskId, paused: true, priority: null };
+    case "queue_task_resume":
+      return { taskId: args.taskId, paused: false, priority: null };
+    case "queue_task_priority":
+      return { taskId: args.taskId, paused: null, priority: args.priority };
     case "events_list":
       return events(args.taskId ?? "t12");
     case "run_list":
@@ -449,12 +507,24 @@ function handle(cmd: string, payload: any): unknown {
     case "project_settings_get":
     case "project_settings_update":
       return PROJECT_SETTINGS;
+    case "project_config_trust_get":
+      return PROJECT_CONFIG_TRUST;
+    case "project_config_trust_approve":
+      return { ...PROJECT_CONFIG_TRUST, trusted: true, approvedAt: iso(0) };
+    case "project_config_trust_revoke":
+      return { ...PROJECT_CONFIG_TRUST, trusted: false, approvedAt: null };
     case "storage_report":
       return STORAGE;
     case "storage_cleanup":
     case "task_cleanup":
     case "trash_empty":
       return { filesRemoved: 0, bytesReclaimed: 0, tasksTrashed: 0, tasksPurged: 0 };
+    case "database_backup_list":
+      return [{ path: "/tmp/agentflow-backup.afbak", bytes: 1024, createdAt: iso(-HOUR) }];
+    case "database_backup_create":
+      return { path: "/tmp/agentflow-backup.afbak", bytes: 1024, createdAt: iso(0) };
+    case "database_backup_restore":
+      return { restoredBackup: args.path, previousDatabase: "/tmp/pre-restore.db", restartRequired: true };
     case "trash_list":
       return [];
     case "task_restore":

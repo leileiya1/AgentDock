@@ -16,6 +16,7 @@ mod tests {
             resume_session_id: None,
             extra_allowed_commands: Vec::new(),
             env_denylist: Vec::new(),
+            budget: RunBudget::default(),
         }
     }
 
@@ -186,6 +187,21 @@ mod tests {
     }
 
     #[test]
+    fn claude_cost_budget_is_hard_but_cli_tokens_are_explicitly_soft() {
+        let mut request = test_request(RunRole::Developer, PermissionTier::Normal);
+        request.budget.remaining_cost_usd = Some(1.25);
+        let args = claude_args(&request);
+        let Some(position) = args.iter().position(|arg| arg == "--max-budget-usd") else {
+            panic!("Claude cost cap was not forwarded");
+        };
+        assert_eq!(args.get(position + 1).map(String::as_str), Some("1.250000"));
+        let caps = ClaudeCodeAdapter::default().budget_capabilities();
+        assert_eq!(caps.tokens, BudgetMode::Soft);
+        assert_eq!(caps.cost, BudgetMode::Hard);
+        assert_eq!(CodexAdapter::new("codex", "review.json").budget_capabilities().cost, BudgetMode::Soft);
+    }
+
+    #[test]
     fn claude_resume_is_explicit_and_opaque() {
         let mut request = test_request(RunRole::Developer, PermissionTier::Normal);
         assert!(!claude_args(&request).iter().any(|value| value == "--resume"));
@@ -327,7 +343,12 @@ mod tests {
             ApiProviderAdapter::new(AgentKind::DeepSeekApi, settings).with_api_key("test-key");
         let (tx, _rx) = mpsc::channel(1);
         let output = adapter
-            .call_api("review this diff", &CancellationToken::new(), &tx)
+            .call_api(
+                "review this diff",
+                &RunBudget::default(),
+                &CancellationToken::new(),
+                &tx,
+            )
             .await?;
         assert!(output.text.contains("\"decision\":\"pass\""));
         assert!(server.await??);
@@ -391,7 +412,12 @@ mod tests {
             ApiProviderAdapter::new(AgentKind::DeepSeekApi, settings).with_api_key("test-key");
         let (tx, mut rx) = mpsc::channel(4);
         let output = adapter
-            .call_api("review this diff", &CancellationToken::new(), &tx)
+            .call_api(
+                "review this diff",
+                &RunBudget::default(),
+                &CancellationToken::new(),
+                &tx,
+            )
             .await?;
         assert!(output.text.contains("quota retry recovered"));
         assert!(rx
@@ -468,6 +494,7 @@ mod tests {
                     resume_session_id: None,
                     extra_allowed_commands: Vec::new(),
                     env_denylist: Vec::new(),
+                    budget: RunBudget::default(),
                 },
                 CancellationToken::new(),
                 tx,

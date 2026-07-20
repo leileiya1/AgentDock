@@ -21,6 +21,13 @@
     "notes": {
       "type": "string"
     },
+    "plan_sha256": {
+      "description": "Echo of the exact approved coding plan, or null for tasks without a plan gate.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "question": {
       "type": "string"
     },

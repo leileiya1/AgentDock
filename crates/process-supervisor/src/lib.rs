@@ -1,8 +1,10 @@
 use agentflow_contracts::{AgentEvent, AgentEventKind, EventStream};
 use chrono::Utc;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    fs::OpenOptions,
     path::PathBuf,
     process::Stdio,
     sync::Arc,
@@ -11,7 +13,7 @@ use std::{
 use thiserror::Error;
 use tokio::{
     fs::File,
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::AsyncReadExt,
     process::{Child, Command},
     sync::{Mutex, mpsc},
 };
@@ -38,7 +40,7 @@ pub struct ProcessSpec {
     /// Written immediately after spawn so a restarted daemon can identify and clean up orphans.
     pub lease_path: PathBuf,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessOutcome {
     pub pid: u32,
     pub started_at: String,
@@ -65,12 +67,27 @@ pub async fn run(
     if let Some(parent) = spec.stdout_path.parent() {
         tokio::fs::create_dir_all(parent).await?
     }
-    let mut cmd = Command::new(&spec.program);
-    cmd.args(&spec.args)
-        .current_dir(&spec.cwd)
+    let stdout_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&spec.stdout_path)?;
+    let stderr_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&spec.stderr_path)?;
+    let outcome_path = spec
+        .lease_path
+        .parent()
+        .unwrap_or(&spec.cwd)
+        .join("process-outcome.json");
+    let mut cmd = durable_command(&spec, &outcome_path);
+    cmd.current_dir(&spec.cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        // Direct file descriptors survive a daemon crash; an abandoned pipe does not.
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
     for key in &spec.env_denylist {
         cmd.env_remove(key);
     }
@@ -88,28 +105,22 @@ pub async fn run(
         let _ = child.wait().await;
         return Err(error.into());
     }
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or(SupervisorError::MissingPipe("stdout"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or(SupervisorError::MissingPipe("stderr"))?;
     let activity = Arc::new(Mutex::new(Instant::now()));
-    let out_task = tokio::spawn(pump(
-        stdout,
+    let log_stop = CancellationToken::new();
+    let _log_stop_on_supervisor_drop = log_stop.clone().drop_guard();
+    let out_task = tokio::spawn(tail_durable_log(
         spec.stdout_path,
         EventStream::Stdout,
         event_tx.clone(),
         activity.clone(),
+        log_stop.clone(),
     ));
-    let err_task = tokio::spawn(pump(
-        stderr,
+    let err_task = tokio::spawn(tail_durable_log(
         spec.stderr_path,
         EventStream::Stderr,
         event_tx,
         activity.clone(),
+        log_stop.clone(),
     ));
     let absolute = tokio::time::sleep(spec.timeout);
     tokio::pin!(absolute);
@@ -124,61 +135,155 @@ pub async fn run(
             _=idle.tick()=>{if activity.lock().await.elapsed()>=spec.idle_timeout{timed_out=true;terminate_tree(&mut child,pid,Some(&lease)).await?;break child.wait().await?}}
         }
     };
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    log_stop.cancel();
     let a = out_task.await??;
     let b = err_task.await??;
     let _ = tokio::fs::remove_file(&spec.lease_path).await;
-    Ok(ProcessOutcome {
+    let outcome = ProcessOutcome {
         pid,
         started_at,
         exit_code: status.code(),
         timed_out,
         cancelled,
         log_truncated: a || b,
-    })
+    };
+    write_process_outcome(&outcome_path, &outcome).await?;
+    Ok(outcome)
 }
 
-async fn pump<R: tokio::io::AsyncRead + Unpin>(
-    reader: R,
+fn durable_command(spec: &ProcessSpec, outcome_path: &std::path::Path) -> Command {
+    #[cfg(unix)]
+    {
+        // This wrapper is a child process, so it can persist the real exit code after the daemon
+        // has disappeared. Positional arguments avoid leaking the private marker path to Provider
+        // environment variables.
+        let script = concat!(
+            "outcome=$1; shift; \"$@\"; code=$?; umask 077; ",
+            "tmp=\"${outcome}.tmp.$$\"; ",
+            "printf '{\"exit_code\":%s}\\n' \"$code\" > \"$tmp\" && mv \"$tmp\" \"$outcome\"; ",
+            "exit \"$code\""
+        );
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .arg("agentflow-process-runner")
+            .arg(outcome_path)
+            .arg(&spec.program)
+            .args(&spec.args);
+        command
+    }
+    #[cfg(not(unix))]
+    {
+        let mut command = Command::new(&spec.program);
+        command.args(&spec.args);
+        command
+    }
+}
+
+#[derive(Deserialize)]
+struct ExitMarker {
+    exit_code: i32,
+}
+
+pub async fn read_process_exit_code(path: &std::path::Path) -> Result<i32, std::io::Error> {
+    let bytes = tokio::fs::read(path).await?;
+    serde_json::from_slice::<ExitMarker>(&bytes)
+        .map(|marker| marker.exit_code)
+        .map_err(std::io::Error::other)
+}
+
+async fn write_process_outcome(
+    path: &std::path::Path,
+    outcome: &ProcessOutcome,
+) -> Result<(), std::io::Error> {
+    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
+    tokio::fs::write(
+        &temp,
+        serde_json::to_vec(outcome).map_err(std::io::Error::other)?,
+    )
+    .await?;
+    tokio::fs::rename(temp, path).await
+}
+
+async fn tail_durable_log(
     path: PathBuf,
     stream: EventStream,
     tx: mpsc::Sender<AgentEvent>,
     activity: Arc<Mutex<Instant>>,
+    stop: CancellationToken,
 ) -> Result<bool, std::io::Error> {
-    let mut reader = BufReader::new(reader);
-    let mut file = File::create(path).await?;
-    let mut line = Vec::new();
-    let mut written = 0u64;
+    let mut file = File::open(path).await?;
+    let mut pending = Vec::new();
+    let mut buffer = vec![0_u8; 8192];
+    let mut read = 0_u64;
     let mut truncated = false;
     loop {
-        line.clear();
-        let n = reader.read_until(b'\n', &mut line).await?;
-        if n == 0 {
+        let n = file.read(&mut buffer).await?;
+        if n > 0 {
+            read = read.saturating_add(n as u64);
+            *activity.lock().await = Instant::now();
+            if read > MAX_LOG_BYTES {
+                truncated = true;
+            } else {
+                pending.extend_from_slice(&buffer[..n]);
+                while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                    let line = pending.drain(..=end).collect::<Vec<_>>();
+                    send_log_event(&tx, stream, &line).await;
+                }
+            }
+            continue;
+        }
+        if stop.is_cancelled() {
+            if !pending.is_empty() {
+                send_log_event(&tx, stream, &pending).await;
+            }
             break;
         }
-        *activity.lock().await = Instant::now();
-        if written < MAX_LOG_BYTES {
-            let remaining = (MAX_LOG_BYTES - written) as usize;
-            let part = &line[..line.len().min(remaining)];
-            file.write_all(part).await?;
-            written += part.len() as u64;
-            if part.len() < line.len() {
-                truncated = true
-            }
-        } else {
-            truncated = true
-        }
-        let raw = String::from_utf8_lossy(&line).trim().to_string();
-        let (kind, summary) = classify_and_summarize(&raw);
-        let event = AgentEvent {
-            ts: Utc::now().to_rfc3339(),
-            stream,
-            kind,
-            summary: redact(summary),
-            text: Some(redact(raw)),
-        };
-        let _ = tx.send(event).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     Ok(truncated)
+}
+
+async fn send_log_event(tx: &mpsc::Sender<AgentEvent>, stream: EventStream, line: &[u8]) {
+    let raw = String::from_utf8_lossy(line).trim().to_string();
+    if raw.is_empty() {
+        return;
+    }
+    let (kind, summary) = classify_and_summarize(&raw);
+    let event = AgentEvent {
+        ts: Utc::now().to_rfc3339(),
+        stream,
+        kind,
+        summary: redact(summary),
+        text: Some(redact(raw)),
+    };
+    let _ = tx.send(event).await;
+}
+
+/// Rebuild the stable UI event stream from durable Provider logs after a daemon crash. The
+/// original logs remain authoritative; ordering between stdout and stderr is intentionally not
+/// guessed when their parent process was unavailable.
+pub async fn replay_durable_logs(
+    stdout: &std::path::Path,
+    stderr: &std::path::Path,
+) -> Result<Vec<AgentEvent>, std::io::Error> {
+    let mut events = Vec::new();
+    for (path, stream) in [(stdout, EventStream::Stdout), (stderr, EventStream::Stderr)] {
+        let text = tokio::fs::read_to_string(path).await.unwrap_or_default();
+        for raw in text.lines().filter(|line| !line.trim().is_empty()) {
+            let (kind, summary) = classify_and_summarize(raw);
+            events.push(AgentEvent {
+                ts: Utc::now().to_rfc3339(),
+                stream,
+                kind,
+                summary: redact(summary),
+                text: Some(redact(raw.to_string())),
+            });
+        }
+    }
+    Ok(events)
 }
 /// Convert provider-specific JSONL into a small stable vocabulary for the UI. The complete,
 /// redacted line remains in `AgentEvent.text`, so summarisation never destroys diagnostics.
@@ -437,116 +542,4 @@ async fn terminate_tree(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cancellation_terminates_the_leased_process_group()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let lease_path = root.path().join("process-lease.json");
-        let child_pid_path = root.path().join("child.pid");
-        let mut env = HashMap::new();
-        env.insert(
-            "CHILD_PID_FILE".into(),
-            child_pid_path.to_string_lossy().into_owned(),
-        );
-        let spec = ProcessSpec {
-            program: "/bin/sh".into(),
-            args: vec![
-                "-c".into(),
-                "sleep 30 & echo $! > \"$CHILD_PID_FILE\"; wait".into(),
-            ],
-            cwd: root.path().into(),
-            env,
-            env_denylist: Vec::new(),
-            timeout: Duration::from_secs(30),
-            idle_timeout: Duration::from_secs(30),
-            stdout_path: root.path().join("stdout.log"),
-            stderr_path: root.path().join("stderr.log"),
-            lease_path: lease_path.clone(),
-        };
-        let cancellation = CancellationToken::new();
-        let (tx, mut rx) = mpsc::channel(8);
-        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        let run = tokio::spawn(super::run(spec, cancellation.clone(), tx));
-        for _ in 0..100 {
-            if lease_path.exists() && child_pid_path.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let lease = read_process_lease(&lease_path).await?;
-        assert_eq!(inspect_process_lease(&lease), LeaseState::Alive);
-        cancellation.cancel();
-        let outcome = run.await??;
-        drain.await?;
-        assert!(outcome.cancelled);
-        assert_eq!(inspect_process_lease(&lease), LeaseState::Exited);
-
-        let child_pid: u32 = tokio::fs::read_to_string(child_pid_path)
-            .await?
-            .trim()
-            .parse()?;
-        let system = sysinfo::System::new_all();
-        let child_is_live = system
-            .process(sysinfo::Pid::from_u32(child_pid))
-            .is_some_and(|process| {
-                !matches!(
-                    process.status(),
-                    sysinfo::ProcessStatus::Dead | sysinfo::ProcessStatus::Zombie
-                )
-            });
-        assert!(
-            !child_is_live,
-            "grandchild survived process-group cancellation"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn codex_events_become_short_process_summaries() {
-        let (kind, summary) = classify_and_summarize(
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"实现完成，正在运行测试。"}}"#,
-        );
-        assert_eq!(kind, AgentEventKind::AssistantText);
-        assert_eq!(summary, "实现完成，正在运行测试。");
-
-        let (kind, summary) = classify_and_summarize(
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"schema_version\":1,\"summary\":\"已完成改动并通过测试。\"}"}}"#,
-        );
-        assert_eq!(kind, AgentEventKind::Result);
-        assert_eq!(summary, "已完成改动并通过测试。");
-
-        let (kind, summary) = classify_and_summarize(
-            r#"{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"/tmp/src/main.rs"},{"path":"/tmp/README.md"}],"status":"completed"}}"#,
-        );
-        assert_eq!(kind, AgentEventKind::ToolUse);
-        assert_eq!(summary, "已修改：main.rs、README.md");
-    }
-
-    #[test]
-    fn claude_events_hide_transport_json() {
-        let (kind, summary) = classify_and_summarize(
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/review-input.md"}}]}}"#,
-        );
-        assert_eq!(kind, AgentEventKind::ToolUse);
-        assert_eq!(summary, "调用 Read：/tmp/review-input.md");
-
-        let (kind, summary) = classify_and_summarize(
-            r#"{"type":"result","result":"{\"summary\":\"审查通过，没有阻断问题。\"}"}"#,
-        );
-        assert_eq!(kind, AgentEventKind::Result);
-        assert_eq!(summary, "审查通过，没有阻断问题。");
-    }
-
-    #[test]
-    fn secrets_are_redacted() {
-        let s = redact(
-            "Authorization: Bearer abc password=hunter2 ghp_abcdefghijklmnopqrstuvwxyz".into(),
-        );
-        assert!(!s.contains("hunter2"));
-        assert!(!s.contains("abcdefghijklmnopqrstuvwxyz"));
-    }
-}
+mod tests;

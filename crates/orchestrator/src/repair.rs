@@ -179,10 +179,17 @@ impl Orchestrator {
         project: &ProjectRow,
         worktree: &Path,
     ) -> Result<(), OrchestratorError> {
-        let expected = project
+        let expected = isolated_worktree_path(project, task);
+        // Tasks created before UUID-isolated slots used this legacy location. Continue to repair
+        // those exact database-owned paths without accepting arbitrary paths under the root.
+        let legacy = project
             .worktree_root
             .join(format!("p{}/t{}", project.seq, task.seq));
-        if worktree != expected || worktree.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        if (worktree != expected && worktree != legacy)
+            || worktree
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
             return Err(OrchestratorError::InvalidState(
                 "repair refused a non-AgentFlow worktree path".into(),
             ));

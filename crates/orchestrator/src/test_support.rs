@@ -50,6 +50,7 @@ impl agentflow_agent_adapters::AgentProvider for RepairOnlyAdapter {
             question: None,
             changed_files: None,
             notes: None,
+            plan_sha256: None,
         };
         tokio::fs::write(
             request.run_dir.join("result.json"),

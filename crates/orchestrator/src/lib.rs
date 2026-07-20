@@ -1,13 +1,14 @@
 use agentflow_agent_adapters::{
-    AgentAdapter, AgentRunRequest, ApiProviderAdapter, ClaudeCodeAdapter, CodexAdapter,
+    AgentAdapter, AgentRunRequest, ApiProviderAdapter, BudgetMode, ClaudeCodeAdapter, CodexAdapter,
     CollectedResult, ExternalProviderAdapter, GeminiCliAdapter, PermissionTier, QwenCodeAdapter,
-    UnavailableProviderAdapter, api_provider_status,
+    RunBudget, UnavailableProviderAdapter, api_provider_status,
 };
 use agentflow_contracts::*;
 use agentflow_git_engine::{Git, GitError, summarize};
 use agentflow_persistence::{PersistenceError, Store};
 use agentflow_provider_protocol::{PROTOCOL_VERSION, ProtocolClient, ProviderRegistry};
 use chrono::Utc;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -56,6 +57,8 @@ pub enum OrchestratorError {
     MergePrecondition(String),
     #[error("invalid project config: {0}")]
     Config(String),
+    #[error("project config is not trusted (sha256 {sha256})")]
+    UntrustedProjectConfig { sha256: String },
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -68,6 +71,8 @@ pub struct ProjectConfig {
     pub review: ReviewConfig,
     #[serde(default)]
     pub agents: AgentsConfig,
+    #[serde(default)]
+    pub reproducibility: ReproducibilityConfig,
 }
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ValidateConfig {
@@ -185,6 +190,24 @@ pub struct AgentsConfig {
     pub extra_allowed_commands: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ReproducibilityConfig {
+    /// Explicit opt-in: only then may AgentFlow claim the environment is locked.
+    #[serde(default)]
+    pub lock_environment: bool,
+    #[serde(default)]
+    pub hermetic: bool,
+    /// Values are hashed in the manifest; names matching secret patterns are rejected.
+    #[serde(default)]
+    pub env_allowlist: Vec<String>,
+    /// User-owned immutable identifiers, e.g. database snapshot/WireMock fixture digests.
+    #[serde(default)]
+    pub external_dependencies: std::collections::BTreeMap<String, String>,
+    /// Image name -> expected immutable sha256 digest.
+    #[serde(default)]
+    pub container_images: std::collections::BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone)]
 struct TaskRow {
     id: String,
@@ -207,6 +230,7 @@ struct TaskRow {
 }
 #[derive(Debug, Clone)]
 struct ProjectRow {
+    id: String,
     seq: i64,
     repo: PathBuf,
     default_branch: String,
@@ -225,19 +249,30 @@ pub struct Orchestrator {
 
 // Same-module includes preserve private invariants while keeping each workflow concern reviewable.
 include!("lifecycle.rs");
+include!("task_start.rs");
 include!("task_creation.rs");
 include!("planning.rs");
 include!("development.rs");
 include!("agent_run.rs");
+include!("adoption.rs");
+include!("scheduler_limits.rs");
 include!("history.rs");
 include!("review_council.rs");
 include!("review.rs");
 include!("result_repair.rs");
 include!("repair.rs");
 include!("governance.rs");
+include!("quality_replay.rs");
+include!("reproducibility.rs");
+include!("integrity.rs");
 include!("delivery.rs");
 include!("execution_nodes.rs");
 include!("telemetry.rs");
+include!("data_protection.rs");
+include!("config_trust.rs");
+include!("plan_seal.rs");
+include!("saga.rs");
+include!("approval_seal.rs");
 include!("storage.rs");
 include!("task_queries.rs");
 include!("support.rs");
@@ -245,6 +280,10 @@ include!("support.rs");
 include!("test_support.rs");
 include!("tests.rs");
 include!("failure_tests.rs");
+#[cfg(test)]
+mod config_trust_tests;
+#[cfg(test)]
+mod git_compat_tests;
 #[cfg(test)]
 mod governance_tests;
 #[cfg(test)]

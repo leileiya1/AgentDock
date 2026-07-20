@@ -4,6 +4,34 @@ use serde_json::Value;
 use specta::Type;
 
 macro_rules! string_enum {
+    ($name:ident { #[default] $default_variant:ident => $default_value:literal $(, $variant:ident => $value:literal)* $(,)? }) => {
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, Type)]
+        pub enum $name {
+            #[default]
+            #[serde(rename = $default_value)]
+            $default_variant,
+            $(#[serde(rename = $value)] $variant),*
+        }
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let value = match self {
+                    Self::$default_variant => $default_value,
+                    $(Self::$variant => $value),*
+                };
+                f.write_str(value)
+            }
+        }
+        impl std::str::FromStr for $name {
+            type Err = String;
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                match value {
+                    $default_value => Ok(Self::$default_variant),
+                    $($value => Ok(Self::$variant),)*
+                    _ => Err(format!("invalid {}: {value}", stringify!($name)))
+                }
+            }
+        }
+    };
     ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, Type)]
         pub enum $name { $(#[serde(rename = $value)] $variant),+ }
@@ -247,6 +275,27 @@ pub struct StorageReport {
     pub trash_bytes: u64,
     #[specta(type = u32)]
     pub trash_entries: u64,
+    pub database_integrity_ok: bool,
+    pub encrypted_backups: u32,
+    pub latest_backup_at: Option<String>,
+    pub run_logs_encrypted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseBackupInfo {
+    pub path: String,
+    #[specta(type = f64)]
+    pub bytes: u64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseRestoreResult {
+    pub restored_backup: String,
+    pub previous_database: String,
+    pub restart_required: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, Type)]
@@ -322,6 +371,8 @@ pub struct DevelopmentResult {
     pub question: Option<String>,
     pub changed_files: Option<Vec<String>>,
     pub notes: Option<String>,
+    /// Echo of the exact approved coding plan, or null for tasks without a plan gate.
+    pub plan_sha256: Option<String>,
 }
 string_enum!(DevelopmentStatus { Completed => "completed", Failed => "failed", NeedsClarification => "needs_clarification" });
 
@@ -377,6 +428,13 @@ string_enum!(ErrorCode {
 #[serde(default)]
 pub struct GlobalSettings {
     pub max_concurrent_runs: Option<u32>,
+    pub scheduler_paused: bool,
+    pub run_window_start: Option<String>,
+    pub run_window_end: Option<String>,
+    pub global_daily_cost_usd: Option<f64>,
+    pub default_provider_max_concurrent: u32,
+    pub default_provider_requests_per_minute: u32,
+    pub provider_limits: Vec<ProviderDispatchLimit>,
     #[specta(type = Option<u32>)]
     pub developer_timeout_secs: Option<u64>,
     #[specta(type = Option<u32>)]
@@ -391,6 +449,13 @@ impl Default for GlobalSettings {
     fn default() -> Self {
         Self {
             max_concurrent_runs: Some(2),
+            scheduler_paused: false,
+            run_window_start: None,
+            run_window_end: None,
+            global_daily_cost_usd: None,
+            default_provider_max_concurrent: 1,
+            default_provider_requests_per_minute: 30,
+            provider_limits: Vec::new(),
             developer_timeout_secs: Some(1_800),
             reviewer_timeout_secs: Some(900),
             idle_timeout_secs: Some(300),
@@ -398,6 +463,16 @@ impl Default for GlobalSettings {
             notifications: NotificationSettings::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDispatchLimit {
+    pub provider: AgentKind,
+    /// A non-secret account label. `None` applies to every account for this Provider.
+    pub account: Option<String>,
+    pub max_concurrent: u32,
+    pub requests_per_minute: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
@@ -443,86 +518,4 @@ impl Default for NotificationSettings {
     }
 }
 
-pub fn development_result_schema() -> Value {
-    let mut value = serde_json::to_value(schemars::schema_for!(DevelopmentResult))
-        .unwrap_or_else(|_| serde_json::json!({}));
-    harden_schema(&mut value, false);
-    value
-}
-
-pub fn review_result_schema() -> Value {
-    let mut value = serde_json::to_value(schemars::schema_for!(ReviewResult))
-        .unwrap_or_else(|_| serde_json::json!({}));
-    harden_schema(&mut value, true);
-    value
-}
-
-fn harden_schema(value: &mut Value, review: bool) {
-    let Some(root) = value.as_object_mut() else {
-        return;
-    };
-    root.insert("additionalProperties".into(), Value::Bool(false));
-    if let Some(properties) = root.get_mut("properties").and_then(Value::as_object_mut) {
-        properties.insert("schema_version".into(), serde_json::json!({"const":1}));
-        if let Some(revision) = properties
-            .get_mut("revision")
-            .and_then(Value::as_object_mut)
-        {
-            revision.insert("minimum".into(), Value::from(1));
-        }
-        if let Some(summary) = properties.get_mut("summary").and_then(Value::as_object_mut) {
-            summary.insert("maxLength".into(), Value::from(4000));
-            if !review {
-                summary.insert("minLength".into(), Value::from(1));
-            }
-        }
-        if review {
-            if let Some(commit) = properties
-                .get_mut("commit_sha")
-                .and_then(Value::as_object_mut)
-            {
-                commit.insert("minLength".into(), Value::from(7));
-            }
-        } else {
-            for key in ["question", "notes"] {
-                set_optional_type(properties, key, "string");
-            }
-            set_optional_type(properties, "changed_files", "array");
-        }
-    }
-    if review
-        && let Some(issue) = root
-            .get_mut("$defs")
-            .and_then(Value::as_object_mut)
-            .and_then(|defs| defs.get_mut("ReviewIssueResult"))
-            .and_then(Value::as_object_mut)
-    {
-        issue.insert("additionalProperties".into(), Value::Bool(false));
-        if let Some(properties) = issue.get_mut("properties").and_then(Value::as_object_mut) {
-            for key in ["file", "description", "suggested_action"] {
-                set_optional_type(properties, key, "string");
-            }
-            for key in ["line_start", "line_end"] {
-                set_optional_type(properties, key, "integer");
-                if let Some(field) = properties.get_mut(key).and_then(Value::as_object_mut) {
-                    field.insert("minimum".into(), Value::from(1));
-                }
-            }
-            if let Some(title) = properties.get_mut("title").and_then(Value::as_object_mut) {
-                title.insert("minLength".into(), Value::from(1));
-                title.insert("maxLength".into(), Value::from(200));
-            }
-            for (key, max) in [("description", 4000), ("suggested_action", 2000)] {
-                if let Some(field) = properties.get_mut(key).and_then(Value::as_object_mut) {
-                    field.insert("maxLength".into(), Value::from(max));
-                }
-            }
-        }
-    }
-}
-
-fn set_optional_type(properties: &mut serde_json::Map<String, Value>, key: &str, kind: &str) {
-    if let Some(field) = properties.get_mut(key).and_then(Value::as_object_mut) {
-        field.insert("type".into(), Value::String(kind.into()));
-    }
-}
+include!("schemas.rs");

@@ -27,11 +27,43 @@ export function useProjectSettings(projectId: string | undefined) {
   });
 }
 
+export function useProjectGitCompatibility(projectId: string | undefined) {
+  return useQuery({
+    queryKey: qk.projectGitCompatibility(projectId ?? "none"),
+    queryFn: () => unwrap(commands.projectGitCompatibility({ projectId: projectId! })),
+    enabled: !!projectId,
+  });
+}
+
 export function useUpdateProjectSettings(projectId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (patch: ProjectSettings) =>
       unwrap(commands.projectSettingsUpdate({ projectId, patch })),
     onSuccess: (settings) => client.setQueryData(qk.projectSettings(projectId), settings),
+  });
+}
+
+export function useProjectConfigTrust(projectId: string | undefined) {
+  return useQuery({
+    queryKey: qk.projectConfigTrust(projectId ?? "none"),
+    queryFn: () => unwrap(commands.projectConfigTrustGet({ projectId: projectId! })),
+    enabled: !!projectId,
+  });
+}
+
+export function useApproveProjectConfig(projectId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => unwrap(commands.projectConfigTrustApprove({ projectId })),
+    onSuccess: (trust) => client.setQueryData(qk.projectConfigTrust(projectId), trust),
+  });
+}
+
+export function useRevokeProjectConfig(projectId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => unwrap(commands.projectConfigTrustRevoke({ projectId })),
+    onSuccess: (trust) => client.setQueryData(qk.projectConfigTrust(projectId), trust),
   });
 }

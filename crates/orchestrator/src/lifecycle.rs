@@ -36,7 +36,12 @@ impl Orchestrator {
                 .map_err(|e| OrchestratorError::Config(e.to_string()))?,
         )
         .await?;
-        let store = Store::open(&app_data.join("agentflow.db")).await?;
+        let database = app_data.join("agentflow.db");
+        let store = if recover {
+            Store::open(&database).await?
+        } else {
+            Store::open_client(&database).await?
+        };
         let provider_registry = ProviderRegistry::discover(&app_data.join("providers"))
             .await
             .map_err(|error| OrchestratorError::Config(error.to_string()))?;
@@ -53,6 +58,7 @@ impl Orchestrator {
         Ok(orchestrator)
     }
     async fn recover_interrupted_runs(&self) -> Result<(), OrchestratorError> {
+        self.recover_start_operations().await?;
         let rows = sqlx::query(
             "SELECT id,task_id,revision,role,run_dir FROM agent_runs WHERE status='RUNNING'",
         )
@@ -65,22 +71,43 @@ impl Orchestrator {
             let role: String = row.get("role");
             let run_dir: String = row.get("run_dir");
             let lease_path = Path::new(&run_dir).join("process-lease.json");
+            let lease = agentflow_process_supervisor::read_process_lease(&lease_path)
+                .await
+                .ok();
+            let live_pid = lease.as_ref().and_then(|lease| {
+                (agentflow_process_supervisor::inspect_process_lease(lease)
+                    == agentflow_process_supervisor::LeaseState::Alive)
+                    .then_some(lease.pid)
+            });
+            let completed_cleanly = agentflow_process_supervisor::read_process_exit_code(
+                &Path::new(&run_dir).join("process-outcome.json"),
+            )
+            .await
+            .is_ok_and(|code| code == 0);
+            if live_pid.is_some() || completed_cleanly {
+                // A crash is different from an explicit cancellation: the Provider owns durable
+                // stdout/stderr descriptors and a child-side exit marker, so the new daemon can
+                // adopt it without discarding already-paid work.
+                let now = Utc::now().to_rfc3339();
+                sqlx::query("UPDATE agent_runs SET recovery_state='ADOPTING',adopted_at=? WHERE id=? AND status='RUNNING'")
+                    .bind(&now)
+                    .bind(&run_id)
+                    .execute(self.store.pool())
+                    .await?;
+                sqlx::query("INSERT INTO events(task_id,revision,actor,event_type,payload_json,created_at) VALUES(?,?,'system','recovery:run_adopted',?,?)")
+                    .bind(&task_id)
+                    .bind(revision)
+                    .bind(json!({"run_id":run_id,"pid":live_pid,"role":role,"already_exited":completed_cleanly && live_pid.is_none()}).to_string())
+                    .bind(&now)
+                    .execute(self.store.pool())
+                    .await?;
+                continue;
+            }
             let process_recovery = match agentflow_process_supervisor::read_process_lease(&lease_path)
                 .await
             {
                 Ok(lease) => match agentflow_process_supervisor::inspect_process_lease(&lease) {
-                    agentflow_process_supervisor::LeaseState::Alive => {
-                        if agentflow_process_supervisor::terminate_process_lease(
-                            &lease,
-                            Duration::from_secs(2),
-                        )
-                        .await?
-                        {
-                            "orphan_process_group_terminated"
-                        } else {
-                            "orphan_process_already_exited"
-                        }
-                    }
+                    agentflow_process_supervisor::LeaseState::Alive => "live_process_race",
                     agentflow_process_supervisor::LeaseState::Exited => {
                         "orphan_process_already_exited"
                     }
@@ -106,6 +133,23 @@ impl Orchestrator {
             // later keep them or reset to the recorded commit without guessing what survived.
             if current.worktree_path.as_ref().is_some_and(|path| path.is_dir()) {
                 let _ = self.create_checkpoint(&current, "interrupted-run").await;
+                let worktree = required_path(&current.worktree_path)?;
+                let reset_to = match role.as_str() {
+                    "developer" => sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT commit_sha FROM task_revisions WHERE task_id=? AND revision<? ORDER BY revision DESC LIMIT 1",
+                    )
+                    .bind(&task_id)
+                    .bind(revision)
+                    .fetch_optional(self.store.pool())
+                    .await?
+                    .flatten()
+                    .or_else(|| current.base_commit.clone()),
+                    "reviewer" => Some(self.revision_commit_sha(&task_id, current.revision).await?),
+                    _ => self.git.resolve(&worktree, "HEAD").await.ok(),
+                };
+                if let Some(commit) = reset_to {
+                    self.git.reset_owned_worktree(&worktree, &commit).await?;
+                }
             }
             let (to, new_revision) = match role.as_str() {
                 "planner" => (TaskStatus::Planning, current.revision),
@@ -137,6 +181,11 @@ impl Orchestrator {
                 )
                 .await?;
         }
+        // Covers the crash window after a durable state transition but before an agent_runs row
+        // or final transition was written. Run this before the missing-worktree check because a
+        // completed merge may have intentionally removed its worktree just before a crash.
+        self.recover_orphaned_stages().await?;
+        self.recover_provider_dispatches().await?;
         let active=sqlx::query("SELECT id,status,worktree_path FROM tasks WHERE status NOT IN ('DRAFT','MERGED','ROLLED_BACK','CANCELLED')").fetch_all(self.store.pool()).await?;
         for row in active {
             let path: Option<String> = row.get("worktree_path");
@@ -534,48 +583,5 @@ impl Orchestrator {
         sqlx::query("INSERT INTO settings(key,value_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json")
             .bind(format!("cli:{tool}")).bind(serde_json::to_string(&path.to_string_lossy().as_ref()).map_err(|e|OrchestratorError::Config(e.to_string()))?).execute(self.store.pool()).await?;
         Ok(self.env_check().await)
-    }
-    pub async fn task_start(&self, task_id: &str) -> Result<TaskSummary, OrchestratorError> {
-        let task = self.task(task_id).await?;
-        if task.status != TaskStatus::Draft {
-            return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
-        }
-        let project = self.project(&task.project_id).await?;
-        let base = self.git.resolve(&project.repo, &task.target_branch).await?;
-        let branch = format!("agentflow/TASK-{}", task.seq);
-        let wt = project
-            .worktree_root
-            .join(format!("p{}/t{}", project.seq, task.seq));
-        if let Some(parent) = wt.parent() {
-            tokio::fs::create_dir_all(parent).await?
-        }
-        self.git
-            .worktree_add(&project.repo, &wt, &branch, &base)
-            .await?;
-        self.git.ensure_agentflow_excluded(&project.repo).await?;
-        sqlx::query("UPDATE tasks SET base_commit=?,branch=?,worktree_path=? WHERE id=?")
-            .bind(&base)
-            .bind(&branch)
-            .bind(wt.to_string_lossy().as_ref())
-            .bind(task_id)
-            .execute(self.store.pool())
-            .await?;
-        let to = if task.policy.require_plan_approval {
-            TaskStatus::Planning
-        } else {
-            TaskStatus::ReadyForDevelopment
-        };
-        self.store
-            .transition(
-                task_id,
-                &[TaskStatus::Draft],
-                to,
-                None,
-                Actor::Human,
-                "user:start",
-                &json!({"base_commit":base,"branch":branch,"plan_required":task.policy.require_plan_approval}),
-            )
-            .await?;
-        self.store.task_summary(task_id).await.map_err(Into::into)
     }
 }

@@ -26,6 +26,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "allowed_paths": {
+      "description": "Repository-relative glob patterns that define the approved implementation boundary.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "plan_version": {
       "format": "int64",
       "minimum": 1,
@@ -61,7 +68,8 @@
     "plan_version",
     "summary",
     "steps",
-    "risks"
+    "risks",
+    "allowed_paths"
   ],
   "title": "PlanResult",
   "type": "object"

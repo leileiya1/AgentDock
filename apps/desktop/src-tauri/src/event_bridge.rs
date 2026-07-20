@@ -5,9 +5,8 @@ use agentflow_contracts::{
 use agentflow_orchestrator::{Orchestrator, OrchestratorError};
 use serde::Serialize;
 use sqlx::Row;
-use std::{collections::HashMap, path::Path, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(300);
 const LOG_BATCH_SIZE: usize = 250;
@@ -262,22 +261,7 @@ async fn log_line_count(
     orchestrator: &Orchestrator,
     run_id: &str,
 ) -> Result<usize, OrchestratorError> {
-    let run_dir: String = sqlx::query_scalar("SELECT run_dir FROM agent_runs WHERE id=?")
-        .bind(run_id)
-        .fetch_one(orchestrator.store.pool())
-        .await?;
-    let path = Path::new(&run_dir).join("agent-events.jsonl");
-    let Ok(file) = tokio::fs::File::open(path).await else {
-        return Ok(0);
-    };
-    let mut reader = BufReader::new(file);
-    let mut buffer = String::new();
-    let mut lines = 0;
-    while reader.read_line(&mut buffer).await? != 0 {
-        lines += 1;
-        buffer.clear();
-    }
-    Ok(lines)
+    orchestrator.run_log_line_count(run_id).await
 }
 
 pub fn spawn(app: AppHandle, orchestrator: Arc<Orchestrator>) {

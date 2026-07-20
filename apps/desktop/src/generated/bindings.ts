@@ -10,6 +10,9 @@ export const commands = {
 	onboardingComplete: () => typedError<null, AppError>(__TAURI_INVOKE("onboarding_complete")),
 	storageReport: () => typedError<StorageReport, AppError>(__TAURI_INVOKE("storage_report")),
 	storageCleanup: () => typedError<CleanupResult, AppError>(__TAURI_INVOKE("storage_cleanup")),
+	databaseBackupList: () => typedError<DatabaseBackupInfo[], AppError>(__TAURI_INVOKE("database_backup_list")),
+	databaseBackupCreate: () => typedError<DatabaseBackupInfo, AppError>(__TAURI_INVOKE("database_backup_create")),
+	databaseBackupRestore: (args: DatabaseRestoreArgs) => typedError<DatabaseRestoreResult, AppError>(__TAURI_INVOKE("database_backup_restore", { args })),
 	taskCleanup: (args: TaskCleanupArgs) => typedError<CleanupResult, AppError>(__TAURI_INVOKE("task_cleanup", { args })),
 	trashList: () => typedError<TrashEntry[], AppError>(__TAURI_INVOKE("trash_list")),
 	taskRestore: (args: TaskIdArgs) => typedError<TaskSummary, AppError>(__TAURI_INVOKE("task_restore", { args })),
@@ -22,11 +25,15 @@ export const commands = {
 	apiCredentialDelete: (args: ApiCredentialArgs) => typedError<EnvReport, AppError>(__TAURI_INVOKE("api_credential_delete", { args })),
 	projectImport: (args: ProjectImportArgs) => typedError<Project, AppError>(__TAURI_INVOKE("project_import", { args })),
 	projectList: () => typedError<Project[], AppError>(__TAURI_INVOKE("project_list")),
+	projectGitCompatibility: (args: ProjectIdArgs) => typedError<GitCompatibilityReport, AppError>(__TAURI_INVOKE("project_git_compatibility", { args })),
 	taskCreate: (args: TaskCreateArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_create", { args })),
 	taskList: (args: ProjectIdArgs) => typedError<TaskSummary[], AppError>(__TAURI_INVOKE("task_list", { args })),
 	taskGet: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_get", { args })),
 	taskStart: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_start", { args })),
 	taskCancel: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_cancel", { args })),
+	queueTaskPause: (args: TaskIdArgs) => typedError<QueueMutationResult, AppError>(__TAURI_INVOKE("queue_task_pause", { args })),
+	queueTaskResume: (args: TaskIdArgs) => typedError<QueueMutationResult, AppError>(__TAURI_INVOKE("queue_task_resume", { args })),
+	queueTaskPriority: (args: QueuePriorityArgs) => typedError<QueueMutationResult, AppError>(__TAURI_INVOKE("queue_task_priority", { args })),
 	taskResumeWithGuidance: (args: GuidanceArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_resume_with_guidance", { args })),
 	taskRepairInspect: (args: TaskIdArgs) => typedError<RepairReport, AppError>(__TAURI_INVOKE("task_repair_inspect", { args })),
 	taskRepairApply: (args: TaskRepairArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_repair_apply", { args })),
@@ -53,6 +60,9 @@ export const commands = {
 	eventsExport: (args: ProjectIdArgs) => typedError<ExportPath, AppError>(__TAURI_INVOKE("events_export", { args })),
 	projectSettingsGet: (args: ProjectIdArgs) => typedError<ProjectSettings, AppError>(__TAURI_INVOKE("project_settings_get", { args })),
 	projectSettingsUpdate: (args: ProjectSettingsArgs) => typedError<ProjectSettings, AppError>(__TAURI_INVOKE("project_settings_update", { args })),
+	projectConfigTrustGet: (args: ProjectIdArgs) => typedError<ProjectConfigTrust, AppError>(__TAURI_INVOKE("project_config_trust_get", { args })),
+	projectConfigTrustApprove: (args: ProjectIdArgs) => typedError<ProjectConfigTrust, AppError>(__TAURI_INVOKE("project_config_trust_approve", { args })),
+	projectConfigTrustRevoke: (args: ProjectIdArgs) => typedError<ProjectConfigTrust, AppError>(__TAURI_INVOKE("project_config_trust_revoke", { args })),
 	settingsGet: () => typedError<GlobalSettings, AppError>(__TAURI_INVOKE("settings_get")),
 	settingsUpdate: (args: GlobalSettingsArgs) => typedError<GlobalSettings, AppError>(__TAURI_INVOKE("settings_update", { args })),
 	reviewGet: (args: DiffArgs) => typedError<{
@@ -123,6 +133,8 @@ export type ApproveArgs = {
 
 export type BlockedReason = "no_changes" | "needs_clarification" | "run_failed" | "validation_infra" | "review_block" | "review_failed" | "max_revisions" | "worktree_missing" | "commit_guard" | "budget_exceeded" | "remote_node_unavailable" | "ci_failed" | "quality_gate";
 
+export type BudgetEnforcement = "hard" | "soft" | "unavailable";
+
 /**
  *  Replacement limits submitted after a budget stop. `None` means unlimited;
  *  callers must send all three values so resuming never depends on stale UI state.
@@ -145,6 +157,15 @@ export type BudgetUsage = {
 	tokenBudget: number | null,
 	costBudgetUsd: number | null,
 	timeBudgetSecs: number | null,
+	/**  Unknown usage is tracked explicitly instead of silently becoming zero. */
+	tokensKnown: boolean,
+	costKnown: boolean,
+	unknownTokenRuns: number,
+	unknownCostRuns: number,
+	tokensReserved: number,
+	costReservedUsd: number | null,
+	tokenEnforcement: BudgetEnforcement,
+	costEnforcement: BudgetEnforcement,
 	exceeded: boolean,
 };
 
@@ -178,11 +199,29 @@ export type CodingPlan = {
 	summary: string,
 	steps: PlanStep[],
 	risks: string[],
+	allowedPaths: string[],
+	planSha256: string | null,
 	createdAt: string,
 	approvedAt: string | null,
 };
 
 export type DataEgress = "none" | "metadata" | "diff" | "full_files";
+
+export type DatabaseBackupInfo = {
+	path: string,
+	bytes: number | null,
+	createdAt: string,
+};
+
+export type DatabaseRestoreArgs = {
+	path: string,
+};
+
+export type DatabaseRestoreResult = {
+	restoredBackup: string,
+	previousDatabase: string,
+	restartRequired: boolean,
+};
 
 export type DeliveryMode = "local_merge" | "github_pr" | "gitlab_mr";
 
@@ -278,8 +317,33 @@ export type FileDiff = {
 	patch: string | null,
 };
 
+export type GitCompatibilityReport = {
+	repoPath: string,
+	repositoryIdentity: string,
+	shallow: boolean,
+	sparseCheckout: boolean,
+	sparsePatterns: string[],
+	submodules: string[],
+	lfsTracked: boolean,
+	lfsAvailable: boolean,
+	sshRemote: boolean,
+	sshAgentAvailable: boolean,
+	networkFilesystem: boolean,
+	caseInsensitive: boolean,
+	caseCollisions: string[],
+	warnings: string[],
+	blockers: string[],
+};
+
 export type GlobalSettings = {
 	maxConcurrentRuns?: number | null,
+	schedulerPaused?: boolean,
+	runWindowStart?: string | null,
+	runWindowEnd?: string | null,
+	globalDailyCostUsd?: number | null,
+	defaultProviderMaxConcurrent?: number,
+	defaultProviderRequestsPerMinute?: number,
+	providerLimits?: ProviderDispatchLimit[],
 	developerTimeoutSecs?: number | null,
 	reviewerTimeoutSecs?: number | null,
 	idleTimeoutSecs?: number | null,
@@ -359,6 +423,21 @@ export type Project = {
 	createdAt: string,
 };
 
+/**
+ *  Local trust decision for repository-owned AgentFlow configuration. The approved hash lives
+ *  outside the repository, so an Agent cannot grant itself command execution permissions by
+ *  editing `.agentflow/project.toml`.
+ */
+export type ProjectConfigTrust = {
+	exists: boolean,
+	path: string,
+	sha256: string | null,
+	trusted: boolean,
+	validationSteps: string[],
+	extraAllowedCommands: string[],
+	approvedAt: string | null,
+};
+
 export type ProjectIdArgs = {
 	projectId: string,
 };
@@ -419,6 +498,14 @@ export type ProviderDescriptor = {
 	problem: string | null,
 };
 
+export type ProviderDispatchLimit = {
+	provider: AgentKind,
+	/**  A non-secret account label. `None` applies to every account for this Provider. */
+	account: string | null,
+	maxConcurrent: number,
+	requestsPerMinute: number,
+};
+
 export type ProviderPermissions = {
 	worktreeRead: boolean,
 	worktreeWrite: boolean,
@@ -459,6 +546,17 @@ export type QualityEvaluation = {
 
 export type QualityGrade = "A" | "B" | "C" | "D";
 
+export type QueueMutationResult = {
+	taskId: string,
+	paused: boolean | null,
+	priority: number | null,
+};
+
+export type QueuePriorityArgs = {
+	taskId: string,
+	priority: number,
+};
+
 export type RejectArgs = {
 	taskId: string,
 	revision: number,
@@ -477,12 +575,24 @@ export type RepairReport = {
 	actions: RepairAction[],
 };
 
+export type ReproducibilityLevel = "fixed_commit" | "environment_locked" | "hermetic";
+
 export type ReproducibilityManifest = {
 	taskId: string,
 	revision: number,
 	commitSha: string,
 	manifestSha256: string,
 	environment: { [key in string]: string },
+	reproducibilityLevel?: ReproducibilityLevel,
+	toolVersions?: { [key in string]: string },
+	environmentVariables?: { [key in string]: string },
+	systemDependencies?: { [key in string]: string },
+	containerImageDigests?: { [key in string]: string },
+	gitSubmodules?: { [key in string]: string },
+	gitLfsObjects?: string[],
+	externalDependencies?: { [key in string]: string },
+	limitations?: string[],
+	environmentSha256?: string,
 	inputSha256: string,
 	patchSha256: string,
 	validationConfigSha256: string,
@@ -588,6 +698,10 @@ export type StorageReport = {
 	cacheBytes: number | null,
 	trashBytes: number | null,
 	trashEntries: number,
+	databaseIntegrityOk: boolean,
+	encryptedBackups: number,
+	latestBackupAt: string | null,
+	runLogsEncrypted: boolean,
 };
 
 export type TaskCheckpoint = {
@@ -655,6 +769,8 @@ export type TaskIdArgs = {
 
 export type TaskPolicy = {
 	requirePlanApproval?: boolean,
+	/**  Scheduler order from -100 (background) to 100 (urgent). */
+	priority?: number,
 	tokenBudget?: number | null,
 	costBudgetUsd?: number | null,
 	timeBudgetSecs?: number | null,

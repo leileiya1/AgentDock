@@ -11,13 +11,27 @@ impl Orchestrator {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
         }
         let project = self.project(&task.project_id).await?;
-        let config = load_config(&project.repo).await?;
+        let config = self.load_trusted_config(&project).await?;
+        let revision_sha = self.revision_commit_sha(task_id, revision).await?;
+        if sha != revision_sha {
+            return Err(OrchestratorError::DiffStale);
+        }
+        let branch = task
+            .branch
+            .as_deref()
+            .ok_or_else(|| OrchestratorError::InvalidState("task branch missing".into()))?;
+        let worktree = required_path(&task.worktree_path)?;
+        if self.git.resolve(&worktree, "HEAD").await? != revision_sha
+            || self.git.resolve(&project.repo, branch).await? != revision_sha
+        {
+            return Err(OrchestratorError::DiffStale);
+        }
         let actual = self
             .git
             .diff(
-                &required_path(&task.worktree_path)?,
+                &worktree,
                 task.base_commit.as_deref().unwrap_or(""),
-                sha,
+                &revision_sha,
                 &config.review.exclude_globs,
                 config.review.max_patch_bytes,
             )
@@ -25,7 +39,14 @@ impl Orchestrator {
         if actual.diff_sha256 != diff_sha {
             return Err(OrchestratorError::DiffStale);
         }
-        sqlx::query("INSERT INTO approvals(id,task_id,revision,commit_sha,diff_sha256,action,created_at) VALUES(?,?,?,?,?,'approve',?)").bind(Uuid::now_v7().to_string()).bind(task_id).bind(revision).bind(sha).bind(diff_sha).bind(Utc::now().to_rfc3339()).execute(self.store.pool()).await?;
+        // Resolve once more immediately before sealing to narrow the client/check race. Any
+        // later movement is rejected again by merge and delivery preconditions.
+        if self.git.resolve(&worktree, "HEAD").await? != revision_sha
+            || self.git.resolve(&project.repo, branch).await? != revision_sha
+        {
+            return Err(OrchestratorError::DiffStale);
+        }
+        sqlx::query("INSERT INTO approvals(id,task_id,revision,commit_sha,diff_sha256,action,created_at) VALUES(?,?,?,?,?,'approve',?)").bind(Uuid::now_v7().to_string()).bind(task_id).bind(revision).bind(&revision_sha).bind(diff_sha).bind(Utc::now().to_rfc3339()).execute(self.store.pool()).await?;
         self.store
             .transition(
                 task_id,
@@ -34,7 +55,7 @@ impl Orchestrator {
                 None,
                 Actor::Human,
                 "human:approve",
-                &json!({"commit_sha":sha}),
+                &json!({"commit_sha":revision_sha}),
             )
             .await?;
         self.store.task_summary(task_id).await.map_err(Into::into)
@@ -66,7 +87,50 @@ impl Orchestrator {
         report.trash_entries = sqlx::query_scalar("SELECT COUNT(*) FROM trash_items")
             .fetch_one(self.store.pool())
             .await?;
+        report.database_integrity_ok = self.store.integrity_check().await.is_ok();
+        let backups = self.database_backup_list().await?;
+        report.encrypted_backups = backups.len().min(u32::MAX as usize) as u32;
+        report.latest_backup_at = backups.first().map(|backup| backup.created_at.clone());
         Ok(report)
+    }
+
+    pub async fn database_backup_create(&self) -> Result<DatabaseBackupInfo, OrchestratorError> {
+        let path = self.store.backup_now().await?;
+        database_backup_info(&path).await
+    }
+
+    pub async fn database_backup_list(
+        &self,
+    ) -> Result<Vec<DatabaseBackupInfo>, OrchestratorError> {
+        let mut result = Vec::new();
+        for path in self.store.backups().await? {
+            result.push(database_backup_info(&path).await?);
+        }
+        Ok(result)
+    }
+
+    /// Restoring swaps the database underneath the daemon, so it is allowed only
+    /// when no Provider/queue item is active and always requires a daemon/UI restart.
+    pub async fn database_backup_restore(
+        &self,
+        backup: &Path,
+    ) -> Result<DatabaseRestoreResult, OrchestratorError> {
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_runs WHERE status='RUNNING'",
+        )
+        .fetch_one(self.store.pool())
+        .await?;
+        if active != 0 {
+            return Err(OrchestratorError::InvalidState(
+                "database restore requires all Agent runs to stop".into(),
+            ));
+        }
+        let previous = self.store.restore_backup(backup).await?;
+        Ok(DatabaseRestoreResult {
+            restored_backup: backup.to_string_lossy().into_owned(),
+            previous_database: previous.to_string_lossy().into_owned(),
+            restart_required: true,
+        })
     }
 
     pub async fn storage_cleanup(
