@@ -1,6 +1,6 @@
 impl Orchestrator {
     pub async fn execution_node_list(&self) -> Result<Vec<ExecutionNode>, OrchestratorError> {
-        let rows = sqlx::query("SELECT id,name,host,port,username,work_root,enabled,status,platform,git_version,problem,last_checked_at FROM execution_nodes ORDER BY name")
+        let rows = sqlx::query("SELECT id,name,host,port,username,work_root,enabled,status,platform,git_version,problem,last_checked_at,diagnostics_json FROM execution_nodes ORDER BY name")
             .fetch_all(self.store.pool()).await?;
         rows.into_iter().map(execution_node_from_row).collect()
     }
@@ -14,7 +14,7 @@ impl Orchestrator {
             node.id = Uuid::now_v7().to_string();
         }
         let now = Utc::now().to_rfc3339();
-        sqlx::query("INSERT INTO execution_nodes(id,name,host,port,username,work_root,enabled,status,platform,git_version,problem,last_checked_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'unknown',NULL,NULL,NULL,NULL,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,host=excluded.host,port=excluded.port,username=excluded.username,work_root=excluded.work_root,enabled=excluded.enabled,status='unknown',problem=NULL,updated_at=excluded.updated_at")
+        sqlx::query("INSERT INTO execution_nodes(id,name,host,port,username,work_root,enabled,status,platform,git_version,problem,last_checked_at,diagnostics_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'unknown',NULL,NULL,NULL,NULL,'[]',?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,host=excluded.host,port=excluded.port,username=excluded.username,work_root=excluded.work_root,enabled=excluded.enabled,status='unknown',problem=NULL,diagnostics_json='[]',updated_at=excluded.updated_at")
             .bind(&node.id).bind(node.name.trim()).bind(node.host.trim()).bind(i64::from(node.port))
             .bind(node.username.trim()).bind(node.work_root.trim()).bind(i64::from(node.enabled))
             .bind(&now).bind(&now).execute(self.store.pool()).await?;
@@ -41,52 +41,19 @@ impl Orchestrator {
         node_id: &str,
     ) -> Result<ExecutionNode, OrchestratorError> {
         let node = self.execution_node_get(node_id).await?;
-        let destination = format!("{}@{}", node.username, node.host);
-        let root = shell_quote(&node.work_root);
-        let remote = format!(
-            "set -eu; {}; mkdir -p {root}; test -w {root}; command -v git >/dev/null; command -v tar >/dev/null; uname -srm; git --version",
-            remote_environment_prelude(),
-        );
-        let result = tokio::time::timeout(
-            Duration::from_secs(12),
-            Command::new("ssh")
-                .args(ssh_base_args(&node))
-                .arg(destination)
-                .arg(remote)
-                .output(),
-        )
-        .await;
+        let probe = probe_execution_node(&node).await;
         let checked = Utc::now().to_rfc3339();
-        let (status, platform, git_version, problem) = match result {
-            Ok(Ok(output)) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                let mut lines = text.lines();
-                (
-                    NodeStatus::Online,
-                    lines.next().map(str::to_string),
-                    lines.next().map(str::to_string),
-                    None,
-                )
-            }
-            Ok(Ok(output)) => (
-                NodeStatus::Offline,
-                None,
-                None,
-                Some(agentflow_process_supervisor::redact(
-                    String::from_utf8_lossy(&output.stderr).chars().take(1000).collect(),
-                )),
-            ),
-            Ok(Err(error)) => (NodeStatus::Offline, None, None, Some(error.to_string())),
-            Err(_) => (NodeStatus::Offline, None, None, Some("SSH health check timed out".into())),
-        };
-        sqlx::query("UPDATE execution_nodes SET status=?,platform=?,git_version=?,problem=?,last_checked_at=?,updated_at=? WHERE id=?")
-            .bind(status.to_string()).bind(platform).bind(git_version).bind(problem)
-            .bind(&checked).bind(&checked).bind(node_id).execute(self.store.pool()).await?;
+        let diagnostics_json = serde_json::to_string(&probe.diagnostics)
+            .map_err(|error| OrchestratorError::Config(error.to_string()))?;
+        sqlx::query("UPDATE execution_nodes SET status=?,platform=?,git_version=?,problem=?,last_checked_at=?,diagnostics_json=?,updated_at=? WHERE id=?")
+            .bind(probe.status.to_string()).bind(probe.platform).bind(probe.git_version).bind(probe.problem)
+            .bind(&checked).bind(diagnostics_json)
+            .bind(&checked).bind(node_id).execute(self.store.pool()).await?;
         self.execution_node_get(node_id).await
     }
 
     async fn execution_node_get(&self, node_id: &str) -> Result<ExecutionNode, OrchestratorError> {
-        let row = sqlx::query("SELECT id,name,host,port,username,work_root,enabled,status,platform,git_version,problem,last_checked_at FROM execution_nodes WHERE id=?")
+        let row = sqlx::query("SELECT id,name,host,port,username,work_root,enabled,status,platform,git_version,problem,last_checked_at,diagnostics_json FROM execution_nodes WHERE id=?")
             .bind(node_id).fetch_one(self.store.pool()).await?;
         execution_node_from_row(row)
     }
@@ -329,6 +296,8 @@ fn execution_node_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ExecutionNode
         enabled: row.get::<i64, _>("enabled") != 0, status: parse(row.get("status"))?,
         platform: row.get("platform"), git_version: row.get("git_version"),
         problem: row.get("problem"), last_checked_at: row.get("last_checked_at"),
+        diagnostics: serde_json::from_str(row.get::<String, _>("diagnostics_json").as_str())
+            .unwrap_or_default(),
     })
 }
 
@@ -346,7 +315,7 @@ mod execution_node_tests {
             id: String::new(), name: "builder".into(), host: "10.0.0.8".into(), port: 22,
             username: "runner".into(), work_root: "/srv/agent flow".into(), enabled: true,
             status: NodeStatus::Unknown, platform: None, git_version: None, problem: None,
-            last_checked_at: None,
+            last_checked_at: None, diagnostics: Vec::new(),
         };
         assert!(validate_execution_node(&node).is_ok());
         assert_eq!(shell_quote("a'b"), "'a'\"'\"'b'");
@@ -392,6 +361,7 @@ mod execution_node_tests {
             git_version: None,
             problem: None,
             last_checked_at: None,
+            diagnostics: Vec::new(),
         };
         validate_execution_node(&node)?;
 

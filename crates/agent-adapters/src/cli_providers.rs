@@ -36,7 +36,8 @@ impl AgentProvider for ClaudeCodeAdapter {
         tx: mpsc::Sender<AgentEvent>,
     ) -> Result<RunningAgent, AdapterError> {
         let args = claude_args(&req);
-        start_process("claude", self.executable.clone(), args, req, cancel, tx).await
+        let executable = resolve_cli("claude", &self.executable).await?;
+        start_process("claude", executable, args, req, cancel, tx).await
     }
     async fn collect_result(
         &self,
@@ -125,11 +126,8 @@ impl AgentProvider for CodexAdapter {
         }
     }
     async fn detect(&self, env: &CliEnv) -> Result<AgentInstallation, AdapterError> {
-        let path = resolve_cli(
-            "codex",
-            env.explicit_path.as_ref().unwrap_or(&self.executable),
-        )
-        .await?;
+        let path =
+            resolve_codex_cli(env.explicit_path.as_ref().unwrap_or(&self.executable)).await?;
         let version = output_text(&path, &["--version"]).await?;
         let help = output_text(&path, &["exec", "--help"]).await?;
         if !["--json", "--sandbox", "--ignore-user-config", "--ephemeral"]
@@ -153,7 +151,8 @@ impl AgentProvider for CodexAdapter {
         tx: mpsc::Sender<AgentEvent>,
     ) -> Result<RunningAgent, AdapterError> {
         let args = codex_args(&req, &self.schema_path);
-        start_process("codex", self.executable.clone(), args, req, cancel, tx).await
+        let executable = resolve_codex_cli(&self.executable).await?;
+        start_process("codex", executable, args, req, cancel, tx).await
     }
     async fn collect_result(
         &self,

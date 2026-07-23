@@ -56,6 +56,12 @@ async fn discovers_and_runs_a_conforming_sidecar() -> Result<(), Box<dyn std::er
                 timeout_ms: Duration::from_secs(5).as_millis() as u64,
                 idle_timeout_ms: Duration::from_secs(2).as_millis() as u64,
                 permission: ProtocolPermission::Normal,
+                effective_permissions: Some(agentflow_contracts::EffectivePermissions {
+                    worktree_read: true,
+                    worktree_write: true,
+                    sandbox_guarantee: agentflow_contracts::SandboxGuarantee::WorktreeRestricted,
+                    ..Default::default()
+                }),
                 resume_session_id: None,
                 extra_allowed_commands: Vec::new(),
                 env_denylist: Vec::new(),
@@ -81,6 +87,110 @@ async fn discovers_and_runs_a_conforming_sidecar() -> Result<(), Box<dyn std::er
         }
         ProtocolResult::Review(_) => return Err("unexpected review result".into()),
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn structured_permission_notification_stops_without_cli_prompt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let package = temp.path().join("fixture");
+    tokio::fs::create_dir_all(&package).await?;
+    install_fixture_binary(&package.join("provider-bin")).await?;
+    let manifest = fixture_manifest(&package.join("provider-bin")).await?;
+    install_trust_store(temp.path(), &manifest).await?;
+    tokio::fs::write(
+        package.join("provider.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )
+    .await?;
+    let registry = ProviderRegistry::discover(temp.path()).await?;
+    let provider = registry
+        .get(&AgentKind::External("fixture_provider".into()))
+        .ok_or("fixture missing")?;
+    let (tx, _rx) = mpsc::channel(2);
+    let outcome = ProtocolClient::new(provider.clone())
+        .run(
+            ProtocolRunRequest {
+                request_id: "permission-probe".into(),
+                task_id: "TASK-probe".into(),
+                revision: 1,
+                commit_sha: None,
+                worktree: temp.path().to_string_lossy().into_owned(),
+                run_dir: package.to_string_lossy().into_owned(),
+                role: RunRole::Developer,
+                input_file: "input.md".into(),
+                timeout_ms: 5_000,
+                idle_timeout_ms: 2_000,
+                permission: ProtocolPermission::Restricted,
+                effective_permissions: Some(agentflow_contracts::EffectivePermissions::default()),
+                resume_session_id: None,
+                extra_allowed_commands: vec!["permission-probe".into()],
+                env_denylist: Vec::new(),
+            },
+            CancellationToken::new(),
+            tx,
+        )
+        .await?;
+    let request = outcome
+        .permission_request
+        .ok_or("permission request missing")?;
+    assert_eq!(
+        request.action_type,
+        agentflow_contracts::PermissionActionType::NetworkAccess
+    );
+    assert_eq!(request.operation.network_domains, ["fixtures.example:443"]);
+    assert!(outcome.result.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_permission_request_cannot_exceed_signed_manifest()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let package = temp.path().join("fixture");
+    tokio::fs::create_dir_all(&package).await?;
+    install_fixture_binary(&package.join("provider-bin")).await?;
+    let manifest = fixture_manifest(&package.join("provider-bin")).await?;
+    install_trust_store(temp.path(), &manifest).await?;
+    tokio::fs::write(
+        package.join("provider.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )
+    .await?;
+    let registry = ProviderRegistry::discover(temp.path()).await?;
+    let provider = registry
+        .get(&AgentKind::External("fixture_provider".into()))
+        .ok_or("fixture missing")?;
+    let (tx, _rx) = mpsc::channel(2);
+    let result = ProtocolClient::new(provider.clone())
+        .run(
+            ProtocolRunRequest {
+                request_id: "permission-overreach".into(),
+                task_id: "TASK-probe".into(),
+                revision: 1,
+                commit_sha: None,
+                worktree: temp.path().to_string_lossy().into_owned(),
+                run_dir: package.to_string_lossy().into_owned(),
+                role: RunRole::Developer,
+                input_file: "input.md".into(),
+                timeout_ms: 5_000,
+                idle_timeout_ms: 2_000,
+                permission: ProtocolPermission::Restricted,
+                effective_permissions: Some(agentflow_contracts::EffectivePermissions::default()),
+                resume_session_id: None,
+                extra_allowed_commands: vec!["permission-overreach".into()],
+                env_denylist: Vec::new(),
+            },
+            CancellationToken::new(),
+            tx,
+        )
+        .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => return Err("manifest overreach was accepted".into()),
+    };
+    assert!(error.to_string().contains("PERMISSION_MANIFEST_EXCEEDED"));
     Ok(())
 }
 
@@ -125,7 +235,7 @@ fn unsigned_fixture_manifest() -> ProviderManifest {
         permissions: ProviderPermissions {
             worktree_read: true,
             worktree_write: true,
-            network_domains: Vec::new(),
+            network_domains: vec!["fixtures.example:443".into()],
             commands: Vec::new(),
         },
         security: None,

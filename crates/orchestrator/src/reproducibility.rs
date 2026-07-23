@@ -207,30 +207,77 @@ fn valid_sha256_digest(value: &str) -> bool {
 fn reproducibility_drift(
     manifest: &ReproducibilityManifest,
     current: &ReproducibilityCapture,
-) -> Vec<String> {
+) -> Vec<ReproducibilityDrift> {
     let mut drift = Vec::new();
     if manifest.tool_versions != current.tool_versions {
-        drift.push("tool versions changed".into());
+        drift.push(ReproducibilityDrift {
+            kind: ReproducibilityDriftKind::ToolVersions,
+            changed_keys: changed_map_keys(&manifest.tool_versions, &current.tool_versions),
+        });
     }
     if manifest.environment_variables != current.environment_variables {
-        drift.push("environment variables changed".into());
+        drift.push(ReproducibilityDrift {
+            kind: ReproducibilityDriftKind::EnvironmentVariables,
+            changed_keys: changed_map_keys(
+                &manifest.environment_variables,
+                &current.environment_variables,
+            ),
+        });
     }
     if manifest.system_dependencies != current.system_dependencies {
-        drift.push("system dependencies changed".into());
+        drift.push(ReproducibilityDrift {
+            kind: ReproducibilityDriftKind::SystemDependencies,
+            changed_keys: changed_map_keys(
+                &manifest.system_dependencies,
+                &current.system_dependencies,
+            ),
+        });
     }
     if manifest.container_image_digests != current.container_image_digests {
-        drift.push("container image digests changed".into());
+        drift.push(ReproducibilityDrift {
+            kind: ReproducibilityDriftKind::ContainerImages,
+            changed_keys: changed_map_keys(
+                &manifest.container_image_digests,
+                &current.container_image_digests,
+            ),
+        });
     }
     if manifest.git_submodules != current.git_submodules {
-        drift.push("git submodule commits changed".into());
+        drift.push(ReproducibilityDrift {
+            kind: ReproducibilityDriftKind::GitSubmodules,
+            changed_keys: changed_map_keys(&manifest.git_submodules, &current.git_submodules),
+        });
     }
     if manifest.git_lfs_objects != current.git_lfs_objects {
-        drift.push("git lfs objects changed".into());
+        drift.push(ReproducibilityDrift {
+            kind: ReproducibilityDriftKind::GitLfsObjects,
+            changed_keys: vec!["inventory".into()],
+        });
     }
     if manifest.external_dependencies != current.external_dependencies {
-        drift.push("external dependency snapshots changed".into());
+        drift.push(ReproducibilityDrift {
+            kind: ReproducibilityDriftKind::ExternalDependencies,
+            changed_keys: changed_map_keys(
+                &manifest.external_dependencies,
+                &current.external_dependencies,
+            ),
+        });
     }
     drift
+}
+
+fn changed_map_keys<T: PartialEq>(
+    original: &std::collections::BTreeMap<String, T>,
+    current: &std::collections::BTreeMap<String, T>,
+) -> Vec<String> {
+    original
+        .keys()
+        .chain(current.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|key| original.get(*key) != current.get(*key))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -271,9 +318,14 @@ mod reproducibility_unit_tests {
             validation_config_sha256: "validation".into(),
             created_at: "now".into(),
         };
+        let drift = reproducibility_drift(&manifest, &capture);
+        assert_eq!(drift.len(), 2);
+        assert_eq!(drift[0].kind, ReproducibilityDriftKind::ToolVersions);
+        assert_eq!(drift[0].changed_keys, vec!["git"]);
         assert_eq!(
-            reproducibility_drift(&manifest, &capture),
-            vec!["tool versions changed", "external dependency snapshots changed"]
+            drift[1].kind,
+            ReproducibilityDriftKind::ExternalDependencies
         );
+        assert_eq!(drift[1].changed_keys, vec!["db"]);
     }
 }

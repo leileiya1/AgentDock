@@ -15,5 +15,9 @@ tokio.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+[[bin]]
+name = "verify-macos-bundle"
+path = "src/bin/verify_macos_bundle.rs"
+
 [lints]
 workspace = true

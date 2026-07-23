@@ -474,6 +474,7 @@ mod failure_tests {
                     args: vec!["-c".into(), "sleep 30 & wait".into()],
                     cwd: req.worktree,
                     env: HashMap::new(),
+                    clear_environment: false,
                     env_denylist: Vec::new(),
                     timeout: req.timeout,
                     idle_timeout: req.idle_timeout,

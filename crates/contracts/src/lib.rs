@@ -58,6 +58,10 @@ include!("settings.rs");
 include!("operations.rs");
 // Planning, budgets, reproducibility, delivery and execution-node DTOs share one governance API.
 include!("governance.rs");
+// Permission broker DTOs form a stable security boundary shared by daemon, UI and sidecars.
+include!("permissions.rs");
+// Task preflight readiness (developer/reviewer chain probe) gates a run before it is created.
+include!("preflight.rs");
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
@@ -100,12 +104,64 @@ pub struct TaskDetail {
     pub branch: Option<String>,
     #[specta(type = i32)]
     pub max_revisions: i64,
+    pub acceptance_criteria: Vec<AcceptanceCriterion>,
     pub blocked_detail: Option<String>,
     pub revisions: Vec<RevisionInfo>,
     pub policy: TaskPolicy,
     pub plan: Option<CodingPlan>,
     pub budget: BudgetUsage,
     pub delivery: Option<DeliveryRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptanceCriterionKind {
+    Build,
+    Test,
+    Behavior,
+    Manual,
+}
+
+impl std::fmt::Display for AcceptanceCriterionKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Build => "build",
+            Self::Test => "test",
+            Self::Behavior => "behavior",
+            Self::Manual => "manual",
+        })
+    }
+}
+
+impl std::str::FromStr for AcceptanceCriterionKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "build" => Ok(Self::Build),
+            "test" => Ok(Self::Test),
+            "behavior" => Ok(Self::Behavior),
+            "manual" => Ok(Self::Manual),
+            _ => Err(format!("unknown acceptance criterion kind: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceCriterionInput {
+    pub kind: AcceptanceCriterionKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceCriterion {
+    pub id: String,
+    pub kind: AcceptanceCriterionKind,
+    pub text: String,
+    #[specta(type = i32)]
+    pub position: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
@@ -128,6 +184,12 @@ pub struct DiffStat {
     #[specta(type = i32)]
     pub deletions: i64,
     pub flagged: Vec<String>,
+    /// §45: how many files this revision fully deleted. Surfaced at approval so a mass deletion is
+    /// never merged without a human noticing. `#[serde(default)]` keeps older diff_stat_json rows
+    /// (written before this field existed) loadable.
+    #[specta(type = i32)]
+    #[serde(default)]
+    pub deleted_files: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
@@ -185,7 +247,19 @@ pub struct Review {
     pub summary: Option<String>,
     #[serde(default)]
     pub reviewer_agents: Vec<AgentKind>,
+    /// 委员会每位成员的独立结论（跨厂商分工的可解释性）。单一审查时为空。
+    #[serde(default)]
+    pub member_votes: Vec<CouncilMemberVote>,
     pub issues: Vec<ReviewIssue>,
+}
+
+/// 审查委员会单个成员的独立投票，用于向用户展示「谁投了什么」与裁决依据。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CouncilMemberVote {
+    pub agent: AgentKind,
+    pub decision: ReviewDecision,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
@@ -206,6 +280,10 @@ pub struct ReviewIssue {
     pub reported_by: Vec<AgentKind>,
     #[specta(type = i32)]
     pub agreement_count: i64,
+    /// §24: true when council members disagreed on this issue's severity across the serious↔minor
+    /// boundary. Informational only — the aggregate decision uses the highest severity regardless.
+    #[serde(default)]
+    pub severity_disagreement: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
@@ -220,12 +298,27 @@ pub struct ToolStatus {
     /// Normalized source such as `account`, `api_key`, or `oauth_token`.
     pub auth_method: Option<String>,
     pub auth_problem: Option<String>,
+    /// Whether this exact CLI version has passed AgentFlow's pinned compatibility suite.
+    pub support_level: CliSupportLevel,
+    /// Exact upstream versions exercised by the compatibility workflow.
+    pub verified_versions: Vec<String>,
 }
+
+string_enum!(CliSupportLevel {
+    #[default]
+    Untracked => "untracked",
+    Verified => "verified",
+    CompatibleUntested => "compatible_untested",
+    Unsupported => "unsupported",
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvReport {
+    pub system: SystemEnvironment,
     pub git: ToolStatus,
+    pub node: ToolStatus,
+    pub bun: ToolStatus,
     pub claude_code: ToolStatus,
     pub codex: ToolStatus,
     pub gemini_cli: ToolStatus,
@@ -243,9 +336,36 @@ pub struct EnvReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct EnvironmentCheck {
+    pub available: bool,
+    pub detail: Option<String>,
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemEnvironment {
+    pub os: String,
+    pub os_version: Option<String>,
+    pub architecture: String,
+    pub agentflow_version: String,
+    pub shell: Option<String>,
+    #[specta(type = f64)]
+    pub disk_available_bytes: u64,
+    pub network: EnvironmentCheck,
+    pub keychain: EnvironmentCheck,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct OnboardingReport {
     pub first_run: bool,
     pub daemon_running: bool,
+    /// The desktop and its local data directory can be opened safely.
+    pub app_ready: bool,
+    /// At least one independent developer/reviewer combination can complete the workflow.
+    pub workflow_ready: bool,
+    /// Backwards-compatible alias for `workflow_ready`.
     pub ready: bool,
     pub data_dir: String,
     pub env: EnvReport,
@@ -420,7 +540,10 @@ string_enum!(ErrorCode {
     PlanApprovalRequired => "PLAN_APPROVAL_REQUIRED", BudgetExceeded => "BUDGET_EXCEEDED",
     QualityGateFailed => "QUALITY_GATE_FAILED", ScmCliNotFound => "SCM_CLI_NOT_FOUND",
     CiFailed => "CI_FAILED", RemoteNodeUnavailable => "REMOTE_NODE_UNAVAILABLE",
-    RollbackUnsafe => "ROLLBACK_UNSAFE", IoError => "IO_ERROR", Internal => "INTERNAL"
+    RollbackUnsafe => "ROLLBACK_UNSAFE", PermissionRequestStale => "PERMISSION_REQUEST_STALE",
+    PermissionPathEscape => "PERMISSION_PATH_ESCAPE", PermissionRuleTooBroad => "PERMISSION_RULE_TOO_BROAD",
+    PermissionNotGrantable => "PERMISSION_NOT_GRANTABLE", PermissionExpired => "PERMISSION_EXPIRED",
+    PermissionDenied => "PERMISSION_DENIED", IoError => "IO_ERROR", Internal => "INTERNAL"
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]

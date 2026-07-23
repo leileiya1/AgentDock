@@ -1,3 +1,87 @@
+const PROVIDER_ENV_KEYS: [&str; 9] = [
+    "HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "SHELL", "TERM",
+];
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompatibilityMatrix {
+    schema_version: u32,
+    providers: HashMap<String, CliCompatibility>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliCompatibility {
+    verified_versions: Vec<String>,
+    required_flags: Vec<String>,
+    runtime_probe: Option<String>,
+}
+
+fn compatibility_matrix() -> Result<CompatibilityMatrix, AdapterError> {
+    let matrix: CompatibilityMatrix = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../config/provider-compatibility.json"
+    )))
+    .map_err(|error| AdapterError::Incompatible(format!("invalid support matrix: {error}")))?;
+    if matrix.schema_version != 1 {
+        return Err(AdapterError::Incompatible(format!(
+            "unsupported support matrix schema {}",
+            matrix.schema_version
+        )));
+    }
+    Ok(matrix)
+}
+
+fn normalized_cli_version(output: &str) -> Option<String> {
+    output.split_whitespace().find_map(|token| {
+        let candidate = token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-');
+        let starts_with_digit = candidate
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_digit);
+        (starts_with_digit && candidate.contains('.')).then(|| candidate.to_string())
+    })
+}
+
+fn support_level(
+    name: &str,
+    version_output: Option<&str>,
+    flags_compatible: bool,
+    matrix: &CompatibilityMatrix,
+) -> (CliSupportLevel, Vec<String>) {
+    let Some(entry) = matrix.providers.get(name) else {
+        return (CliSupportLevel::Untracked, Vec::new());
+    };
+    if !flags_compatible {
+        return (
+            CliSupportLevel::Unsupported,
+            entry.verified_versions.clone(),
+        );
+    }
+    let installed = version_output.and_then(normalized_cli_version);
+    let level = if installed.as_ref().is_some_and(|version| {
+        entry
+            .verified_versions
+            .iter()
+            .any(|verified| verified == version)
+    }) {
+        CliSupportLevel::Verified
+    } else {
+        CliSupportLevel::CompatibleUntested
+    };
+    (level, entry.verified_versions.clone())
+}
+
+fn provider_environment(provider_name: &str) -> HashMap<String, String> {
+    let mut provider_env = cli_credential_env(provider_name);
+    for key in PROVIDER_ENV_KEYS {
+        if let Ok(value) = std::env::var(key) {
+            provider_env.entry(key.into()).or_insert(value);
+        }
+    }
+    provider_env
+}
+
 async fn start_process(
     provider_name: &str,
     program: PathBuf,
@@ -7,7 +91,7 @@ async fn start_process(
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<RunningAgent, AdapterError> {
     tokio::fs::create_dir_all(&req.run_dir).await?;
-    let mut provider_env = cli_credential_env(provider_name);
+    let mut provider_env = provider_environment(provider_name);
     // A project-level deny rule remains authoritative even for AgentFlow-managed credentials.
     for key in &req.env_denylist {
         provider_env.remove(key);
@@ -18,6 +102,7 @@ async fn start_process(
             args,
             cwd: req.worktree,
             env: provider_env,
+            clear_environment: true,
             env_denylist: req.env_denylist,
             timeout: req.timeout,
             idle_timeout: req.idle_timeout,
@@ -87,6 +172,67 @@ async fn resolve_cli(name: &str, path: &Path) -> Result<PathBuf, AdapterError> {
         }
     }
     Err(AdapterError::NotFound(name.into()))
+}
+
+async fn resolve_codex_cli(path: &Path) -> Result<PathBuf, AdapterError> {
+    if path != Path::new("codex") {
+        return resolve_cli("codex", path).await;
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(found) = resolve_cli("codex", path).await {
+        candidates.push(found);
+    }
+    #[cfg(target_os = "macos")]
+    candidates.push(PathBuf::from(
+        "/Applications/ChatGPT.app/Contents/Resources/codex",
+    ));
+    candidates.dedup();
+
+    let mut installed = Vec::new();
+    for candidate in candidates {
+        if !candidate.exists() {
+            continue;
+        }
+        if let Ok(version) = output_text(&candidate, &["--version"]).await {
+            installed.push((candidate, version));
+        }
+    }
+    select_codex_candidate(&installed, codex_cache_client_version().as_deref())
+        .ok_or_else(|| AdapterError::NotFound("codex".into()))
+}
+
+fn select_codex_candidate(
+    candidates: &[(PathBuf, String)],
+    cache_client_version: Option<&str>,
+) -> Option<PathBuf> {
+    cache_client_version
+        .and_then(|cache_version| {
+            candidates.iter().find_map(|(path, version)| {
+                (codex_base_version(version) == Some(cache_version)).then(|| path.clone())
+            })
+        })
+        .or_else(|| candidates.first().map(|(path, _)| path.clone()))
+}
+
+fn codex_base_version(version_output: &str) -> Option<&str> {
+    version_output
+        .split_whitespace()
+        .last()
+        .and_then(|version| version.split('-').next())
+        .filter(|version| !version.is_empty())
+}
+
+fn codex_cache_client_version() -> Option<String> {
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))?;
+    let cache = std::fs::read_to_string(codex_home.join("models_cache.json")).ok()?;
+    serde_json::from_str::<Value>(&cache)
+        .ok()?
+        .get("client_version")?
+        .as_str()
+        .map(str::to_owned)
 }
 async fn output_text(program: &Path, args: &[&str]) -> Result<String, AdapterError> {
     let out = Command::new(program)
@@ -177,8 +323,13 @@ fn parse_plan(text: &str) -> Result<PlanResult, AdapterError> {
     let mut last_error = None;
     for candidate in candidates.into_iter().rev() {
         let parsed = (|| {
-            let value: Value = serde_json::from_str(&candidate)
+            let mut value: Value = serde_json::from_str(&candidate)
                 .map_err(|error| AdapterError::InvalidResult(error.to_string()))?;
+            if let Some(steps) = value.get_mut("steps").and_then(Value::as_array_mut) {
+                for step in steps {
+                    insert_null_for_missing(step, &["validation"]);
+                }
+            }
             validate_schema(&value, &plan_result_schema())?;
             let result: PlanResult = serde_json::from_value(value)
                 .map_err(|error| AdapterError::InvalidResult(error.to_string()))?;
@@ -260,8 +411,12 @@ fn collect_json_strings(value: &Value, candidates: &mut Vec<String>) {
 }
 
 fn parse_development_object(candidate: &str) -> Result<DevelopmentResult, AdapterError> {
-    let value: Value = serde_json::from_str(candidate)
+    let mut value: Value = serde_json::from_str(candidate)
         .map_err(|error| AdapterError::InvalidResult(error.to_string()))?;
+    insert_null_for_missing(
+        &mut value,
+        &["question", "changed_files", "notes", "plan_sha256"],
+    );
     validate_schema(&value, &development_result_schema())?;
     let result: DevelopmentResult =
         serde_json::from_value(value).map_err(|e| AdapterError::InvalidResult(e.to_string()))?;
@@ -324,8 +479,22 @@ fn parse_review(text: &str) -> Result<ReviewResult, AdapterError> {
 }
 
 fn parse_review_object(candidate: &str) -> Result<ReviewResult, AdapterError> {
-    let value: Value = serde_json::from_str(candidate)
+    let mut value: Value = serde_json::from_str(candidate)
         .map_err(|error| AdapterError::InvalidResult(error.to_string()))?;
+    if let Some(issues) = value.get_mut("issues").and_then(Value::as_array_mut) {
+        for issue in issues {
+            insert_null_for_missing(
+                issue,
+                &[
+                    "file",
+                    "line_start",
+                    "line_end",
+                    "description",
+                    "suggested_action",
+                ],
+            );
+        }
+    }
     validate_schema(&value, &review_result_schema())?;
     let result: ReviewResult =
         serde_json::from_value(value).map_err(|e| AdapterError::InvalidResult(e.to_string()))?;
@@ -340,6 +509,14 @@ fn parse_review_object(candidate: &str) -> Result<ReviewResult, AdapterError> {
         ));
     }
     Ok(result)
+}
+
+fn insert_null_for_missing(value: &mut Value, fields: &[&str]) {
+    if let Some(object) = value.as_object_mut() {
+        for field in fields {
+            object.entry(*field).or_insert(Value::Null);
+        }
+    }
 }
 
 /// Providers sometimes add a short explanation before their required JSON. Extract complete
@@ -402,11 +579,23 @@ fn validate_schema<T: serde::Serialize>(value: &Value, schema: &T) -> Result<(),
 
 pub async fn tool_status(name: &str, path: Option<PathBuf>, flags: &[&str]) -> ToolStatus {
     let candidate = path.unwrap_or_else(|| PathBuf::from(name));
-    match resolve_cli(name, &candidate).await {
+    let resolved = if name == "codex" {
+        resolve_codex_cli(&candidate).await
+    } else {
+        resolve_cli(name, &candidate).await
+    };
+    match resolved {
         Ok(p) => {
             let version = output_text(&p, &["--version"]).await.ok();
-            let compatible = if flags.is_empty() {
-                true
+            let matrix = compatibility_matrix();
+            let required_flags = matrix
+                .as_ref()
+                .ok()
+                .and_then(|matrix| matrix.providers.get(name))
+                .map(|entry| entry.required_flags.iter().map(String::as_str).collect::<Vec<_>>())
+                .unwrap_or_else(|| flags.to_vec());
+            let help = if required_flags.is_empty() {
+                None
             } else {
                 output_text(
                     &p,
@@ -417,23 +606,51 @@ pub async fn tool_status(name: &str, path: Option<PathBuf>, flags: &[&str]) -> T
                     },
                 )
                 .await
-                .map(|h| flags.iter().all(|f| h.contains(f)))
-                .unwrap_or(false)
+                .ok()
+            };
+            let missing_flags = if required_flags.is_empty() {
+                Vec::new()
+            } else {
+                required_flags
+                    .iter()
+                    .filter(|flag| help.as_deref().is_none_or(|value| !value.contains(**flag)))
+                    .copied()
+                    .collect::<Vec<_>>()
+            };
+            let compatible = if required_flags.is_empty() {
+                true
+            } else {
+                missing_flags.is_empty()
             };
             let (authenticated, auth_method, auth_problem) = if compatible {
                 cli_auth_status(name, &p).await
             } else {
                 (None, None, None)
             };
+            let (support_level, verified_versions) = matrix
+                .as_ref()
+                .map(|matrix| support_level(name, version.as_deref(), compatible, matrix))
+                .unwrap_or((CliSupportLevel::Unsupported, Vec::new()));
+            let problem = matrix
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .or_else(|| {
+                    (!compatible).then(|| {
+                        format!("required CLI flags are missing: {}", missing_flags.join(", "))
+                    })
+                });
             ToolStatus {
                 found: true,
                 path: Some(p.to_string_lossy().into_owned()),
                 version,
                 compatible,
-                problem: (!compatible).then(|| "required CLI flags are missing".into()),
+                problem,
                 authenticated,
                 auth_method,
                 auth_problem,
+                support_level,
+                verified_versions,
             }
         }
         Err(e) => ToolStatus {
@@ -445,7 +662,225 @@ pub async fn tool_status(name: &str, path: Option<PathBuf>, flags: &[&str]) -> T
             authenticated: None,
             auth_method: None,
             auth_problem: None,
+            support_level: CliSupportLevel::Untracked,
+            verified_versions: compatibility_matrix()
+                .ok()
+                .and_then(|matrix| matrix.providers.get(name).cloned())
+                .map(|entry| entry.verified_versions)
+                .unwrap_or_default(),
         },
+    }
+}
+
+const RUNTIME_PROBE_MARKER: &str = "AGENTFLOW_PROBE_OK";
+
+/// Whether this CLI has a side-effect-free, non-interactive runtime probe implementation. The
+/// matrix declaration and the implementation whitelist must both agree, so a typo or a future
+/// unimplemented strategy fails closed instead of launching an unknown command shape.
+pub fn runtime_probe_supported(name: &str) -> bool {
+    compatibility_matrix()
+        .ok()
+        .and_then(|matrix| matrix.providers.get(name).cloned())
+        .and_then(|entry| entry.runtime_probe)
+        .is_some_and(|strategy| {
+            matches!(
+                strategy.as_str(),
+                "claude_stream_json" | "codex_strict_schema"
+            )
+        })
+}
+
+fn classify_runtime_probe_failure(text: &str, exit_code: Option<i32>) -> String {
+    let lower = text.to_ascii_lowercase();
+    if [
+        "not logged in",
+        "please log in",
+        "authentication_required",
+        "authentication required",
+        "unauthorized",
+        "invalid api key",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return "真实探针认证失败，请在终端重新登录或更新 CLI 凭据".into();
+    }
+    if [
+        "rate_limit",
+        "rate limit",
+        "usage limit",
+        "hit your limit",
+        "five-hour limit",
+        "quota",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return "真实探针触发额度或速率限制，已安全降级到后备 Provider".into();
+    }
+    if [
+        "unknown option",
+        "unexpected argument",
+        "output schema",
+        "invalid schema",
+        "models_cache",
+        "client_version",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return "真实探针发现 CLI 协议或结构化输出不兼容，请切换到已验证版本".into();
+    }
+    format!(
+        "真实探针未成功（退出码 {}），已安全降级到后备 Provider",
+        exit_code.map_or_else(|| "未知".into(), |code| code.to_string())
+    )
+}
+
+/// Execute a tiny, read-only request against the real Claude/Codex runtime. The probe runs inside
+/// an isolated temporary git repository, carries the same minimal environment used by real jobs,
+/// disallows writes/tools, and returns only a categorized verdict so provider output is never
+/// surfaced to the desktop or persisted in the task database.
+pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
+    let strategy = compatibility_matrix()
+        .ok()
+        .and_then(|matrix| matrix.providers.get(name).cloned())
+        .and_then(|entry| entry.runtime_probe);
+    if strategy.as_deref().is_none_or(|strategy| {
+        !matches!(strategy, "claude_stream_json" | "codex_strict_schema")
+    }) {
+        return CliRuntimeProbe {
+            passed: false,
+            problem: Some(format!("{name} 尚未实现真实运行探针")),
+        };
+    }
+    let temp = match tempfile::Builder::new()
+        .prefix("agentflow-provider-probe-")
+        .tempdir()
+    {
+        Ok(value) => value,
+        Err(error) => {
+            return CliRuntimeProbe {
+                passed: false,
+                problem: Some(format!("无法创建真实探针目录：{error}")),
+            };
+        }
+    };
+    let git_init = Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(temp.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    if !git_init.is_ok_and(|status| status.success()) {
+        return CliRuntimeProbe {
+            passed: false,
+            problem: Some("无法初始化真实探针的临时 Git 仓库".into()),
+        };
+    }
+
+    let last_message = temp.path().join("last-message.json");
+    let schema_path = temp.path().join("probe.schema.json");
+    let schema = json!({
+        "type": "object",
+        "properties": {"probe": {"type": "string", "const": RUNTIME_PROBE_MARKER}},
+        "required": ["probe"],
+        "additionalProperties": false
+    });
+    if let Err(error) = tokio::fs::write(
+        &schema_path,
+        serde_json::to_vec_pretty(&schema).unwrap_or_default(),
+    )
+    .await
+    {
+        return CliRuntimeProbe {
+            passed: false,
+            problem: Some(format!("无法写入真实探针 schema：{error}")),
+        };
+    }
+
+    let args = if strategy.as_deref() == Some("claude_stream_json") {
+        vec![
+            "-p".into(),
+            format!("只回复 {RUNTIME_PROBE_MARKER}，不要读取文件、不要调用工具"),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+            "--permission-mode".into(),
+            "plan".into(),
+            "--disallowedTools".into(),
+            "Read,Write,Edit,Bash,Glob,Grep,WebFetch,WebSearch".into(),
+            "--max-turns".into(),
+            "1".into(),
+        ]
+    } else {
+        vec![
+            "exec".into(),
+            "--ignore-user-config".into(),
+            "--ephemeral".into(),
+            "--disable".into(),
+            "plugins".into(),
+            "--disable".into(),
+            "remote_plugin".into(),
+            "--disable".into(),
+            "apps".into(),
+            "--disable".into(),
+            "memories".into(),
+            "--cd".into(),
+            temp.path().to_string_lossy().into_owned(),
+            "--sandbox".into(),
+            "read-only".into(),
+            "--json".into(),
+            "-o".into(),
+            last_message.to_string_lossy().into_owned(),
+            "--output-schema".into(),
+            schema_path.to_string_lossy().into_owned(),
+            format!("只输出 JSON：{{\"probe\":\"{RUNTIME_PROBE_MARKER}\"}}，不要调用工具"),
+        ]
+    };
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(temp.path())
+        .env_clear()
+        .envs(provider_environment(name))
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let output = match tokio::time::timeout(Duration::from_secs(45), command.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            return CliRuntimeProbe {
+                passed: false,
+                problem: Some(format!("无法启动真实探针：{error}")),
+            };
+        }
+        Err(_) => {
+            return CliRuntimeProbe {
+                passed: false,
+                problem: Some("真实探针 45 秒未响应，已安全降级到后备 Provider".into()),
+            };
+        }
+    };
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    if let Ok(last) = tokio::fs::read_to_string(&last_message).await {
+        combined.push_str(&last);
+    }
+    if output.status.success() && combined.contains(RUNTIME_PROBE_MARKER) {
+        CliRuntimeProbe {
+            passed: true,
+            problem: None,
+        }
+    } else {
+        CliRuntimeProbe {
+            passed: false,
+            problem: Some(classify_runtime_probe_failure(
+                &combined,
+                output.status.code(),
+            )),
+        }
     }
 }
 

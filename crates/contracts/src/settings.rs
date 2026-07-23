@@ -1,6 +1,30 @@
 pub const CLAUDE_CLI_KEYCHAIN_SERVICE: &str = "com.agentflow.claude-cli-api-key";
 pub const CODEX_CLI_KEYCHAIN_SERVICE: &str = "com.agentflow.codex-cli-api-key";
 
+string_enum!(ProjectConfigChangeKind {
+    Added => "added",
+    Removed => "removed",
+    Changed => "changed"
+});
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectConfigCommand {
+    pub name: String,
+    pub argv: Vec<String>,
+    pub timeout_secs: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectConfigChange {
+    pub path: String,
+    pub kind: ProjectConfigChangeKind,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub high_risk: bool,
+}
+
 /// Local trust decision for repository-owned AgentFlow configuration. The approved hash lives
 /// outside the repository, so an Agent cannot grant itself command execution permissions by
 /// editing `.agentflow/project.toml`.
@@ -13,6 +37,15 @@ pub struct ProjectConfigTrust {
     pub trusted: bool,
     pub validation_steps: Vec<String>,
     pub extra_allowed_commands: Vec<String>,
+    pub validation_commands: Vec<ProjectConfigCommand>,
+    pub environment_allowlist: Vec<String>,
+    pub external_dependencies: Vec<String>,
+    pub container_images: Vec<String>,
+    pub lock_environment: bool,
+    pub hermetic: bool,
+    pub previous_approved_sha256: Option<String>,
+    pub changes: Vec<ProjectConfigChange>,
+    pub byte_only_change: bool,
     pub approved_at: Option<String>,
 }
 

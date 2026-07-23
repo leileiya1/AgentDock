@@ -2,13 +2,63 @@ string_enum!(PlanStatus { Pending => "pending", Approved => "approved", Rejected
 string_enum!(DeliveryMode { LocalMerge => "local_merge", GitHubPr => "github_pr", GitLabMr => "gitlab_mr" });
 string_enum!(DeliveryState { Pending => "pending", Open => "open", CiRunning => "ci_running", Ready => "ready", Merged => "merged", Failed => "failed", RolledBack => "rolled_back" });
 string_enum!(CiStatus { Unknown => "unknown", Pending => "pending", Passed => "passed", Failed => "failed" });
+string_enum!(CiCheckStatus {
+    Pending => "pending",
+    Passed => "passed",
+    Failed => "failed",
+    Cancelled => "cancelled",
+    Skipped => "skipped",
+    Unknown => "unknown"
+});
 string_enum!(RollbackStrategy { Undo => "undo", Revert => "revert" });
+string_enum!(RollbackBlocker {
+    TaskNotMerged => "task_not_merged",
+    DeliveryRecordMissing => "delivery_record_missing",
+    RemoteDeliveryUnsupported => "remote_delivery_unsupported",
+    TargetBranchNotCheckedOut => "target_branch_not_checked_out",
+    DirtyWorkingTree => "dirty_working_tree",
+    MergeCommitMissing => "merge_commit_missing",
+    PreMergeCommitMissing => "pre_merge_commit_missing",
+    LaterCommitsExist => "later_commits_exist",
+    MergeNotInHead => "merge_not_in_head"
+});
+string_enum!(RollbackRecommendationReason {
+    UndoExactHead => "undo_exact_head",
+    RevertPreservesLaterCommits => "revert_preserves_later_commits",
+    NoSafeStrategy => "no_safe_strategy"
+});
 string_enum!(NodeStatus { Unknown => "unknown", Online => "online", Offline => "offline" });
+string_enum!(NodeDiagnosticStatus { Passed => "passed", Failed => "failed", Skipped => "skipped" });
+string_enum!(NodeDiagnosticStep {
+    Dns => "dns",
+    Tcp => "tcp",
+    SshAuthentication => "ssh_authentication",
+    WorkRoot => "work_root",
+    Platform => "platform",
+    Git => "git",
+    ArchiveTool => "archive_tool",
+    Toolchain => "toolchain"
+});
 string_enum!(QualityGrade { A => "A", B => "B", C => "C", D => "D" });
 // Whether a budget is enforced before/during a Provider run or only reconciled
 // after the Provider exits. The desktop must not present `soft` as a guarantee.
 string_enum!(BudgetEnforcement { Hard => "hard", Soft => "soft", Unavailable => "unavailable" });
 string_enum!(ReproducibilityLevel { #[default] FixedCommit => "fixed_commit", EnvironmentLocked => "environment_locked", Hermetic => "hermetic" });
+string_enum!(QualityReplayStatus {
+    Succeeded => "succeeded",
+    ValidationFailed => "validation_failed",
+    DriftBlocked => "drift_blocked",
+    Failed => "failed"
+});
+string_enum!(ReproducibilityDriftKind {
+    ToolVersions => "tool_versions",
+    EnvironmentVariables => "environment_variables",
+    SystemDependencies => "system_dependencies",
+    ContainerImages => "container_images",
+    GitSubmodules => "git_submodules",
+    GitLfsObjects => "git_lfs_objects",
+    ExternalDependencies => "external_dependencies"
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +115,40 @@ pub struct CodingPlan {
     pub plan_sha256: Option<String>,
     pub created_at: String,
     pub approved_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CodingPlanHistoryEntry {
+    pub plan: CodingPlan,
+    pub rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanVersionDiff {
+    #[specta(type = i32)]
+    pub from_version: i64,
+    #[specta(type = i32)]
+    pub to_version: i64,
+    pub summary_changed: bool,
+    pub added_steps: Vec<String>,
+    pub removed_steps: Vec<String>,
+    pub added_allowed_paths: Vec<String>,
+    pub removed_allowed_paths: Vec<String>,
+    pub added_risks: Vec<String>,
+    pub removed_risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanReviewContext {
+    pub task_id: String,
+    pub plans: Vec<CodingPlanHistoryEntry>,
+    pub latest_diff: Option<PlanVersionDiff>,
+    pub detected_deviations: Vec<String>,
+    pub deviation_plan_id: Option<String>,
+    pub deviation_detected_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -136,6 +220,12 @@ pub struct GitCompatibilityReport {
     pub network_filesystem: bool,
     pub case_insensitive: bool,
     pub case_collisions: Vec<String>,
+    /// Paths whose Git registration is explicitly marked `prunable`. Running `git worktree prune`
+    /// removes only these stale registrations; it never deletes a live project directory.
+    pub prunable_worktrees: Vec<String>,
+    pub repo_readable: bool,
+    pub repo_writable: bool,
+    pub worktree_root_writable: bool,
     pub warnings: Vec<String>,
     pub blockers: Vec<String>,
 }
@@ -200,6 +290,34 @@ pub struct QualityEvaluation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct ReproducibilityDrift {
+    pub kind: ReproducibilityDriftKind,
+    /// Names only. Environment values and credentials are never exposed.
+    pub changed_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityReplayAttempt {
+    pub id: String,
+    pub task_id: String,
+    #[specta(type = i32)]
+    pub revision: i64,
+    pub status: QualityReplayStatus,
+    pub reproducibility_level: ReproducibilityLevel,
+    pub environment_match: bool,
+    pub drift: Vec<ReproducibilityDrift>,
+    pub original_quality: Option<QualityEvaluation>,
+    pub replay_quality: Option<QualityEvaluation>,
+    pub score_delta: Option<i32>,
+    pub error_code: Option<String>,
+    pub error_detail: Option<String>,
+    pub created_at: String,
+    pub finished_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct DeliveryRecord {
     pub mode: DeliveryMode,
     pub state: DeliveryState,
@@ -207,6 +325,8 @@ pub struct DeliveryRecord {
     #[specta(type = Option<i32>)]
     pub number: Option<i64>,
     pub ci_status: Option<CiStatus>,
+    #[serde(default)]
+    pub ci_checks: Vec<CiCheck>,
     pub merge_commit: Option<String>,
     pub pre_merge_commit: Option<String>,
     pub rollback_commit: Option<String>,
@@ -215,9 +335,61 @@ pub struct DeliveryRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct CiCheck {
+    pub name: String,
+    pub status: CiCheckStatus,
+    pub required: bool,
+    pub workflow: Option<String>,
+    pub description: Option<String>,
+    pub failure_summary: Option<String>,
+    pub details_url: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+/// Read-only safety analysis captured immediately before a rollback choice.
+/// Execution repeats the same checks so a stale dialog can never bypass Git safety.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackPreflight {
+    pub task_id: String,
+    pub delivery_mode: DeliveryMode,
+    pub target_branch: String,
+    pub current_branch: Option<String>,
+    pub head_commit: Option<String>,
+    pub merge_commit: Option<String>,
+    pub pre_merge_commit: Option<String>,
+    pub working_tree_clean: bool,
+    #[specta(type = i32)]
+    pub later_commit_count: i64,
+    pub later_commits: Vec<RollbackCommitPreview>,
+    #[specta(type = i32)]
+    pub affected_file_count: i64,
+    pub affected_files: Vec<String>,
+    pub affected_files_truncated: bool,
+    pub can_undo: bool,
+    pub undo_blockers: Vec<RollbackBlocker>,
+    pub can_revert: bool,
+    pub revert_blockers: Vec<RollbackBlocker>,
+    pub recommended_strategy: Option<RollbackStrategy>,
+    pub recommendation_reason: RollbackRecommendationReason,
+    pub generated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RollbackCommitPreview {
+    pub sha: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskGovernance {
     pub manifest: Option<ReproducibilityManifest>,
     pub quality: Option<QualityEvaluation>,
+    pub original_quality: Option<QualityEvaluation>,
+    pub latest_replay: Option<QualityReplayAttempt>,
     pub budget: BudgetUsage,
     pub delivery: Option<DeliveryRecord>,
 }
@@ -237,6 +409,20 @@ pub struct ExecutionNode {
     pub git_version: Option<String>,
     pub problem: Option<String>,
     pub last_checked_at: Option<String>,
+    #[serde(default)]
+    pub diagnostics: Vec<ExecutionNodeDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionNodeDiagnostic {
+    pub step: NodeDiagnosticStep,
+    pub status: NodeDiagnosticStatus,
+    pub blocking: bool,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub duration_ms: u32,
+    pub checked_at: String,
 }
 
 pub fn plan_result_schema() -> Value {
@@ -245,7 +431,10 @@ pub fn plan_result_schema() -> Value {
     if let Some(root) = value.as_object_mut() {
         root.insert("additionalProperties".into(), Value::Bool(false));
         if let Some(properties) = root.get_mut("properties").and_then(Value::as_object_mut) {
-            properties.insert("schema_version".into(), serde_json::json!({"const":1}));
+            properties.insert(
+                "schema_version".into(),
+                serde_json::json!({"type":"integer", "const":1}),
+            );
             if let Some(version) = properties.get_mut("plan_version").and_then(Value::as_object_mut) {
                 version.insert("minimum".into(), Value::from(1));
             }
@@ -259,5 +448,6 @@ pub fn plan_result_schema() -> Value {
             step.insert("additionalProperties".into(), Value::Bool(false));
         }
     }
+    require_all_object_properties(&mut value);
     value
 }

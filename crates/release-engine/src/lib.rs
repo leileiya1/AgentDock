@@ -203,5 +203,8 @@ fn safe_version(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
+/// macOS distribution gate: verify code signing, notarization and DMG integrity before release.
+pub mod macos_gate;
+
 #[cfg(test)]
 mod tests;

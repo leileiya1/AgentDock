@@ -1,6 +1,7 @@
 use crate::{
     HandshakeParams, HandshakeResult, HealthResult, PROTOCOL_VERSION, ProtocolRunRequest,
-    ProtocolRunResult, ResolvedProviderManifest, RpcNotification, RpcRequest, RpcResponse,
+    ProtocolRunResult, ProviderPermissionRequest, ResolvedProviderManifest, RpcNotification,
+    RpcRequest, RpcResponse,
 };
 use chrono::Utc;
 use serde::{Serialize, de::DeserializeOwned};
@@ -47,6 +48,7 @@ pub struct ProtocolRunOutcome {
     pub stderr: String,
     pub stderr_truncated: bool,
     pub result: Option<ProtocolRunResult>,
+    pub permission_request: Option<ProviderPermissionRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +91,7 @@ impl ProtocolClient {
         let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
         let idle_timeout = Duration::from_millis(request.idle_timeout_ms);
         let mut result = None;
+        let mut permission_request = None;
         let mut timed_out = false;
         let mut cancelled = false;
 
@@ -115,9 +118,10 @@ impl ProtocolClient {
                         }
                         Ok(Ok(0)) => return Err(ProtocolError::Closed),
                         Ok(Ok(_)) => {
-                            if let Some(run_result) = handle_run_message(&line, &event_tx).await? {
-                                result = Some(run_result);
-                                break;
+                            match handle_run_message(&line, &event_tx).await? {
+                                RunMessage::Continue => {}
+                                RunMessage::Result(run_result) => { result = Some(run_result); break; }
+                                RunMessage::Permission(request) => { permission_request = Some(request); break; }
                             }
                         }
                         Ok(Err(error)) => return Err(ProtocolError::Io(error)),
@@ -132,6 +136,9 @@ impl ProtocolClient {
             session.shutdown().await?;
         }
         let stderr = session.stderr().await?;
+        if let Some(permission) = permission_request.as_ref() {
+            validate_provider_permission(&self.provider, permission)?;
+        }
         let exit_code = result.as_ref().map(|value| value.exit_code);
         Ok(ProtocolRunOutcome {
             pid: session.pid,
@@ -142,27 +149,89 @@ impl ProtocolClient {
             stderr: stderr.text,
             stderr_truncated: stderr.truncated,
             result,
+            permission_request,
         })
     }
+}
+
+fn validate_provider_permission(
+    provider: &ResolvedProviderManifest,
+    request: &ProviderPermissionRequest,
+) -> Result<(), ProtocolError> {
+    use agentflow_contracts::PermissionActionType as Action;
+    let maximum = &provider.manifest.permissions;
+    let allowed = match request.action_type {
+        Action::WorktreeRead | Action::GitRead => maximum.worktree_read,
+        Action::WorktreeWrite | Action::WorktreeDelete | Action::ControlPlaneWrite => {
+            maximum.worktree_write
+        }
+        Action::CommandExecute => request
+            .operation
+            .argv
+            .first()
+            .is_some_and(|command| maximum.commands.contains(command)),
+        Action::DependencyInstall => {
+            request
+                .operation
+                .argv
+                .first()
+                .is_some_and(|command| maximum.commands.contains(command))
+                && request
+                    .operation
+                    .network_domains
+                    .iter()
+                    .all(|domain| maximum.network_domains.contains(domain))
+        }
+        Action::NetworkAccess => request
+            .operation
+            .network_domains
+            .iter()
+            .all(|domain| maximum.network_domains.contains(domain)),
+        Action::ProcessControl => true,
+        Action::EnvironmentRead
+        | Action::SecretAccess
+        | Action::GitMutation
+        | Action::SystemChange
+        | Action::ExternalPath => false,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(ProtocolError::Incompatible(
+            "PERMISSION_MANIFEST_EXCEEDED".into(),
+        ))
+    }
+}
+
+enum RunMessage {
+    Continue,
+    Result(ProtocolRunResult),
+    Permission(ProviderPermissionRequest),
 }
 
 async fn handle_run_message(
     line: &str,
     event_tx: &tokio::sync::mpsc::Sender<agentflow_contracts::AgentEvent>,
-) -> Result<Option<ProtocolRunResult>, ProtocolError> {
+) -> Result<RunMessage, ProtocolError> {
     let value: Value = serde_json::from_str(line)?;
-    if value.get("method").is_some() {
+    if let Some(method) = value.get("method").and_then(Value::as_str) {
+        if method == "permission/requested" {
+            let params = value.get("params").cloned().ok_or_else(|| {
+                ProtocolError::Incompatible("permission notification has no params".into())
+            })?;
+            return Ok(RunMessage::Permission(serde_json::from_value(params)?));
+        }
         let notification: RpcNotification = serde_json::from_value(value)?;
         if notification.method == "event" {
             let _ = event_tx.send(notification.params).await;
         }
-        return Ok(None);
+        return Ok(RunMessage::Continue);
     }
     let response: RpcResponse = serde_json::from_value(value)?;
     if response.id != 2 {
-        return Ok(None);
+        return Ok(RunMessage::Continue);
     }
-    decode_response(response).map(Some)
+    decode_response(response).map(RunMessage::Result)
 }
 
 fn decode_response<T: DeserializeOwned>(response: RpcResponse) -> Result<T, ProtocolError> {
@@ -204,6 +273,12 @@ impl Session {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        command.env_clear();
+        for key in ["HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "SHELL", "TERM"] {
+            if let Ok(value) = std::env::var(key) {
+                command.env(key, value);
+            }
+        }
         for key in env_denylist {
             command.env_remove(key);
         }

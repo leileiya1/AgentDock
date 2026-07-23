@@ -1,6 +1,7 @@
 use agentflow_contracts::{
-    AgentKind, GlobalSettings, ProjectSettings, RepairAction, StorageCleanupScope, TaskPolicy,
-    TaskStatus, TaskSummary,
+    AcceptanceCriterionInput, AgentKind, GlobalSettings, ProjectSettings, QueueState,
+    QueueTaskState, QueueWaitingReason, RepairAction, StorageCleanupScope, TaskPolicy, TaskStatus,
+    TaskSummary,
 };
 use agentflow_orchestrator::Orchestrator;
 use chrono::{Duration as ChronoDuration, Utc};
@@ -55,6 +56,9 @@ pub enum DaemonRequest {
         task_id: String,
         priority: i16,
     },
+    QueueTaskStatus {
+        task_id: String,
+    },
     TaskStatus {
         task_id: String,
     },
@@ -66,10 +70,15 @@ pub enum DaemonRequest {
     ProjectImport {
         path: String,
     },
+    ProjectPruneStaleWorktrees {
+        project_id: String,
+    },
     TaskCreate {
         project_id: String,
         title: String,
         description: String,
+        #[serde(default)]
+        acceptance_criteria: Vec<AcceptanceCriterionInput>,
         developer_agent: AgentKind,
         reviewer_agent: AgentKind,
         target_branch: Option<String>,
@@ -119,15 +128,27 @@ pub enum DaemonRequest {
     ExecutionNode {
         action: ExecutionNodeRequest,
     },
+    PermissionDecide {
+        input: agentflow_contracts::PermissionDecisionInput,
+    },
+    PermissionRuleRevoke {
+        project_id: String,
+        rule_id: String,
+    },
     ProjectSettingsUpdate {
         project_id: String,
         settings: Box<ProjectSettings>,
     },
     ProjectConfigTrustApprove {
         project_id: String,
+        expected_sha256: String,
     },
     ProjectConfigTrustRevoke {
         project_id: String,
+    },
+    EventsExport {
+        project_id: String,
+        task_id: Option<String>,
     },
     SettingsUpdate {
         settings: GlobalSettings,
@@ -275,12 +296,19 @@ pub async fn serve(data_dir: PathBuf, shutdown: CancellationToken) -> Result<(),
 }
 
 async fn maintenance_loop(orchestrator: Arc<Orchestrator>, shutdown: CancellationToken) {
-    let mut tick = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut storage_ticks = 0_u16;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,
             _ = tick.tick() => {
+                if let Err(error) = orchestrator.permission_expire_pending().await {
+                    tracing::warn!(%error, "permission expiration sweep failed");
+                }
+                storage_ticks = storage_ticks.saturating_add(1);
+                if storage_ticks < 360 { continue; }
+                storage_ticks = 0;
                 match orchestrator.storage_cleanup(true).await {
                     Ok(result) if result.bytes_reclaimed > 0 || result.tasks_purged > 0 => {
                         tracing::info!(
@@ -349,7 +377,7 @@ async fn dispatch(
                     "only a queued task can be paused".into(),
                 ));
             }
-            Ok(json!({"taskId":task_id,"paused":true}))
+            value(required_queue_task_state(orchestrator, &task_id).await?)
         }
         DaemonRequest::QueueTaskResume { task_id } => {
             let changed = sqlx::query(
@@ -362,7 +390,7 @@ async fn dispatch(
             if changed.rows_affected() != 1 {
                 return Err(DaemonError::Protocol("task is not queued".into()));
             }
-            Ok(json!({"taskId":task_id,"paused":false}))
+            value(required_queue_task_state(orchestrator, &task_id).await?)
         }
         DaemonRequest::QueueTaskPriority { task_id, priority } => {
             if !(-100..=100).contains(&priority) {
@@ -370,13 +398,29 @@ async fn dispatch(
                     "priority must be between -100 and 100".into(),
                 ));
             }
-            sqlx::query("UPDATE daemon_queue SET priority=?,updated_at=? WHERE task_id=?")
+            let mut transaction = orchestrator.store.pool().begin().await?;
+            let changed =
+                sqlx::query("UPDATE daemon_queue SET priority=?,updated_at=? WHERE task_id=?")
+                    .bind(i64::from(priority))
+                    .bind(Utc::now().to_rfc3339())
+                    .bind(&task_id)
+                    .execute(&mut *transaction)
+                    .await?;
+            if changed.rows_affected() != 1 {
+                return Err(DaemonError::Protocol("task is not queued".into()));
+            }
+            // Keep the task policy in sync so a later re-enqueue does not silently
+            // revert the user's priority choice to the value from task creation.
+            sqlx::query("UPDATE task_policies SET priority=? WHERE task_id=?")
                 .bind(i64::from(priority))
-                .bind(Utc::now().to_rfc3339())
                 .bind(&task_id)
-                .execute(orchestrator.store.pool())
+                .execute(&mut *transaction)
                 .await?;
-            Ok(json!({"taskId":task_id,"priority":priority}))
+            transaction.commit().await?;
+            value(required_queue_task_state(orchestrator, &task_id).await?)
+        }
+        DaemonRequest::QueueTaskStatus { task_id } => {
+            value(queue_task_state(orchestrator, &task_id).await?)
         }
         DaemonRequest::TaskStatus { task_id } => {
             let task = orchestrator.task_get(&task_id).await?;
@@ -394,10 +438,16 @@ async fn dispatch(
         DaemonRequest::ProjectImport { path } => {
             value(orchestrator.project_import(Path::new(&path)).await?)
         }
+        DaemonRequest::ProjectPruneStaleWorktrees { project_id } => value(
+            orchestrator
+                .project_prune_stale_worktrees(&project_id)
+                .await?,
+        ),
         DaemonRequest::TaskCreate {
             project_id,
             title,
             description,
+            acceptance_criteria,
             developer_agent,
             reviewer_agent,
             target_branch,
@@ -406,7 +456,7 @@ async fn dispatch(
             policy,
         } => {
             let task = orchestrator
-                .task_create_governed(
+                .task_create_governed_with_acceptance(
                     &project_id,
                     &title,
                     &description,
@@ -415,6 +465,7 @@ async fn dispatch(
                     target_branch.as_deref(),
                     max_revisions,
                     allow_api_egress,
+                    acceptance_criteria,
                     policy,
                 )
                 .await?;
@@ -479,6 +530,34 @@ async fn dispatch(
         DaemonRequest::ExecutionNode { action } => dispatch_node(orchestrator, action)
             .await
             .map_err(Into::into),
+        DaemonRequest::PermissionDecide { input } => {
+            let request = orchestrator.permission_decide(input).await?;
+            if matches!(
+                request.decision,
+                agentflow_contracts::PermissionDecisionKind::Approve
+                    | agentflow_contracts::PermissionDecisionKind::Deny
+            ) {
+                let task_id = orchestrator
+                    .permission_request_task_id(&request.request_id)
+                    .await?;
+                let task = orchestrator.task_get(&task_id).await?;
+                if matches!(
+                    task.summary.status,
+                    TaskStatus::ReadyForDevelopment | TaskStatus::ReadyForRevision
+                ) {
+                    enqueue_task(orchestrator, &task_id).await?;
+                }
+            }
+            value(request)
+        }
+        DaemonRequest::PermissionRuleRevoke {
+            project_id,
+            rule_id,
+        } => value(
+            orchestrator
+                .permission_rule_revoke(&project_id, &rule_id)
+                .await?,
+        ),
         DaemonRequest::ProjectSettingsUpdate {
             project_id,
             settings,
@@ -487,14 +566,25 @@ async fn dispatch(
                 .project_settings_update(&project_id, &settings)
                 .await?,
         ),
-        DaemonRequest::ProjectConfigTrustApprove { project_id } => value(
+        DaemonRequest::ProjectConfigTrustApprove {
+            project_id,
+            expected_sha256,
+        } => value(
             orchestrator
-                .project_config_trust_approve(&project_id)
+                .project_config_trust_approve(&project_id, &expected_sha256)
                 .await?,
         ),
         DaemonRequest::ProjectConfigTrustRevoke { project_id } => value(
             orchestrator
                 .project_config_trust_revoke(&project_id)
+                .await?,
+        ),
+        DaemonRequest::EventsExport {
+            project_id,
+            task_id,
+        } => value(
+            orchestrator
+                .events_export(&project_id, task_id.as_deref())
                 .await?,
         ),
         DaemonRequest::SettingsUpdate { settings } => {
@@ -523,6 +613,103 @@ async fn dispatch(
 
 fn value<T: Serialize>(value: T) -> Result<Value, DaemonError> {
     serde_json::to_value(value).map_err(|error| DaemonError::Protocol(error.to_string()))
+}
+
+async fn required_queue_task_state(
+    orchestrator: &Orchestrator,
+    task_id: &str,
+) -> Result<QueueTaskState, DaemonError> {
+    queue_task_state(orchestrator, task_id)
+        .await?
+        .ok_or_else(|| DaemonError::Protocol("task is not queued".into()))
+}
+
+async fn queue_task_state(
+    orchestrator: &Orchestrator,
+    task_id: &str,
+) -> Result<Option<QueueTaskState>, DaemonError> {
+    let row = sqlx::query("SELECT task_id,state,attempts,not_before,last_error,enqueued_at,updated_at,priority,paused FROM daemon_queue WHERE task_id=?")
+        .bind(task_id)
+        .fetch_optional(orchestrator.store.pool())
+        .await?;
+    let Some(row) = row else { return Ok(None) };
+
+    let state_text: String = row.try_get("state")?;
+    let state = state_text
+        .parse::<QueueState>()
+        .map_err(DaemonError::Protocol)?;
+    let paused = row.try_get::<i64, _>("paused")? != 0;
+    let priority_raw = row.try_get::<i64, _>("priority")?;
+    let priority = i16::try_from(priority_raw)
+        .map_err(|_| DaemonError::Protocol("queue priority is out of range".into()))?;
+    let attempts_raw = row.try_get::<i64, _>("attempts")?;
+    let attempts = u32::try_from(attempts_raw)
+        .map_err(|_| DaemonError::Protocol("queue attempts is out of range".into()))?;
+    let not_before: Option<String> = row.try_get("not_before")?;
+    let enqueued_at: String = row.try_get("enqueued_at")?;
+    let now = Utc::now();
+    let ready_at = not_before
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+
+    let position = if state == QueueState::Queued && !paused && ready_at.is_none_or(|at| at <= now)
+    {
+        let ahead: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM daemon_queue WHERE state='QUEUED' AND paused=0 AND (not_before IS NULL OR not_before<=?) AND (priority>? OR (priority=? AND enqueued_at<?))")
+            .bind(now.to_rfc3339())
+            .bind(i64::from(priority))
+            .bind(i64::from(priority))
+            .bind(&enqueued_at)
+            .fetch_one(orchestrator.store.pool())
+            .await?;
+        Some(
+            u32::try_from(ahead.saturating_add(1))
+                .map_err(|_| DaemonError::Protocol("queue position is out of range".into()))?,
+        )
+    } else {
+        None
+    };
+
+    let settings = orchestrator.settings_get().await?;
+    let waiting_reason = if state != QueueState::Queued {
+        None
+    } else if paused {
+        Some(QueueWaitingReason::Paused)
+    } else if settings.scheduler_paused {
+        Some(QueueWaitingReason::SchedulerPaused)
+    } else if !inside_run_window(&settings) {
+        Some(QueueWaitingReason::OutsideRunWindow)
+    } else if global_budget_exhausted(orchestrator, &settings).await? {
+        Some(QueueWaitingReason::DailyBudgetExhausted)
+    } else if ready_at.is_some_and(|at| at > now) {
+        Some(QueueWaitingReason::RetryDelay)
+    } else {
+        let running: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM daemon_queue WHERE state='RUNNING'")
+                .fetch_one(orchestrator.store.pool())
+                .await?;
+        if running >= scheduler_limit(&settings) as i64 {
+            Some(QueueWaitingReason::ConcurrencyLimit)
+        } else if position.is_some_and(|value| value > 1) {
+            Some(QueueWaitingReason::TasksAhead)
+        } else {
+            None
+        }
+    };
+
+    Ok(Some(QueueTaskState {
+        task_id: row.try_get("task_id")?,
+        state,
+        paused,
+        priority,
+        position,
+        waiting_reason,
+        not_before,
+        last_error: row.try_get("last_error")?,
+        attempts,
+        enqueued_at,
+        updated_at: row.try_get("updated_at")?,
+    }))
 }
 
 async fn enqueue_task(orchestrator: &Orchestrator, task_id: &str) -> Result<(), DaemonError> {

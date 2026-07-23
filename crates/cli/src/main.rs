@@ -362,6 +362,7 @@ async fn main() -> anyhow::Result<()> {
                     project_id: project.id,
                     title,
                     description: desc,
+                    acceptance_criteria: Vec::new(),
                     developer_agent: developer.into(),
                     reviewer_agent: reviewer.into(),
                     target_branch: None,
@@ -387,7 +388,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::EventsExport { project_id } => println!(
             "{}",
-            orchestrator.events_export(&project_id).await?.display()
+            orchestrator.events_export(&project_id, None).await?.path
         ),
         Commands::Daemon { action } => {
             let command = match action {

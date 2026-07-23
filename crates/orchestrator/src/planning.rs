@@ -30,10 +30,42 @@ impl Orchestrator {
             &project.settings,
             task.api_egress_approved,
         );
+        // Filter the fallback chain to providers that can actually run before spawning anything, so
+        // an uninstalled, not-logged-in or protocol-incompatible provider is never invoked (P0-02).
+        // Skipped providers are recorded up front, so the final failure names every root cause
+        // instead of only the last provider that happened to be tried.
+        let mut catalog = self.provider_list().await;
+        self.apply_runtime_probes(&mut catalog, &chain).await;
+        let assessment = Self::assess_chain(&chain, &catalog);
+        let mut attempts = assessment.skipped_reasons();
+        if assessment.ready.is_empty() {
+            self.block(
+                &task,
+                BlockedReason::RunFailed,
+                &planner_failure_detail(&attempts),
+            )
+            .await?;
+            return Ok(());
+        }
         let mut plan = None;
-        let mut error = String::new();
-        for candidate in chain {
-            let adapter = self.adapter(candidate, &project);
+        let mut previous: Option<AgentKind> = None;
+        let mut previous_error = String::new();
+        // Classify the last planner attempt (idle hang §15 / auth expiry §5 / normal) so the final
+        // block can surface the matching recovery instead of a generic run failure.
+        let mut last_attempt_class = RunFailureClass::Normal;
+        for candidate in assessment.ready {
+            if let Some(from) = previous.clone() {
+                self.record_provider_fallback(
+                    &task,
+                    RunRole::Planner,
+                    from,
+                    candidate.clone(),
+                    &previous_error,
+                )
+                .await?;
+            }
+            let candidate_name = provider_display_name(&candidate, &catalog);
+            let adapter = self.adapter(candidate.clone(), &project);
             let run_dir = self.run_dir(&task.id);
             let running = self
                 .run_agent(
@@ -52,11 +84,35 @@ impl Orchestrator {
                 Ok(value)
                     if value.outcome.exit_code == Some(0) && !value.outcome.timed_out => value,
                 Ok(value) => {
-                    error = format!("planner exited with {:?}", value.outcome.exit_code);
+                    last_attempt_class = if value.outcome.idle_timed_out {
+                        RunFailureClass::Unresponsive
+                    } else if run_output_indicates_auth_failure(&value.run_dir).await {
+                        RunFailureClass::AuthExpired
+                    } else {
+                        RunFailureClass::Normal
+                    };
+                    attempts.push(format!(
+                        "{candidate_name}：规划进程退出码 {:?}{}",
+                        value.outcome.exit_code,
+                        if value.outcome.idle_timed_out {
+                            "，且没有任何输出（判定为无响应）"
+                        } else {
+                            ""
+                        }
+                    ));
+                    previous = Some(candidate);
+                    previous_error = attempts.last().cloned().unwrap_or_default();
                     continue;
                 }
                 Err(value) => {
-                    error = value.to_string();
+                    last_attempt_class = if adapter_error_is_auth(&value) {
+                        RunFailureClass::AuthExpired
+                    } else {
+                        RunFailureClass::Normal
+                    };
+                    attempts.push(format!("{candidate_name}：{value}"));
+                    previous = Some(candidate);
+                    previous_error = attempts.last().cloned().unwrap_or_default();
                     continue;
                 }
             };
@@ -71,16 +127,18 @@ impl Orchestrator {
                         plan = Some(value);
                         break;
                     }
-                Ok(_) => error = "planner result identity did not match".into(),
-                Err(value) => error = value.to_string(),
+                Ok(_) => attempts.push(format!("{candidate_name}：计划结果与任务标识不匹配")),
+                Err(value) => attempts.push(format!("{candidate_name}：{value}")),
             }
+            previous = Some(candidate);
+            previous_error = attempts.last().cloned().unwrap_or_default();
             self.invalidate_agent_run(&running.run_dir).await?;
         }
         let Some(plan) = plan else {
             self.block(
                 &task,
-                BlockedReason::RunFailed,
-                &format!("all planner providers failed: {error}"),
+                run_failure_reason(last_attempt_class, BlockedReason::RunFailed),
+                &planner_failure_detail(&attempts),
             )
             .await?;
             return Ok(());
@@ -134,17 +192,19 @@ impl Orchestrator {
         rejection: Option<&str>,
     ) -> Result<String, OrchestratorError> {
         let rules = load_rules(&project.repo).await?;
+        let acceptance = self.acceptance_criteria_markdown(&task.id).await?;
         let schema = serde_json::to_string_pretty(&plan_result_schema())
             .map_err(|error| OrchestratorError::Config(error.to_string()))?;
         Ok(format!(
             "# AgentFlow 编码前计划 TASK-{} v{}\n\n\
              你处于只读规划阶段，禁止修改、创建或删除项目文件。先检查仓库结构和现有实现，再拟定可执行计划。\n\n\
-             ## 需求\n\n{}\n\n{}\n\n\
+             ## 需求\n\n{}\n\n## 结构化验收条件\n\n{}\n\n{}\n\n\
              ## 项目规则\n\n{}\n\n\
              ## 输出要求\n\n只输出符合 schema 的 JSON；task_id=`{}`，plan_version={}。每个步骤必须说明改什么以及如何验证。`allowed_paths` 必须列出实现允许修改的仓库相对路径 glob（例如 `src/**`、`package.json`），不能为空。\n\n```json\n{}\n```\n",
             task.seq,
             version,
             task.description,
+            acceptance,
             rejection.map(|value| format!("## 上次驳回理由\n\n{value}")).unwrap_or_default(),
             rules,
             task.id,
@@ -233,5 +293,25 @@ impl Orchestrator {
             &json!({"plan_id":plan_id,"reason":reason.trim()}),
         ).await?;
         self.store.task_summary(task_id).await.map_err(Into::into)
+    }
+}
+
+/// Prefer the catalog's display name so the failure card reads like the Provider page ("Claude
+/// Code"), falling back to the stable id for providers the catalog does not surface.
+fn provider_display_name(kind: &AgentKind, catalog: &[ProviderDescriptor]) -> String {
+    catalog
+        .iter()
+        .find(|item| &item.id == kind)
+        .map(|item| item.display_name.clone())
+        .unwrap_or_else(|| kind.to_string())
+}
+
+/// Aggregate every skipped-provider reason and every attempt failure into one detail string, so
+/// the blocked task explains all root causes at once instead of only the last provider tried.
+fn planner_failure_detail(attempts: &[String]) -> String {
+    if attempts.is_empty() {
+        "没有可用于规划的 Provider，请先在设置中登录或安装至少一个开发 CLI。".into()
+    } else {
+        format!("没有 Provider 能完成规划：{}", attempts.join("；"))
     }
 }

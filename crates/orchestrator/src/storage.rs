@@ -26,11 +26,29 @@ impl Orchestrator {
         {
             return Err(OrchestratorError::DiffStale);
         }
+        let base = task
+            .base_commit
+            .as_deref()
+            .ok_or_else(|| OrchestratorError::InvalidState("base commit missing".into()))?;
+        if let Err(error) = self
+            .git
+            .validate_commit_range(&worktree, base, &revision_sha)
+            .await
+        {
+            return match error {
+                agentflow_git_engine::GitError::UnsafeCommit(detail) => {
+                    Err(OrchestratorError::MergePrecondition(format!(
+                        "提交保护拦截了这一轮：{detail}"
+                    )))
+                }
+                other => Err(other.into()),
+            };
+        }
         let actual = self
             .git
             .diff(
                 &worktree,
-                task.base_commit.as_deref().unwrap_or(""),
+                base,
                 &revision_sha,
                 &config.review.exclude_globs,
                 config.review.max_patch_bytes,
@@ -60,25 +78,6 @@ impl Orchestrator {
             .await?;
         self.store.task_summary(task_id).await.map_err(Into::into)
     }
-    pub async fn events_export(&self, project_id: &str) -> Result<PathBuf, OrchestratorError> {
-        let dir = self.app_data.join("exports");
-        tokio::fs::create_dir_all(&dir).await?;
-        let path = dir.join(format!(
-            "events-{}-{}.jsonl",
-            project_id,
-            Utc::now().format("%Y%m%dT%H%M%SZ")
-        ));
-        let rows=sqlx::query("SELECT e.id,e.task_id,e.run_id,e.revision,e.actor,e.event_type,e.payload_json,e.created_at FROM events e LEFT JOIN tasks t ON e.task_id=t.id WHERE t.project_id=? OR e.task_id IS NULL ORDER BY e.id").bind(project_id).fetch_all(self.store.pool()).await?;
-        let mut file = tokio::fs::File::create(&path).await?;
-        for row in rows {
-            let value = json!({"id":row.get::<i64,_>("id"),"task_id":row.get::<Option<String>,_>("task_id"),"run_id":row.get::<Option<String>,_>("run_id"),"revision":row.get::<Option<i64>,_>("revision"),"actor":row.get::<String,_>("actor"),"event_type":row.get::<String,_>("event_type"),"payload":serde_json::from_str::<Value>(&row.get::<String,_>("payload_json")).unwrap_or(Value::Null),"created_at":row.get::<String,_>("created_at")});
-            file.write_all(serde_json::to_string(&value).unwrap_or_default().as_bytes())
-                .await?;
-            file.write_all(b"\n").await?
-        }
-        Ok(path)
-    }
-
     pub async fn storage_report(&self) -> Result<StorageReport, OrchestratorError> {
         let app_data = self.app_data.clone();
         let mut report = tokio::task::spawn_blocking(move || storage_report_sync(&app_data))

@@ -41,6 +41,7 @@ impl Orchestrator {
                 created_at: r.get("created_at"),
             })
             .collect();
+        let acceptance_criteria = self.task_acceptance_criteria(task_id).await?;
         Ok(TaskDetail {
             summary,
             description: task.description,
@@ -48,6 +49,7 @@ impl Orchestrator {
             base_commit: task.base_commit,
             branch: task.branch,
             max_revisions: task.max_revisions,
+            acceptance_criteria,
             blocked_detail: task.blocked_detail,
             revisions,
             policy: task.policy.clone(),
@@ -55,6 +57,53 @@ impl Orchestrator {
             budget: self.budget_usage(task_id).await?,
             delivery: self.delivery_record(task_id).await?,
         })
+    }
+
+    async fn task_acceptance_criteria(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<AcceptanceCriterion>, OrchestratorError> {
+        let rows = sqlx::query(
+            "SELECT id,kind,text,position FROM task_acceptance_criteria WHERE task_id=? ORDER BY position",
+        )
+        .bind(task_id)
+        .fetch_all(self.store.pool())
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let kind = AcceptanceCriterionKind::from_str(&row.get::<String, _>("kind"))
+                    .map_err(OrchestratorError::Config)?;
+                Ok(AcceptanceCriterion {
+                    id: row.get("id"),
+                    kind,
+                    text: row.get("text"),
+                    position: row.get("position"),
+                })
+            })
+            .collect()
+    }
+
+    async fn acceptance_criteria_markdown(
+        &self,
+        task_id: &str,
+    ) -> Result<String, OrchestratorError> {
+        let criteria = self.task_acceptance_criteria(task_id).await?;
+        if criteria.is_empty() {
+            return Ok("（未单独设置结构化验收条件）".into());
+        }
+        Ok(criteria
+            .iter()
+            .map(|criterion| {
+                let kind = match criterion.kind {
+                    AcceptanceCriterionKind::Build => "构建",
+                    AcceptanceCriterionKind::Test => "测试",
+                    AcceptanceCriterionKind::Behavior => "行为",
+                    AcceptanceCriterionKind::Manual => "人工",
+                };
+                format!("- [{}] {}", kind, criterion.text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
     pub async fn events_list(
         &self,
@@ -90,7 +139,8 @@ impl Orchestrator {
                     .ok_or_else(|| OrchestratorError::InvalidState("base commit missing".into()))?,
                 &sha,
                 &config.review.exclude_globs,
-                config.review.max_patch_bytes,
+                // 桌面端查看用大预算，逐文件展示完整逐行内容；送审仍用 config 的小预算控制 token。
+                agentflow_git_engine::UI_DIFF_MAX_BYTES,
             )
             .await
             .map_err(Into::into)
@@ -165,7 +215,11 @@ impl Orchestrator {
             .bind(task_id)
             .execute(self.store.pool())
             .await?;
-        let to = if task.revision == 0 {
+        let to = if task.revision == 0 && task.policy.require_plan_approval {
+            // A failed planner has not produced an approved plan. Resume the planning checkpoint;
+            // skipping straight to development would bypass the user's plan gate (P1-01).
+            TaskStatus::Planning
+        } else if task.revision == 0 {
             TaskStatus::ReadyForDevelopment
         } else {
             TaskStatus::ReadyForRevision
@@ -398,7 +452,7 @@ impl Orchestrator {
             .bind(task_id).bind(revision).fetch_optional(self.store.pool()).await?;
         let Some(row) = row else { return Ok(None) };
         let review_id: String = row.get("id");
-        let issue_rows = sqlx::query("SELECT id,severity,file,line_start,line_end,title,description,suggested_action,resolved,reported_by_json,agreement_count FROM review_issues WHERE review_id=?")
+        let issue_rows = sqlx::query("SELECT id,severity,file,line_start,line_end,title,description,suggested_action,resolved,reported_by_json,agreement_count,severity_disagreement FROM review_issues WHERE review_id=?")
             .bind(&review_id).fetch_all(self.store.pool()).await?;
         let issues = issue_rows
             .into_iter()
@@ -418,9 +472,35 @@ impl Orchestrator {
                     )
                     .unwrap_or_default(),
                     agreement_count: issue.get("agreement_count"),
+                    severity_disagreement: issue.get::<i64, _>("severity_disagreement") != 0,
                 })
             })
             .collect::<Result<Vec<_>, OrchestratorError>>()?;
+        // 委员会每位成员的独立投票：聚合行记录了成员 review 行 id，逐一取回其 agent/decision/summary。
+        // 单一审查（无成员 id）时为空。让前端能展示「谁投了什么」及裁决依据，而无需新增数据库列。
+        let member_ids: Vec<String> = row
+            .get::<Option<String>, _>("member_review_ids_json")
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
+        let mut member_votes = Vec::new();
+        for member_id in member_ids {
+            if let Some(member) = sqlx::query(
+                "SELECT reviewer_agent,decision,summary FROM reviews WHERE id=?",
+            )
+            .bind(&member_id)
+            .fetch_optional(self.store.pool())
+            .await?
+                && let Some(agent) = member
+                    .get::<Option<String>, _>("reviewer_agent")
+                    .and_then(|value| value.parse().ok())
+            {
+                member_votes.push(CouncilMemberVote {
+                    agent,
+                    decision: parse(member.get("decision"))?,
+                    summary: member.get("summary"),
+                });
+            }
+        }
         Ok(Some(Review {
             id: review_id,
             revision: row.get("revision"),
@@ -436,6 +516,7 @@ impl Orchestrator {
                     .into_iter()
                     .collect()
             }),
+            member_votes,
             issues,
         }))
     }

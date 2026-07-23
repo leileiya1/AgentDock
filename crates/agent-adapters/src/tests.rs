@@ -13,6 +13,7 @@ mod tests {
             timeout: Duration::from_secs(90),
             idle_timeout: Duration::from_secs(30),
             permission,
+            effective_permissions: agentflow_contracts::EffectivePermissions::default(),
             resume_session_id: None,
             extra_allowed_commands: Vec::new(),
             env_denylist: Vec::new(),
@@ -24,6 +25,52 @@ mod tests {
     fn review_semantic_rule() {
         let raw = r#"{"schema_version":1,"task_id":"t","revision":1,"commit_sha":"1234567","decision":"request_changes","summary":"x","issues":[]}"#;
         assert!(parse_review(raw).is_err());
+    }
+
+    #[test]
+    fn support_matrix_distinguishes_verified_and_unverified_versions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let matrix = compatibility_matrix()?;
+        let (verified, baselines) =
+            support_level("claude", Some("2.1.217 (Claude Code)"), true, &matrix);
+        assert_eq!(verified, CliSupportLevel::Verified);
+        assert_eq!(baselines, vec!["2.1.217"]);
+        let (untested, _) =
+            support_level("claude", Some("2.1.218 (Claude Code)"), true, &matrix);
+        assert_eq!(untested, CliSupportLevel::CompatibleUntested);
+        let (unsupported, _) =
+            support_level("claude", Some("2.1.217 (Claude Code)"), false, &matrix);
+        assert_eq!(unsupported, CliSupportLevel::Unsupported);
+        assert!(runtime_probe_supported("claude"));
+        assert!(runtime_probe_supported("codex"));
+        assert!(!runtime_probe_supported("gemini"));
+        assert!(!runtime_probe_supported("qwen"));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_probe_failures_are_actionable_and_safe() {
+        assert!(classify_runtime_probe_failure("Not logged in", Some(1)).contains("重新登录"));
+        assert!(classify_runtime_probe_failure("You've hit your limit", Some(1)).contains("安全降级"));
+        assert!(classify_runtime_probe_failure("unknown option --json", Some(2)).contains("已验证版本"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runtime_probe_executes_in_an_isolated_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir()?;
+        let fake = temp.path().join("fake-claude");
+        tokio::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s\\n' '{\"probe\":\"AGENTFLOW_PROBE_OK\"}'\n",
+        )
+        .await?;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))?;
+        let result = probe_cli_runtime("claude", &fake).await;
+        assert!(result.passed, "{:?}", result.problem);
+        Ok(())
     }
 
     fn passing_review(summary: &str) -> String {
@@ -93,6 +140,35 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn non_strict_providers_may_omit_nullable_plan_and_review_fields()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = json!({
+            "schema_version": 1,
+            "task_id": "task-1",
+            "plan_version": 1,
+            "summary": "只读检查",
+            "steps": [{"title": "检查", "detail": "读取仓库状态"}],
+            "risks": [],
+            "allowed_paths": []
+        })
+        .to_string();
+        assert_eq!(parse_plan(&plan)?.steps[0].validation, None);
+
+        let review = json!({
+            "schema_version": 1,
+            "task_id": "task-1",
+            "revision": 1,
+            "commit_sha": "1234567",
+            "decision": "request_changes",
+            "summary": "需要修复",
+            "issues": [{"severity": "high", "title": "问题"}]
+        })
+        .to_string();
+        assert_eq!(parse_review(&review)?.issues[0].file, None);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn claude_auth_problem_falls_back_when_doctor_cannot_run()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -134,6 +210,39 @@ mod tests {
             codex_auth_method("Logged in using an access token"),
             Some("access_token")
         );
+    }
+
+    #[test]
+    fn provider_process_identity_environment_keeps_macos_account_context() {
+        assert!(PROVIDER_ENV_KEYS.contains(&"USER"));
+        assert!(PROVIDER_ENV_KEYS.contains(&"LOGNAME"));
+    }
+
+    #[test]
+    fn codex_version_normalization_ignores_prerelease_suffix() {
+        assert_eq!(
+            codex_base_version("codex-cli 0.145.0-alpha.30"),
+            Some("0.145.0")
+        );
+        assert_eq!(codex_base_version("codex-cli 0.144.6"), Some("0.144.6"));
+    }
+
+    #[test]
+    fn codex_candidate_matches_the_shared_cache_writer_version() {
+        let path_cli = PathBuf::from("/opt/local/codex");
+        let chatgpt_cli = PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex");
+        let candidates = vec![
+            (path_cli.clone(), "codex-cli 0.144.6".into()),
+            (
+                chatgpt_cli.clone(),
+                "codex-cli 0.145.0-alpha.30".into(),
+            ),
+        ];
+        assert_eq!(
+            select_codex_candidate(&candidates, Some("0.145.0")),
+            Some(chatgpt_cli)
+        );
+        assert_eq!(select_codex_candidate(&candidates, None), Some(path_cli));
     }
 
     #[test]
@@ -491,6 +600,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                     idle_timeout: Duration::from_secs(5),
                     permission: PermissionTier::Normal,
+                    effective_permissions: agentflow_contracts::EffectivePermissions::default(),
                     resume_session_id: None,
                     extra_allowed_commands: Vec::new(),
                     env_denylist: Vec::new(),

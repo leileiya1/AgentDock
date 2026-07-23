@@ -9,8 +9,9 @@ impl Orchestrator {
             .and_then(|value| value.to_str())
             .unwrap_or("project");
         let branch = self.git.default_branch(&canonical).await?;
-        let compatibility = self.git.compatibility_report(&canonical).await?;
         let root = self.app_data.join("wt");
+        let mut compatibility = self.git.compatibility_report(&canonical).await?;
+        compatibility.worktree_root_writable = directory_writable(&root).await;
         Ok(self
             .store
             .import_project_identified(
@@ -33,10 +34,20 @@ impl Orchestrator {
                 "PROJECT_RELOCATED: re-import the repository from its new path".into(),
             ));
         }
-        self.git
-            .compatibility_report(&project.repo)
-            .await
-            .map_err(Into::into)
+        let mut report = self.git.compatibility_report(&project.repo).await?;
+        report.worktree_root_writable = directory_writable(&project.worktree_root).await;
+        Ok(report)
+    }
+
+    /// `git worktree prune` only drops registrations Git already marked prunable. It does not
+    /// delete a worktree directory or any project source file.
+    pub async fn project_prune_stale_worktrees(
+        &self,
+        project_id: &str,
+    ) -> Result<GitCompatibilityReport, OrchestratorError> {
+        let project = self.project(project_id).await?;
+        self.git.worktree_prune(&project.repo).await?;
+        self.project_git_compatibility(project_id).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -106,7 +117,43 @@ impl Orchestrator {
         allow_api_egress: bool,
         policy: TaskPolicy,
     ) -> Result<TaskSummary, OrchestratorError> {
+        self.task_create_governed_with_acceptance(
+            project_id,
+            title,
+            description,
+            developer,
+            reviewer,
+            target_branch,
+            max_revisions,
+            allow_api_egress,
+            Vec::new(),
+            policy,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn task_create_governed_with_acceptance(
+        &self,
+        project_id: &str,
+        title: &str,
+        description: &str,
+        developer: AgentKind,
+        reviewer: AgentKind,
+        target_branch: Option<&str>,
+        max_revisions: Option<i64>,
+        allow_api_egress: bool,
+        acceptance_criteria: Vec<AcceptanceCriterionInput>,
+        policy: TaskPolicy,
+    ) -> Result<TaskSummary, OrchestratorError> {
         validate_task_policy(&policy)?;
+        let max_revisions = max_revisions.unwrap_or(3);
+        if !(1..=20).contains(&max_revisions) {
+            return Err(OrchestratorError::Config(
+                "maximum revisions must be between 1 and 20".into(),
+            ));
+        }
+        validate_acceptance_criteria(&acceptance_criteria)?;
         self.refresh_provider_registry().await;
         let project = self.project(project_id).await?;
         if developer == reviewer {
@@ -175,9 +222,18 @@ impl Orchestrator {
             }
         }
         if (developer_egress || reviewer_egress || council_egress) && !allow_api_egress {
-            return Err(OrchestratorError::InvalidState(
-                "API_EGRESS_APPROVAL_REQUIRED".into(),
-            ));
+            // §65: name exactly which Providers would receive the code, so the user understands why
+            // consent is asked (often it's the default review council, not the reviewer they picked)
+            // and knows what to change. The provider list rides in the message after the code and is
+            // surfaced as the error detail.
+            let names = egress_providers
+                .iter()
+                .map(AgentKind::to_string)
+                .collect::<Vec<_>>()
+                .join("、");
+            return Err(OrchestratorError::InvalidState(format!(
+                "API_EGRESS_APPROVAL_REQUIRED: {names}"
+            )));
         }
         if let Some(node_id) = policy.execution_node_id.as_deref() {
             let enabled: Option<i64> = sqlx::query_scalar(
@@ -194,15 +250,16 @@ impl Orchestrator {
         }
         let task = self
             .store
-            .create_governed_task_with_api_egress(
+            .create_governed_task_with_acceptance(
                 project_id,
                 title,
                 description,
                 developer.clone(),
                 reviewer.clone(),
                 target_branch.unwrap_or(&project.default_branch),
-                max_revisions.unwrap_or(3),
+                max_revisions,
                 allow_api_egress,
+                &acceptance_criteria,
                 &policy,
             )
             .await?;
@@ -228,6 +285,40 @@ impl Orchestrator {
         }
         Ok(task)
     }
+}
+
+fn validate_acceptance_criteria(
+    criteria: &[AcceptanceCriterionInput],
+) -> Result<(), OrchestratorError> {
+    if criteria.len() > 20 {
+        return Err(OrchestratorError::Config(
+            "at most 20 acceptance criteria are allowed".into(),
+        ));
+    }
+    let mut normalized = HashSet::new();
+    for criterion in criteria {
+        let text = criterion.text.trim();
+        if text.is_empty() || text.chars().count() > 500 {
+            return Err(OrchestratorError::Config(
+                "acceptance criteria must contain 1 to 500 characters".into(),
+            ));
+        }
+        if !normalized.insert((criterion.kind, text.to_lowercase())) {
+            return Err(OrchestratorError::Config(
+                "duplicate acceptance criteria are not allowed".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn directory_writable(path: &Path) -> bool {
+    if tokio::fs::create_dir_all(path).await.is_err() {
+        return false;
+    }
+    tokio::fs::metadata(path)
+        .await
+        .is_ok_and(|metadata| !metadata.permissions().readonly())
 }
 
 fn validate_task_policy(policy: &TaskPolicy) -> Result<(), OrchestratorError> {

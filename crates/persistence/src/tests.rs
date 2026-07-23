@@ -1,5 +1,32 @@
 use super::*;
 use serde_json::json;
+use sha2::{Digest, Sha384};
+
+#[test]
+fn published_initial_migration_bytes_never_change() {
+    let migration = include_bytes!("../migrations/0001_initial.sql");
+    let checksum = format!("{:x}", Sha384::digest(migration));
+    assert_eq!(
+        checksum,
+        "1ce8056baec57e9a5b18f35dd6ca5770be020abacf0131219c905a719c744a403d249173cc69f82ea9f09b47d3a6928f",
+        "published SQLx migrations are immutable; add a new numbered migration instead"
+    );
+}
+
+#[tokio::test]
+async fn cached_file_key_is_reused_without_keychain_access()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let expected = [42_u8; 32];
+    let path = root.path().join("local-data.key");
+    tokio::fs::write(&path, expected).await?;
+
+    let first = protection::load_data_key(root.path()).await?;
+    let second = protection::load_data_key(root.path()).await?;
+    assert_eq!(first.as_ref(), &expected);
+    assert_eq!(second.as_ref(), &expected);
+    Ok(())
+}
 
 #[tokio::test]
 async fn transition_and_event_are_atomic_and_invalid_transition_changes_nothing()

@@ -1,13 +1,14 @@
 use agentflow_agent_adapters::{
-    AgentAdapter, AgentRunRequest, ApiProviderAdapter, BudgetMode, ClaudeCodeAdapter, CodexAdapter,
-    CollectedResult, ExternalProviderAdapter, GeminiCliAdapter, PermissionTier, QwenCodeAdapter,
-    RunBudget, UnavailableProviderAdapter, api_provider_status,
+    AgentAdapter, AgentRunRequest, ApiProviderAdapter, BudgetMode, ClaudeCodeAdapter,
+    CliRuntimeProbe, CodexAdapter, CollectedResult, ExternalProviderAdapter, GeminiCliAdapter,
+    PermissionTier, QwenCodeAdapter, RunBudget, UnavailableProviderAdapter,
 };
 use agentflow_contracts::*;
 use agentflow_git_engine::{Git, GitError, summarize};
 use agentflow_persistence::{PersistenceError, Store};
 use agentflow_provider_protocol::{PROTOCOL_VERSION, ProtocolClient, ProviderRegistry};
 use chrono::Utc;
+use futures::future::join_all;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -18,6 +19,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     str::FromStr,
+    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, RwLock},
     time::SystemTime,
     time::{Duration, Instant},
@@ -245,6 +247,13 @@ pub struct Orchestrator {
     app_data: PathBuf,
     provider_registry: Arc<RwLock<ProviderRegistry>>,
     active_cancellations: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    runtime_probe_cache: Arc<RwLock<HashMap<String, CachedRuntimeProbe>>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedRuntimeProbe {
+    checked_at: Instant,
+    result: CliRuntimeProbe,
 }
 
 // Same-module includes preserve private invariants while keeping each workflow concern reviewable.
@@ -252,12 +261,14 @@ include!("lifecycle.rs");
 include!("task_start.rs");
 include!("task_creation.rs");
 include!("planning.rs");
+include!("preflight.rs");
 include!("development.rs");
 include!("agent_run.rs");
 include!("adoption.rs");
 include!("scheduler_limits.rs");
 include!("history.rs");
 include!("review_council.rs");
+include!("convergence.rs");
 include!("review.rs");
 include!("result_repair.rs");
 include!("repair.rs");
@@ -266,13 +277,19 @@ include!("quality_replay.rs");
 include!("reproducibility.rs");
 include!("integrity.rs");
 include!("delivery.rs");
+include!("rollback.rs");
+include!("execution_node_diagnostics.rs");
 include!("execution_nodes.rs");
 include!("telemetry.rs");
 include!("data_protection.rs");
 include!("config_trust.rs");
 include!("plan_seal.rs");
+include!("plan_review.rs");
+include!("permission_types.rs");
+include!("permission_broker.rs");
 include!("saga.rs");
 include!("approval_seal.rs");
+include!("audit_export.rs");
 include!("storage.rs");
 include!("task_queries.rs");
 include!("support.rs");
@@ -281,11 +298,17 @@ include!("test_support.rs");
 include!("tests.rs");
 include!("failure_tests.rs");
 #[cfg(test)]
+mod audit_export_tests;
+#[cfg(test)]
 mod config_trust_tests;
 #[cfg(test)]
 mod git_compat_tests;
 #[cfg(test)]
 mod governance_tests;
+#[cfg(test)]
+mod permission_broker_tests;
+#[cfg(test)]
+mod preflight_tests;
 #[cfg(test)]
 mod privacy_tests;
 #[cfg(test)]

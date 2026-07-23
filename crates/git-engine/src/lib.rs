@@ -26,6 +26,9 @@ pub enum GitError {
 const MAX_COMMIT_FILES: usize = 200;
 const MAX_COMMIT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_SINGLE_FILE_BYTES: u64 = 5 * 1024 * 1024;
+/// 桌面端 Diff 查看预算：远大于送审预算，让 UI 能逐文件展示完整逐行内容（DiffPanel 每次只
+/// 渲染选中文件，多文件补丁不会一次性加载，故预算可以放宽）。个别超过此值的巨型文件仍折叠。
+pub const UI_DIFF_MAX_BYTES: usize = 24 * 1024 * 1024;
 const SAFETY_EXCLUDES: &[&str] = &[
     "node_modules/",
     "target/",
@@ -162,6 +165,11 @@ impl Git {
             .await
             .map(|_| ())
     }
+    /// Remove only registrations that Git itself marks prunable. Git does not remove any live
+    /// worktree directory when this command runs.
+    pub async fn worktree_prune(&self, repo: &Path) -> Result<(), GitError> {
+        self.output(repo, &["worktree", "prune"]).await.map(|_| ())
+    }
     pub async fn ensure_agentflow_excluded(&self, repo: &Path) -> Result<(), GitError> {
         let git_dir = text(
             self.output(repo, &["rev-parse", "--git-common-dir"])
@@ -223,6 +231,57 @@ impl Git {
         paths.sort();
         paths.dedup();
         Ok(paths)
+    }
+    /// Files changed between two commits (name-only). Used to detect a file being rewritten across
+    /// several rework rounds (§33 反复修改同一处). Rename-aware so a moved file isn't double-counted.
+    pub async fn changed_files(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+    ) -> Result<Vec<String>, GitError> {
+        let range = format!("{base}..{head}");
+        let raw = self
+            .output(
+                repo,
+                &["diff", "--name-only", "--find-renames", "-z", &range],
+            )
+            .await?;
+        raw.split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| {
+                String::from_utf8(path.to_vec())
+                    .map_err(|error| GitError::InvalidOutput(error.to_string()))
+            })
+            .collect()
+    }
+    /// §45: count the files fully deleted between two commits. Uses `--diff-filter=D` so pure
+    /// line-removals (which keep the file) are not counted, and `--find-renames` so a moved file
+    /// isn't mistaken for a deletion.
+    pub async fn deleted_file_count(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+    ) -> Result<i64, GitError> {
+        let range = format!("{base}..{head}");
+        let raw = self
+            .output(
+                repo,
+                &[
+                    "diff",
+                    "--name-only",
+                    "--diff-filter=D",
+                    "--find-renames",
+                    "-z",
+                    &range,
+                ],
+            )
+            .await?;
+        Ok(raw
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .count() as i64)
     }
     pub async fn working_patch(&self, worktree: &Path) -> Result<Vec<u8>, GitError> {
         self.output(worktree, &["diff", "--binary", "HEAD"]).await
@@ -338,6 +397,79 @@ impl Git {
             Err(GitError::UnsafeCommit(violations.join("; ")))
         }
     }
+
+    /// Re-runs the commit guard against an already-created revision.
+    ///
+    /// Approval may happen much later than development (or after an application
+    /// upgrade), so it must not trust that the historical commit was produced by
+    /// the current guard implementation.
+    pub async fn validate_commit_range(
+        &self,
+        repo: &Path,
+        base: &str,
+        sha: &str,
+    ) -> Result<(), GitError> {
+        let range = format!("{base}..{sha}");
+        let raw = self
+            .output(repo, &["diff", "--name-only", "-z", &range])
+            .await?;
+        let paths = raw
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8(path.to_vec()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| GitError::InvalidOutput(error.to_string()))?;
+
+        let mut violations = Vec::new();
+        if paths.len() > MAX_COMMIT_FILES {
+            violations.push(format!(
+                "{} files exceed the {} file limit",
+                paths.len(),
+                MAX_COMMIT_FILES
+            ));
+        }
+        let mut total_bytes = 0_u64;
+        for path in &paths {
+            if unsafe_path(path) {
+                violations.push(format!("unsafe generated or credential path: {path}"));
+            }
+            let object = format!("{sha}:{path}");
+            let Ok(size) = self.output(repo, &["cat-file", "-s", &object]).await else {
+                // The path was deleted by this revision, so it has no resulting blob
+                // to size or scan. Deleting an unsafe legacy path is allowed.
+                continue;
+            };
+            let size = text(size)?.parse::<u64>().map_err(|error| {
+                GitError::InvalidOutput(format!("invalid blob size for {path}: {error}"))
+            })?;
+            total_bytes = total_bytes.saturating_add(size);
+            if size > MAX_SINGLE_FILE_BYTES {
+                violations.push(format!(
+                    "{path} is {size} bytes (single-file limit is {MAX_SINGLE_FILE_BYTES})"
+                ));
+            }
+            if size <= 1024 * 1024 {
+                let staged = self.output(repo, &["show", &object]).await?;
+                if let Some(kind) = detected_secret(&String::from_utf8_lossy(&staged)) {
+                    violations.push(format!("possible {kind} credential in {path}"));
+                }
+            }
+            if violations.len() >= 8 {
+                break;
+            }
+        }
+        if total_bytes > MAX_COMMIT_BYTES {
+            violations.push(format!(
+                "commit files total {total_bytes} bytes (limit is {MAX_COMMIT_BYTES})"
+            ));
+        }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(GitError::UnsafeCommit(violations.join("; ")))
+        }
+    }
+
     pub async fn full_patch(
         &self,
         repo: &Path,
@@ -378,7 +510,13 @@ impl Git {
             )
             .await?,
         )?;
+        // Per-file 逐行内容：小文件始终展示，只有单个超大文件、或累计超过预算时才省略该文件，
+        // 而不是「整个 commit 超限就把所有文件都清空」。这样多文件改动仍能像 GitHub 一样逐文件
+        // 展示，只折叠个别过大的文件。numstat 顺序即展示顺序，预算优先给靠前的文件。
+        let full_text = String::from_utf8_lossy(&full);
         let mut files = Vec::new();
+        let mut used = 0_usize;
+        let mut truncated = false;
         for line in numstat.lines() {
             let mut p = line.splitn(3, '\t');
             let ins = p.next().unwrap_or("-");
@@ -389,10 +527,20 @@ impl Git {
             }
             let binary = ins == "-" || del == "-";
             let flagged = is_flagged(&path);
-            let patch = if binary || full.len() > max_bytes {
+            let patch = if binary {
                 None
             } else {
-                Some(file_patch(&String::from_utf8_lossy(&full), &path))
+                let file = file_patch(&full_text, &path);
+                if file.is_empty() {
+                    None
+                } else if file.len() > max_bytes || used.saturating_add(file.len()) > max_bytes {
+                    // 单文件超过整份预算，或已用尽预算 → 省略该文件逐行内容。
+                    truncated = true;
+                    None
+                } else {
+                    used = used.saturating_add(file.len());
+                    Some(file)
+                }
             };
             files.push(FileDiff {
                 path,
@@ -408,7 +556,7 @@ impl Git {
             base_commit: base.into(),
             commit_sha: sha.into(),
             diff_sha256: hash,
-            truncated: full.len() > max_bytes,
+            truncated,
             files,
         })
     }
@@ -568,6 +716,8 @@ pub fn summarize(payload: &DiffPayload) -> DiffStat {
             .filter(|f| f.flagged)
             .map(|f| f.path.clone())
             .collect(),
+        // The accurate deleted-file count needs a git query the caller runs; default to 0 here.
+        deleted_files: 0,
     }
 }
 

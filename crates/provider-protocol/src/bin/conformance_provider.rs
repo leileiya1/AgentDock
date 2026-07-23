@@ -25,11 +25,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &mut stdout,
                     request.id,
                     &HandshakeResult {
-                        protocol_version: "1.1".into(),
+                        protocol_version: "1.2".into(),
                         provider_id: AgentKind::External("fixture_provider".into()),
                         display_name: "Protocol Fixture".into(),
                         provider_version: "0.1.0".into(),
                         capabilities: capabilities(),
+                        permission_broker: true,
+                        resume_after_permission: false,
+                        sandbox_guarantee:
+                            agentflow_contracts::SandboxGuarantee::WorktreeRestricted,
                     },
                 )
                 .await?;
@@ -47,6 +51,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "run" => {
                 let run: ProtocolRunRequest = serde_json::from_value(request.params)?;
+                if matches!(run.extra_allowed_commands.as_slice(), [marker] if marker == "permission-probe" || marker == "permission-overreach")
+                {
+                    let overreach = run.extra_allowed_commands[0] == "permission-overreach";
+                    notify(
+                        &mut stdout,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "method": "permission/requested",
+                            "params": {
+                                "actionType": if overreach { "external_path" } else { "network_access" },
+                                "reason": "download fixture",
+                                "operation": {
+                                    "argv": [],
+                                    "cwd": run.worktree,
+                                    "paths": if overreach { json!([{"path":"/etc/shadow","access":"read","outsideWorktree":true}]) } else { json!([]) },
+                                    "networkDomains": if overreach { json!([]) } else { json!(["fixtures.example:443"]) },
+                                    "environmentNames": [],
+                                    "attributes": {}
+                                },
+                                "resumeToken": "opaque-fixture"
+                            }
+                        }),
+                    )
+                    .await?;
+                    continue;
+                }
                 notify(
                     &mut stdout,
                     &RpcNotification {

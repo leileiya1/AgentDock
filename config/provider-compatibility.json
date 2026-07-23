@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "providers": {
+    "claude": {
+      "displayName": "Claude Code",
+      "package": "@anthropic-ai/claude-code",
+      "verifiedVersions": ["2.1.217"],
+      "requiredFlags": ["--output-format", "--permission-mode"],
+      "runtimeProbe": "claude_stream_json"
+    },
+    "codex": {
+      "displayName": "Codex",
+      "package": "@openai/codex",
+      "verifiedVersions": ["0.145.0-alpha.30"],
+      "requiredFlags": ["--json", "--sandbox", "--ignore-user-config", "--ephemeral"],
+      "runtimeProbe": "codex_strict_schema"
+    },
+    "gemini": {
+      "displayName": "Gemini CLI",
+      "package": "@google/gemini-cli",
+      "verifiedVersions": [],
+      "requiredFlags": ["--output-format", "--approval-mode", "--sandbox"],
+      "runtimeProbe": null
+    },
+    "qwen": {
+      "displayName": "Qwen Code",
+      "package": "@qwen-code/qwen-code",
+      "verifiedVersions": [],
+      "requiredFlags": ["--output-format", "--approval-mode", "--sandbox", "--max-wall-time"],
+      "runtimeProbe": null
+    },
+    "grok": {
+      "displayName": "Grok CLI",
+      "package": null,
+      "verifiedVersions": [],
+      "requiredFlags": ["--output-format", "--sandbox", "--permission-mode"],
+      "runtimeProbe": null
+    },
+    "kimi": {
+      "displayName": "Kimi CLI",
+      "package": null,
+      "verifiedVersions": [],
+      "requiredFlags": ["--prompt", "--output-format"],
+      "runtimeProbe": null
+    },
+    "mmx": {
+      "displayName": "MiniMax CLI",
+      "package": null,
+      "verifiedVersions": [],
+      "requiredFlags": [],
+      "runtimeProbe": null
+    }
+  }
+}

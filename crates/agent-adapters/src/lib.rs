@@ -1,5 +1,5 @@
 use agentflow_contracts::{
-    AgentEvent, AgentEventKind, AgentKind, ApiProviderSettings, DevelopmentResult,
+    AgentEvent, AgentEventKind, AgentKind, ApiProviderSettings, CliSupportLevel, DevelopmentResult,
     DevelopmentStatus, EventStream, PlanResult, ProviderStatus, ReviewDecision, ReviewResult,
     RunRole, ToolStatus, development_result_schema, plan_result_schema, review_result_schema,
 };
@@ -7,8 +7,10 @@ use agentflow_process_supervisor::{ProcessOutcome, ProcessSpec};
 use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::{Client, StatusCode};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -93,6 +95,7 @@ pub struct AgentRunRequest {
     pub timeout: Duration,
     pub idle_timeout: Duration,
     pub permission: PermissionTier,
+    pub effective_permissions: agentflow_contracts::EffectivePermissions,
     /// Optional opaque Provider session token. Artifact history remains authoritative;
     /// this is supplied only when the user explicitly enables session reuse.
     pub resume_session_id: Option<String>,
@@ -105,6 +108,15 @@ pub struct RunningAgent {
     pub outcome: ProcessOutcome,
     pub run_dir: PathBuf,
     pub role: RunRole,
+}
+
+/// Result of a minimal, read-only request through the real upstream CLI. This deliberately lives
+/// outside the public desktop contract: the orchestrator caches it and exposes only an actionable
+/// availability verdict, never raw provider output or credentials.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliRuntimeProbe {
+    pub passed: bool,
+    pub problem: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub enum CollectedResult {
@@ -126,6 +138,8 @@ pub enum AdapterError {
     InvalidResult(String),
     #[error("unsupported role {0}")]
     UnsupportedRole(RunRole),
+    #[error("provider requested an AgentFlow permission decision")]
+    PermissionRequired(Box<agentflow_provider_protocol::ProviderPermissionRequest>),
     #[error("provider {provider} failed ({status:?}): {message}")]
     Provider {
         provider: AgentKind,

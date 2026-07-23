@@ -131,7 +131,9 @@ string_enum!(BlockedReason {
     MaxRevisions => "max_revisions", WorktreeMissing => "worktree_missing",
     CommitGuard => "commit_guard", BudgetExceeded => "budget_exceeded",
     RemoteNodeUnavailable => "remote_node_unavailable", CiFailed => "ci_failed",
-    QualityGate => "quality_gate"
+    QualityGate => "quality_gate", PermissionRequired => "permission_required",
+    AgentUnresponsive => "agent_unresponsive", AuthExpired => "auth_expired",
+    ConvergenceStalled => "convergence_stalled", QualityRegressed => "quality_regressed"
 });
 string_enum!(ReviewDecision { Pass => "pass", RequestChanges => "request_changes", Block => "block" });
 string_enum!(Severity { Critical => "critical", High => "high", Medium => "medium", Low => "low" });

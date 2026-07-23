@@ -556,6 +556,7 @@ impl AgentProvider for ApiProviderAdapter {
                 started_at,
                 exit_code: Some(0),
                 timed_out: false,
+                idle_timed_out: false,
                 cancelled: false,
                 log_truncated: false,
             },

@@ -20,6 +20,7 @@ async fn cancellation_terminates_the_leased_process_group() -> Result<(), Box<dy
         ],
         cwd: root.path().into(),
         env,
+        clear_environment: false,
         env_denylist: Vec::new(),
         timeout: Duration::from_secs(30),
         idle_timeout: Duration::from_secs(30),
@@ -80,6 +81,7 @@ async fn provider_survives_supervisor_crash_and_records_exit_and_logs()
         ],
         cwd: root.path().into(),
         env: HashMap::new(),
+        clear_environment: false,
         env_denylist: Vec::new(),
         timeout: Duration::from_secs(10),
         idle_timeout: Duration::from_secs(10),
@@ -117,6 +119,72 @@ async fn provider_survives_supervisor_crash_and_records_exit_and_logs()
     assert!(output.contains("before-crash"));
     assert!(output.contains("after-crash"));
     drop(drain);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn provider_environment_is_allowlist_based() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut env = HashMap::new();
+    env.insert("AGENTFLOW_ALLOWED_PROBE".into(), "visible".into());
+    let spec = ProcessSpec {
+        program: "/bin/sh".into(),
+        args: vec![
+            "-c".into(),
+            "printf '%s:%s' \"$AGENTFLOW_ALLOWED_PROBE\" \"${HOME-unset}\"".into(),
+        ],
+        cwd: root.path().into(),
+        env,
+        clear_environment: true,
+        env_denylist: Vec::new(),
+        timeout: Duration::from_secs(5),
+        idle_timeout: Duration::from_secs(5),
+        stdout_path: root.path().join("stdout.log"),
+        stderr_path: root.path().join("stderr.log"),
+        lease_path: root.path().join("process-lease.json"),
+    };
+    let (tx, mut rx) = mpsc::channel(4);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let outcome = run(spec, CancellationToken::new(), tx).await?;
+    drain.await?;
+    assert_eq!(outcome.exit_code, Some(0));
+    assert_eq!(
+        tokio::fs::read_to_string(root.path().join("stdout.log")).await?,
+        "visible:unset"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn idle_hang_is_distinguished_from_absolute_timeout() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = tempfile::tempdir()?;
+    // Sleeps quietly: no output ever reaches the activity monitor, so the short idle window fires
+    // well before the generous absolute timeout. This is the §15 "no output" hang.
+    let spec = ProcessSpec {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "sleep 30".into()],
+        cwd: root.path().into(),
+        env: HashMap::new(),
+        clear_environment: false,
+        env_denylist: Vec::new(),
+        timeout: Duration::from_secs(30),
+        idle_timeout: Duration::from_millis(200),
+        stdout_path: root.path().join("stdout.log"),
+        stderr_path: root.path().join("stderr.log"),
+        lease_path: root.path().join("process-lease.json"),
+    };
+    let (tx, mut rx) = mpsc::channel(4);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let outcome = run(spec, CancellationToken::new(), tx).await?;
+    drain.await?;
+    assert!(outcome.timed_out, "idle kill still counts as a timeout");
+    assert!(
+        outcome.idle_timed_out,
+        "a no-output hang must be flagged as an idle timeout, not a plain timeout"
+    );
     Ok(())
 }
 
@@ -162,4 +230,33 @@ fn secrets_are_redacted() {
         redact("Authorization: Bearer abc password=hunter2 ghp_abcdefghijklmnopqrstuvwxyz".into());
     assert!(!s.contains("hunter2"));
     assert!(!s.contains("abcdefghijklmnopqrstuvwxyz"));
+}
+
+#[test]
+fn redaction_covers_every_committer_blocked_secret_shape() {
+    // Parity with git-engine's detected_secret: a secret that would be blocked at commit must not
+    // leak into logs/exports either. These were previously missed by redact().
+    let oauth = redact("token gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ012 done".into());
+    assert!(
+        !oauth.contains("gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ012"),
+        "non-ghp GitHub token leaked"
+    );
+
+    let pem = redact(
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEsecretkeymaterial\n-----END RSA PRIVATE KEY-----"
+            .into(),
+    );
+    assert!(
+        !pem.contains("secretkeymaterial"),
+        "private key body leaked"
+    );
+
+    let env = redact("running with OPENAI_API_KEY=sk-shouldnotappear1234567890".into());
+    assert!(!env.contains("shouldnotappear"), "named env secret leaked");
+
+    let aws = redact("GITHUB_TOKEN: ghs_serverTokenAAAAAAAAAAAAAAAAAAAA".into());
+    assert!(
+        !aws.contains("serverToken"),
+        "server token assignment leaked"
+    );
 }

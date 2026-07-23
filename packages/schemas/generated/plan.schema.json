@@ -17,8 +17,9 @@
         }
       },
       "required": [
+        "detail",
         "title",
-        "detail"
+        "validation"
       ],
       "type": "object"
     }
@@ -45,7 +46,8 @@
       "type": "array"
     },
     "schema_version": {
-      "const": 1
+      "const": 1,
+      "type": "integer"
     },
     "steps": {
       "items": {
@@ -63,13 +65,13 @@
     }
   },
   "required": [
-    "schema_version",
-    "task_id",
+    "allowed_paths",
     "plan_version",
-    "summary",
-    "steps",
     "risks",
-    "allowed_paths"
+    "schema_version",
+    "steps",
+    "summary",
+    "task_id"
   ],
   "title": "PlanResult",
   "type": "object"

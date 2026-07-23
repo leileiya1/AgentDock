@@ -1,6 +1,181 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_failure_class_maps_to_reason_for_every_role() {
+        // §15/§5: idle hangs and auth expiry always get their dedicated reason regardless of the
+        // role's fallback, so developer/planner/reviewer loops surface the same recovery card.
+        for fallback in [BlockedReason::RunFailed, BlockedReason::ReviewFailed] {
+            assert_eq!(
+                run_failure_reason(RunFailureClass::Unresponsive, fallback),
+                BlockedReason::AgentUnresponsive
+            );
+            assert_eq!(
+                run_failure_reason(RunFailureClass::AuthExpired, fallback),
+                BlockedReason::AuthExpired
+            );
+            // A normal failure keeps its role-specific fallback untouched.
+            assert_eq!(run_failure_reason(RunFailureClass::Normal, fallback), fallback);
+        }
+    }
+
+    #[test]
+    fn merge_suggestions_keeps_distinct_and_collapses_duplicates() {
+        // §23 不同建议: different fixes are both kept; identical or subsumed ones collapse to one.
+        assert_eq!(merge_suggestions(None, Some("拆分函数")).as_deref(), Some("拆分函数"));
+        assert_eq!(merge_suggestions(Some("拆分函数"), None).as_deref(), Some("拆分函数"));
+        assert_eq!(merge_suggestions(Some("拆分函数"), Some("拆分函数")).as_deref(), Some("拆分函数"));
+        let combined = merge_suggestions(Some("拆分函数"), Some("保持现状")).unwrap_or_default();
+        assert!(combined.contains("拆分函数") && combined.contains("保持现状"));
+        // A suggestion that already contains the other is not duplicated.
+        assert_eq!(
+            merge_suggestions(Some("先加判空再拆分函数"), Some("拆分函数")).as_deref(),
+            Some("先加判空再拆分函数")
+        );
+        assert_eq!(merge_suggestions(None, None), None);
+    }
+
+    #[test]
+    fn auth_markers_are_detected_without_matching_ordinary_failures() {
+        // §5: real auth failures are recognised…
+        assert!(output_indicates_auth_failure("Error: 401 Unauthorized"));
+        assert!(output_indicates_auth_failure("codex: not logged in, please run `codex login`"));
+        assert!(output_indicates_auth_failure("Invalid API key provided"));
+        assert!(output_indicates_auth_failure("认证已失效，请重新登录"));
+        // …while ordinary build/test failures are not misclassified as auth problems.
+        assert!(!output_indicates_auth_failure("error[E0599]: no method named `foo`"));
+        assert!(!output_indicates_auth_failure("test result: FAILED. 2 passed; 1 failed"));
+    }
+
+    #[tokio::test]
+    async fn planner_can_be_blocked_from_the_planning_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Regression: plan() blocks while the task is still in Planning. block() must therefore
+        // accept Planning as a from-state, otherwise the transition errors with InvalidState and
+        // the planner failure never surfaces as a Blocked task.
+        let dir = tempfile::tempdir()?;
+        let owner = Orchestrator::open(&dir.path().join("data")).await?;
+        let project = owner
+            .store
+            .import_project("plan", "/tmp/plan-e2e", "main", "/tmp/plan-e2e-wt")
+            .await?;
+        let task = owner
+            .task_create(
+                &project.id,
+                "plan block",
+                "test",
+                AgentKind::Codex,
+                AgentKind::ClaudeCode,
+                None,
+                None,
+            )
+            .await?;
+        sqlx::query("UPDATE tasks SET status='PLANNING',current_revision=1 WHERE id=?")
+            .bind(&task.id)
+            .execute(owner.store.pool())
+            .await?;
+        let task_row = owner.task(&task.id).await?;
+        owner
+            .block(&task_row, BlockedReason::AuthExpired, "login expired")
+            .await?;
+        let summary = owner.store.task_summary(&task.id).await?;
+        assert_eq!(summary.status, TaskStatus::Blocked);
+        assert_eq!(summary.blocked_reason, Some(BlockedReason::AuthExpired));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn planner_recovery_resumes_the_same_plan_checkpoint()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let owner = Orchestrator::open(&dir.path().join("data")).await?;
+        let project = owner
+            .store
+            .import_project("plan", "/tmp/plan-resume", "main", "/tmp/plan-resume-wt")
+            .await?;
+        let task = owner
+            .task_create_governed(
+                &project.id,
+                "plan resume",
+                "test",
+                AgentKind::Codex,
+                AgentKind::ClaudeCode,
+                None,
+                None,
+                false,
+                TaskPolicy { require_plan_approval: true, ..TaskPolicy::default() },
+            )
+            .await?;
+        sqlx::query("UPDATE tasks SET status='PLANNING',current_revision=0 WHERE id=?")
+            .bind(&task.id)
+            .execute(owner.store.pool())
+            .await?;
+        let task_row = owner.task(&task.id).await?;
+        owner.block(&task_row, BlockedReason::AuthExpired, "login expired").await?;
+        let resumed = owner.resume_with_guidance(&task.id, "认证已修复").await?;
+        assert_eq!(resumed.status, TaskStatus::Planning);
+        assert_eq!(resumed.current_revision, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn task_creation_persists_structured_acceptance_and_rejects_bad_revision_limits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let owner = Orchestrator::open(&dir.path().join("data")).await?;
+        let project = owner
+            .store
+            .import_project("acceptance", "/tmp/acceptance", "main", "/tmp/acceptance-wt")
+            .await?;
+        let criteria = vec![
+            AcceptanceCriterionInput {
+                kind: AcceptanceCriterionKind::Build,
+                text: "生产构建成功".into(),
+            },
+            AcceptanceCriterionInput {
+                kind: AcceptanceCriterionKind::Manual,
+                text: "人工确认空状态文案".into(),
+            },
+        ];
+        let task = owner
+            .task_create_governed_with_acceptance(
+                &project.id,
+                "acceptance",
+                "test",
+                AgentKind::Codex,
+                AgentKind::ClaudeCode,
+                None,
+                Some(4),
+                false,
+                criteria,
+                TaskPolicy::default(),
+            )
+            .await?;
+        let detail = owner.task_get(&task.id).await?;
+        assert_eq!(detail.max_revisions, 4);
+        assert_eq!(detail.acceptance_criteria.len(), 2);
+        assert_eq!(detail.acceptance_criteria[0].kind, AcceptanceCriterionKind::Build);
+        assert_eq!(detail.acceptance_criteria[1].text, "人工确认空状态文案");
+
+        let invalid = owner
+            .task_create_governed_with_acceptance(
+                &project.id,
+                "invalid",
+                "test",
+                AgentKind::Codex,
+                AgentKind::ClaudeCode,
+                None,
+                Some(0),
+                false,
+                Vec::new(),
+                TaskPolicy::default(),
+            )
+            .await;
+        assert!(matches!(invalid, Err(OrchestratorError::Config(_))));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn config_requires_argv_array() {
         let dir = tempfile::tempdir().ok();
@@ -209,6 +384,7 @@ mod tests {
                 args: vec!["-c".into(), "sleep 30 & wait".into()],
                 cwd: worktree.clone(),
                 env: HashMap::new(),
+                clear_environment: false,
                 env_denylist: Vec::new(),
                 timeout: Duration::from_secs(30),
                 idle_timeout: Duration::from_secs(30),
@@ -544,4 +720,11 @@ mod tests {
             }
         );
     }
+}
+#[test]
+fn interactive_provider_permission_prompts_are_detected_without_false_shell_errors() {
+    assert!(looks_like_permission_prompt("Permission required: approve this action?"));
+    assert!(looks_like_permission_prompt("需要授权，等待批准"));
+    assert!(!looks_like_permission_prompt("command exited with code 1"));
+    assert!(!looks_like_permission_prompt("test assertion failed"));
 }

@@ -32,6 +32,9 @@ pub struct ProcessSpec {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: HashMap<String, String>,
+    /// Provider runs use an explicit minimal environment so secrets not named by a denylist
+    /// cannot leak when a new credential variable is added to the parent process.
+    pub clear_environment: bool,
     pub env_denylist: Vec<String>,
     pub timeout: Duration,
     pub idle_timeout: Duration,
@@ -46,6 +49,11 @@ pub struct ProcessOutcome {
     pub started_at: String,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+    /// True only when the process was killed for producing no output within `idle_timeout`
+    /// (a hang), as distinct from exceeding the absolute `timeout`. Lets the orchestrator surface
+    /// "Agent 进程无响应" recovery separately from an ordinary abnormal exit.
+    #[serde(default)]
+    pub idle_timed_out: bool,
     pub cancelled: bool,
     pub log_truncated: bool,
 }
@@ -88,6 +96,9 @@ pub async fn run(
         // Direct file descriptors survive a daemon crash; an abandoned pipe does not.
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
+    if spec.clear_environment {
+        cmd.env_clear();
+    }
     for key in &spec.env_denylist {
         cmd.env_remove(key);
     }
@@ -126,13 +137,14 @@ pub async fn run(
     tokio::pin!(absolute);
     let mut idle = tokio::time::interval(Duration::from_secs(1));
     let mut timed_out = false;
+    let mut idle_timed_out = false;
     let mut cancelled = false;
     let status = loop {
         tokio::select! {
             result=child.wait()=>break result?,
             _=&mut absolute=>{timed_out=true;terminate_tree(&mut child,pid,Some(&lease)).await?;break child.wait().await?},
             _=cancel.cancelled()=>{cancelled=true;terminate_tree(&mut child,pid,Some(&lease)).await?;break child.wait().await?},
-            _=idle.tick()=>{if activity.lock().await.elapsed()>=spec.idle_timeout{timed_out=true;terminate_tree(&mut child,pid,Some(&lease)).await?;break child.wait().await?}}
+            _=idle.tick()=>{if activity.lock().await.elapsed()>=spec.idle_timeout{timed_out=true;idle_timed_out=true;terminate_tree(&mut child,pid,Some(&lease)).await?;break child.wait().await?}}
         }
     };
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -145,6 +157,7 @@ pub async fn run(
         started_at,
         exit_code: status.code(),
         timed_out,
+        idle_timed_out,
         cancelled,
         log_truncated: a || b,
     };
@@ -505,11 +518,19 @@ fn compact(text: &str, max_chars: usize) -> String {
         .collect::<String>()
         + "…"
 }
+/// Scrub secrets from any text before it is persisted to a log, event, or export. Kept at parity
+/// with git-engine's commit-time `detected_secret`: anything the committer would block must also be
+/// scrubbed here, otherwise a secret that never reaches a commit still leaks into logs/exports.
 pub fn redact(mut text: String) -> String {
     for pattern in [
+        // Full PEM private-key block (multi-line), not just the BEGIN marker.
+        r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
         r"AKIA[0-9A-Z]{16}",
-        r"ghp_[A-Za-z0-9]{20,}",
+        // All GitHub token flavors (personal/oauth/user/server/refresh), not only ghp_.
+        r"gh[pousr]_[A-Za-z0-9_]{20,}",
         r"sk-[A-Za-z0-9_-]{16,}",
+        // Named-secret assignments, e.g. `OPENAI_API_KEY=...` or `GITHUB_TOKEN: ...`.
+        r#"(?im)(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN|NPM_TOKEN)\s*[:=]\s*["']?\S+"#,
         r"(?i)Authorization:\s*Bearer\s+\S+",
         r"(?i)password\s*=\s*\S+",
     ] {

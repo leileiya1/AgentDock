@@ -49,3 +49,5 @@ jobs:
       - run: git diff --exit-code
       - run: bun run typecheck
         working-directory: apps/desktop
+      - run: bun test
+        working-directory: apps/desktop

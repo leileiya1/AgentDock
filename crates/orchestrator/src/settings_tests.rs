@@ -48,6 +48,7 @@ impl agentflow_agent_adapters::AgentProvider for TimeoutCaptureAdapter {
                 started_at: Utc::now().to_rfc3339(),
                 exit_code: Some(0),
                 timed_out: false,
+                idle_timed_out: false,
                 cancelled: false,
                 log_truncated: false,
             },
@@ -165,6 +166,33 @@ async fn api_pricing_snapshots_require_a_complete_non_negative_pair()
         .await?;
     assert_eq!(saved.deepseek.input_cost_per_million, Some(0.5));
     assert_eq!(saved.deepseek.output_cost_per_million, Some(1.5));
+    Ok(())
+}
+
+#[tokio::test]
+async fn permanent_project_full_access_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let orchestrator = Orchestrator::open(dir.path()).await?;
+    let project = orchestrator
+        .store
+        .import_project("p", "/tmp/no-full-access", "main", "/tmp/no-full-access-wt")
+        .await?;
+    let settings = ProjectSettings {
+        full_access: true,
+        ..ProjectSettings::default()
+    };
+    let result = orchestrator
+        .project_settings_update(&project.id, &settings)
+        .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => return Err("permanent full access was accepted".into()),
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("PERMISSION_PERMANENT_FULL_ACCESS_REMOVED")
+    );
     Ok(())
 }
 

@@ -124,9 +124,12 @@ impl AgentProvider for ExternalProviderAdapter {
             timeout_ms,
             idle_timeout_ms,
             permission: match req.permission {
-                PermissionTier::Normal | PermissionTier::ReadOnly => ProtocolPermission::Normal,
-                PermissionTier::Yolo => ProtocolPermission::FullAccess,
+                PermissionTier::Normal => ProtocolPermission::Restricted,
+                PermissionTier::ReadOnly => ProtocolPermission::ReadOnly,
+                // Temporary emergency grants are still narrowed at the outer boundary.
+                PermissionTier::Yolo => ProtocolPermission::Restricted,
             },
+            effective_permissions: Some(req.effective_permissions.clone()),
             resume_session_id: req.resume_session_id,
             extra_allowed_commands: req.extra_allowed_commands,
             env_denylist: req.env_denylist,
@@ -137,6 +140,9 @@ impl AgentProvider for ExternalProviderAdapter {
             .map_err(|error| self.provider_error(error))?;
 
         tokio::fs::write(req.run_dir.join("stderr.log"), &outcome.stderr).await?;
+        if let Some(permission) = outcome.permission_request {
+            return Err(AdapterError::PermissionRequired(Box::new(permission)));
+        }
         if let Some(protocol_result) = &outcome.result {
             tokio::fs::write(
                 req.run_dir.join("provider-telemetry.json"),
@@ -180,6 +186,7 @@ impl AgentProvider for ExternalProviderAdapter {
                 started_at: outcome.started_at,
                 exit_code: outcome.exit_code,
                 timed_out: outcome.timed_out,
+                idle_timed_out: false,
                 cancelled: outcome.cancelled,
                 log_truncated: outcome.stderr_truncated,
             },

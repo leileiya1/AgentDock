@@ -5,7 +5,8 @@ use std::{
 };
 
 use agentflow_contracts::{
-    Actor, AgentKind, BlockedReason, Project, TaskEvent, TaskPolicy, TaskStatus, TaskSummary,
+    AcceptanceCriterionInput, Actor, AgentKind, BlockedReason, Project, TaskEvent, TaskPolicy,
+    TaskStatus, TaskSummary,
 };
 use chrono::Utc;
 use serde_json::Value;
@@ -339,6 +340,35 @@ impl Store {
         allow_api_egress: bool,
         policy: &TaskPolicy,
     ) -> Result<TaskSummary, PersistenceError> {
+        self.create_governed_task_with_acceptance(
+            project_id,
+            title,
+            description,
+            developer,
+            reviewer,
+            target_branch,
+            max_revisions,
+            allow_api_egress,
+            &[],
+            policy,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_governed_task_with_acceptance(
+        &self,
+        project_id: &str,
+        title: &str,
+        description: &str,
+        developer: AgentKind,
+        reviewer: AgentKind,
+        target_branch: &str,
+        max_revisions: i64,
+        allow_api_egress: bool,
+        acceptance_criteria: &[AcceptanceCriterionInput],
+        policy: &TaskPolicy,
+    ) -> Result<TaskSummary, PersistenceError> {
         let now = Utc::now().to_rfc3339();
         let id = Uuid::now_v7().to_string();
         let seq: i64 =
@@ -349,6 +379,20 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         sqlx::query("INSERT INTO tasks(id,project_id,seq,title,description,status,developer_agent,reviewer_agent,target_branch,max_revisions,api_egress_approved_at,created_at,updated_at) VALUES(?,?,?,?,?,'DRAFT',?,?,?,?,?,?,?)")
             .bind(&id).bind(project_id).bind(seq).bind(title).bind(description).bind(developer.to_string()).bind(reviewer.to_string()).bind(target_branch).bind(max_revisions).bind(allow_api_egress.then_some(&now)).bind(&now).bind(&now).execute(&mut *tx).await?;
+        for (position, criterion) in acceptance_criteria.iter().enumerate() {
+            let position = i64::try_from(position).map_err(|_| {
+                PersistenceError::InvalidValue("too many acceptance criteria".into())
+            })?;
+            sqlx::query("INSERT INTO task_acceptance_criteria(id,task_id,position,kind,text,created_at) VALUES(?,?,?,?,?,?)")
+                .bind(Uuid::now_v7().to_string())
+                .bind(&id)
+                .bind(position)
+                .bind(criterion.kind.to_string())
+                .bind(criterion.text.trim())
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+        }
         sqlx::query("INSERT INTO task_policies(task_id,require_plan_approval,priority,token_budget,cost_budget_usd,time_budget_secs,minimum_quality_score,delivery_mode,execution_node_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&id)
             .bind(i64::from(policy.require_plan_approval))
