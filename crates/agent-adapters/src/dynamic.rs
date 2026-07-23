@@ -2,7 +2,7 @@ use super::{
     AdapterError, AgentCapabilities, AgentInstallation, AgentProvider, AgentRunRequest, CliEnv,
     CollectedResult, PermissionTier, RunningAgent, read_development, read_review,
 };
-use agentflow_contracts::{AgentEvent, AgentKind, RunRole};
+use agentflow_contracts::{AgentEvent, AgentKind, PlanResult, RunRole};
 use agentflow_process_supervisor::ProcessOutcome;
 use agentflow_provider_protocol::{
     ProtocolClient, ProtocolPermission, ProtocolResult, ProtocolRunRequest,
@@ -103,7 +103,7 @@ impl AgentProvider for ExternalProviderAdapter {
         tx: mpsc::Sender<AgentEvent>,
     ) -> Result<RunningAgent, AdapterError> {
         let capabilities = self.capabilities();
-        if req.role == RunRole::Planner
+        if (req.role == RunRole::Planner && !self.provider.manifest.capabilities.planning)
             || (req.role == RunRole::Developer && !capabilities.supports_development)
             || (req.role == RunRole::Reviewer && !capabilities.supports_review)
         {
@@ -159,6 +159,14 @@ impl AgentProvider for ExternalProviderAdapter {
                 .map_err(|error| AdapterError::InvalidResult(error.to_string()))?;
             tokio::fs::write(req.run_dir.join("stdout.log"), &json).await?;
             match &protocol_result.result {
+                ProtocolResult::Planning(value) => {
+                    tokio::fs::write(
+                        req.run_dir.join("plan.json"),
+                        serde_json::to_vec_pretty(value)
+                            .map_err(|error| AdapterError::InvalidResult(error.to_string()))?,
+                    )
+                    .await?;
+                }
                 ProtocolResult::Development(value) => {
                     tokio::fs::write(
                         req.run_dir.join("result.json"),
@@ -201,7 +209,9 @@ impl AgentProvider for ExternalProviderAdapter {
         role: RunRole,
     ) -> Result<CollectedResult, AdapterError> {
         match role {
-            RunRole::Planner => Err(AdapterError::UnsupportedRole(role)),
+            RunRole::Planner => read_protocol_plan(&run_dir.join("plan.json"))
+                .await
+                .map(CollectedResult::Plan),
             RunRole::Developer => read_development(&run_dir.join("result.json"))
                 .await
                 .map(CollectedResult::Development),
@@ -211,6 +221,11 @@ impl AgentProvider for ExternalProviderAdapter {
             RunRole::Validator => Err(AdapterError::UnsupportedRole(role)),
         }
     }
+}
+
+async fn read_protocol_plan(path: &Path) -> Result<PlanResult, AdapterError> {
+    let bytes = tokio::fs::read(path).await?;
+    serde_json::from_slice(&bytes).map_err(|error| AdapterError::InvalidResult(error.to_string()))
 }
 
 fn duration_millis(duration: Duration) -> u64 {

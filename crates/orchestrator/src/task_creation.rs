@@ -159,7 +159,7 @@ impl Orchestrator {
         if developer == reviewer {
             return Err(OrchestratorError::InvalidState("TASK_SAME_AGENT".into()));
         }
-        let (developer_capable, reviewer_capable, developer_egress, reviewer_egress) = {
+        let (developer_capable, planning_capable, reviewer_capable, developer_egress, reviewer_egress) = {
             let registry = self.provider_registry.read().map_err(|_| {
                 OrchestratorError::Config("provider registry lock is poisoned".into())
             })?;
@@ -168,6 +168,11 @@ impl Orchestrator {
                     .get(&developer)
                     .map_or(!developer.is_api(), |provider| {
                         provider.manifest.capabilities.development
+                    }),
+                registry
+                    .get(&developer)
+                    .map_or(!developer.is_api(), |provider| {
+                        provider.manifest.capabilities.planning
                     }),
                 registry.get(&reviewer).map_or(
                     !matches!(reviewer, AgentKind::External(_)),
@@ -190,10 +195,11 @@ impl Orchestrator {
                 "selected provider does not support development".into(),
             ));
         }
-        if policy.require_plan_approval && matches!(developer, AgentKind::External(_)) {
-            return Err(OrchestratorError::InvalidState(
-                "external Provider planning capability is not available in protocol v1.1".into(),
-            ));
+        if policy.require_plan_approval && !planning_capable {
+            return Err(OrchestratorError::InvalidState(format!(
+                "Provider {} does not declare protocol planning capability",
+                developer
+            )));
         }
         if !reviewer_capable {
             return Err(OrchestratorError::InvalidState(

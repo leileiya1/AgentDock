@@ -83,6 +83,7 @@ async fn signed_external_remote_provider_uses_the_same_egress_gate()
         args: Vec::new(),
         transport: agentflow_provider_protocol::TransportKind::StdioJsonRpc,
         capabilities: ProviderCapabilities {
+            planning: false,
             development: false,
             review: true,
             streaming: true,

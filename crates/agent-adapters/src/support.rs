@@ -685,7 +685,10 @@ pub fn runtime_probe_supported(name: &str) -> bool {
         .is_some_and(|strategy| {
             matches!(
                 strategy.as_str(),
-                "claude_stream_json" | "codex_strict_schema"
+                "claude_stream_json"
+                    | "codex_strict_schema"
+                    | "qoder_plan_json"
+                    | "grok_plan_json"
             )
         })
 }
@@ -747,7 +750,13 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
         .and_then(|matrix| matrix.providers.get(name).cloned())
         .and_then(|entry| entry.runtime_probe);
     if strategy.as_deref().is_none_or(|strategy| {
-        !matches!(strategy, "claude_stream_json" | "codex_strict_schema")
+        !matches!(
+            strategy,
+            "claude_stream_json"
+                | "codex_strict_schema"
+                | "qoder_plan_json"
+                | "grok_plan_json"
+        )
     }) {
         return CliRuntimeProbe {
             passed: false,
@@ -801,8 +810,8 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
         };
     }
 
-    let args = if strategy.as_deref() == Some("claude_stream_json") {
-        vec![
+    let args = match strategy.as_deref() {
+        Some("claude_stream_json") => vec![
             "-p".into(),
             format!("只回复 {RUNTIME_PROBE_MARKER}，不要读取文件、不要调用工具"),
             "--output-format".into(),
@@ -814,9 +823,8 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
             "Read,Write,Edit,Bash,Glob,Grep,WebFetch,WebSearch".into(),
             "--max-turns".into(),
             "1".into(),
-        ]
-    } else {
-        vec![
+        ],
+        Some("codex_strict_schema") => vec![
             "exec".into(),
             "--ignore-user-config".into(),
             "--ephemeral".into(),
@@ -838,7 +846,42 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
             "--output-schema".into(),
             schema_path.to_string_lossy().into_owned(),
             format!("只输出 JSON：{{\"probe\":\"{RUNTIME_PROBE_MARKER}\"}}，不要调用工具"),
-        ]
+        ],
+        Some("qoder_plan_json") => vec![
+            "-p".into(),
+            format!("只回复 {RUNTIME_PROBE_MARKER}，不要读取文件、不要调用工具"),
+            "--cwd".into(),
+            temp.path().to_string_lossy().into_owned(),
+            "--output-format".into(),
+            "json".into(),
+            "--permission-mode".into(),
+            "plan".into(),
+            "--tools".into(),
+            "".into(),
+            "--no-session-persistence".into(),
+            "--max-output-tokens".into(),
+            "128".into(),
+        ],
+        Some("grok_plan_json") => vec![
+            "-p".into(),
+            format!("只回复 {RUNTIME_PROBE_MARKER}，不要读取文件、不要调用工具"),
+            "--cwd".into(),
+            temp.path().to_string_lossy().into_owned(),
+            "--output-format".into(),
+            "json".into(),
+            "--permission-mode".into(),
+            "plan".into(),
+            "--sandbox".into(),
+            "read-only".into(),
+            "--tools".into(),
+            "".into(),
+            "--max-turns".into(),
+            "1".into(),
+            "--no-memory".into(),
+            "--no-subagents".into(),
+            "--disable-web-search".into(),
+        ],
+        _ => Vec::new(),
     };
     let mut command = Command::new(program);
     command

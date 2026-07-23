@@ -29,12 +29,19 @@
       "requiredFlags": ["--output-format", "--approval-mode", "--sandbox", "--max-wall-time"],
       "runtimeProbe": null
     },
+    "qodercli": {
+      "displayName": "Qoder CLI",
+      "package": null,
+      "verifiedVersions": ["1.1.3"],
+      "requiredFlags": ["--output-format", "--permission-mode", "--cwd", "--no-session-persistence"],
+      "runtimeProbe": "qoder_plan_json"
+    },
     "grok": {
       "displayName": "Grok CLI",
-      "package": null,
-      "verifiedVersions": [],
-      "requiredFlags": ["--output-format", "--sandbox", "--permission-mode"],
-      "runtimeProbe": null
+      "package": "@xai-official/grok",
+      "verifiedVersions": ["0.2.111"],
+      "requiredFlags": ["--output-format", "--sandbox", "--permission-mode", "--cwd"],
+      "runtimeProbe": "grok_plan_json"
     },
     "kimi": {
       "displayName": "Kimi CLI",

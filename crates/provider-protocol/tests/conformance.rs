@@ -85,7 +85,47 @@ async fn discovers_and_runs_a_conforming_sidecar() -> Result<(), Box<dyn std::er
             assert_eq!(result.revision, 2);
             assert_eq!(result.summary, "fixture completed");
         }
+        ProtocolResult::Planning(_) => return Err("unexpected planning result".into()),
         ProtocolResult::Review(_) => return Err("unexpected review result".into()),
+    }
+
+    let (tx, _rx) = mpsc::channel(4);
+    let planning = client
+        .run(
+            ProtocolRunRequest {
+                request_id: "rpc-fixture-plan".into(),
+                task_id: "TASK-fixture".into(),
+                revision: 0,
+                commit_sha: None,
+                worktree: temp.path().to_string_lossy().into_owned(),
+                run_dir: package.to_string_lossy().into_owned(),
+                role: RunRole::Planner,
+                input_file: ".agentflow-in/plan.md".into(),
+                timeout_ms: 5_000,
+                idle_timeout_ms: 2_000,
+                permission: ProtocolPermission::ReadOnly,
+                effective_permissions: Some(agentflow_contracts::EffectivePermissions {
+                    worktree_read: true,
+                    sandbox_guarantee: agentflow_contracts::SandboxGuarantee::ReadOnly,
+                    ..Default::default()
+                }),
+                resume_session_id: None,
+                extra_allowed_commands: Vec::new(),
+                env_denylist: Vec::new(),
+            },
+            CancellationToken::new(),
+            tx,
+        )
+        .await?
+        .result
+        .ok_or("fixture planning result missing")?;
+    match planning.result {
+        ProtocolResult::Planning(plan) => {
+            assert_eq!(plan.task_id, "TASK-fixture");
+            assert_eq!(plan.plan_version, 1);
+            assert_eq!(plan.allowed_paths, ["src/**"]);
+        }
+        _ => return Err("unexpected non-planning result".into()),
     }
     Ok(())
 }
@@ -223,6 +263,7 @@ fn unsigned_fixture_manifest() -> ProviderManifest {
         args: Vec::new(),
         transport: TransportKind::StdioJsonRpc,
         capabilities: ProviderCapabilities {
+            planning: false,
             development: true,
             review: false,
             streaming: true,

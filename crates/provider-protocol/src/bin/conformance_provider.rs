@@ -1,6 +1,6 @@
 use agentflow_contracts::{
     AgentEvent, AgentEventKind, AgentKind, DevelopmentResult, DevelopmentStatus, EventStream,
-    ProviderCapabilities,
+    PlanResult, PlanStep, ProviderCapabilities, RunRole,
 };
 use agentflow_provider_protocol::{
     HandshakeResult, HealthResult, HealthStatus, ProtocolResult, ProtocolRunRequest,
@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &mut stdout,
                     request.id,
                     &HandshakeResult {
-                        protocol_version: "1.2".into(),
+                        protocol_version: "1.3".into(),
                         provider_id: AgentKind::External("fixture_provider".into()),
                         display_name: "Protocol Fixture".into(),
                         provider_version: "0.1.0".into(),
@@ -92,22 +92,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                 )
                 .await?;
+                let result = if run.role == RunRole::Planner {
+                    ProtocolResult::Planning(PlanResult {
+                        schema_version: 1,
+                        task_id: run.task_id,
+                        plan_version: 1,
+                        summary: "fixture plan".into(),
+                        steps: vec![PlanStep {
+                            title: "inspect".into(),
+                            detail: "inspect the requested scope".into(),
+                            validation: Some("run conformance checks".into()),
+                        }],
+                        risks: Vec::new(),
+                        allowed_paths: vec!["src/**".into()],
+                    })
+                } else {
+                    ProtocolResult::Development(DevelopmentResult {
+                        schema_version: 1,
+                        task_id: run.task_id,
+                        revision: run.revision,
+                        status: DevelopmentStatus::Completed,
+                        summary: "fixture completed".into(),
+                        question: None,
+                        changed_files: Some(Vec::new()),
+                        notes: None,
+                        plan_sha256: None,
+                    })
+                };
                 respond(
                     &mut stdout,
                     request.id,
                     &ProtocolRunResult {
                         exit_code: 0,
-                        result: ProtocolResult::Development(DevelopmentResult {
-                            schema_version: 1,
-                            task_id: run.task_id,
-                            revision: run.revision,
-                            status: DevelopmentStatus::Completed,
-                            summary: "fixture completed".into(),
-                            question: None,
-                            changed_files: Some(Vec::new()),
-                            notes: None,
-                            plan_sha256: None,
-                        }),
+                        result,
                         session_id: Some("fixture-session".into()),
                         cost_usd: Some(0.01),
                         tokens_in: Some(10),
@@ -140,6 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn capabilities() -> ProviderCapabilities {
     ProviderCapabilities {
+        planning: true,
         development: true,
         review: false,
         streaming: true,

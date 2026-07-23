@@ -1,7 +1,7 @@
 use crate::{
     HandshakeParams, HandshakeResult, HealthResult, PROTOCOL_VERSION, ProtocolRunRequest,
     ProtocolRunResult, ProviderPermissionRequest, ResolvedProviderManifest, RpcNotification,
-    RpcRequest, RpcResponse,
+    RpcRequest, RpcResponse, SUPPORTED_PROTOCOLS,
 };
 use chrono::Utc;
 use serde::{Serialize, de::DeserializeOwned};
@@ -312,7 +312,10 @@ impl Session {
     ) -> Result<HandshakeResult, ProtocolError> {
         let params = HandshakeParams {
             core_version: env!("CARGO_PKG_VERSION").into(),
-            supported_protocols: vec![PROTOCOL_VERSION.into()],
+            supported_protocols: SUPPORTED_PROTOCOLS
+                .iter()
+                .map(|version| (*version).to_string())
+                .collect(),
         };
         let result: HandshakeResult = self
             .request(1, "handshake", &params, STARTUP_TIMEOUT)

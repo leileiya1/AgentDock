@@ -276,15 +276,16 @@ impl Orchestrator {
         let grok_settings = ApiProviderSettings::grok_default();
         let minimax_settings = ApiProviderSettings::minimax_default();
         let kimi_settings = ApiProviderSettings::kimi_default();
-        let (git_path, claude_path, codex_path, gemini_path, qwen_path, grok_path, kimi_path, minimax_path) = tokio::join!(
+        let (git_path, claude_path, codex_path, gemini_path, qwen_path, qoder_path, grok_path, kimi_path, minimax_path) = tokio::join!(
             self.cli_override("git"), self.cli_override("claude_code"),
             self.cli_override("codex"), self.cli_override("gemini_cli"),
-            self.cli_override("qwen_code"), self.cli_override("grok_cli"),
+            self.cli_override("qwen_code"), self.cli_override("qoder_cli"),
+            self.cli_override("grok_cli"),
             self.cli_override("kimi_cli"), self.cli_override("minimax_cli"),
         );
         // All side-effect-free tool checks are independent. Run them concurrently so adding more
         // installed CLIs does not make the settings screen progressively slower.
-        let (system, git, node, bun, claude_code, codex, gemini_cli, qwen_code, grok_cli, kimi_cli, minimax_cli, openai_api, anthropic_api, deepseek_api, grok_api, minimax_api, kimi_api) = tokio::join!(
+        let (system, git, node, bun, claude_code, codex, gemini_cli, qwen_code, qoder_cli, grok_cli, kimi_cli, minimax_cli, openai_api, anthropic_api, deepseek_api, grok_api, minimax_api, kimi_api) = tokio::join!(
             system_environment(&self.app_data),
             bounded_tool_status("git", git_path, &[]),
             bounded_tool_status("node", None, &[]),
@@ -293,6 +294,7 @@ impl Orchestrator {
             bounded_tool_status("codex", codex_path, &["--json", "--sandbox"]),
             bounded_tool_status("gemini", gemini_path, &["--output-format", "--approval-mode", "--sandbox"]),
             bounded_tool_status("qwen", qwen_path, &["--output-format", "--approval-mode", "--sandbox", "--max-wall-time"]),
+            bounded_tool_status("qodercli", qoder_path, &["--output-format", "--permission-mode", "--cwd", "--no-session-persistence"]),
             bounded_tool_status("grok", grok_path, &["--output-format", "--sandbox", "--permission-mode"]),
             bounded_tool_status("kimi", kimi_path, &["--prompt", "--output-format"]),
             bounded_tool_status("mmx", minimax_path, &[]),
@@ -312,6 +314,7 @@ impl Orchestrator {
             codex,
             gemini_cli,
             qwen_code,
+            qoder_cli,
             grok_cli,
             kimi_cli,
             minimax_cli,
@@ -334,6 +337,8 @@ impl Orchestrator {
             cli_descriptor(AgentKind::Codex, "Codex", &env.codex),
             cli_descriptor(AgentKind::GeminiCli, "Gemini CLI", &env.gemini_cli),
             cli_descriptor(AgentKind::QwenCode, "Qwen Code", &env.qwen_code),
+            cli_descriptor(AgentKind::QoderCli, "Qoder CLI", &env.qoder_cli),
+            cli_descriptor(AgentKind::GrokCli, "Grok CLI", &env.grok_cli),
             api_descriptor(AgentKind::OpenAiApi, "OpenAI API", &env.openai_api),
             api_descriptor(
                 AgentKind::AnthropicApi,
@@ -406,6 +411,8 @@ impl Orchestrator {
             (AgentKind::Codex, &env.codex),
             (AgentKind::GeminiCli, &env.gemini_cli),
             (AgentKind::QwenCode, &env.qwen_code),
+            (AgentKind::QoderCli, &env.qoder_cli),
+            (AgentKind::GrokCli, &env.grok_cli),
         ]
         .into_iter()
         .filter_map(|(kind, status)| {
@@ -414,10 +421,8 @@ impl Orchestrator {
         })
         .collect::<Vec<_>>();
         let recommended_developer = [
-            AgentKind::ClaudeCode,
-            AgentKind::Codex,
-            AgentKind::GeminiCli,
-            AgentKind::QwenCode,
+            AgentKind::QoderCli,
+            AgentKind::GrokCli,
         ]
         .into_iter()
         .find(|kind| available_cli.contains(kind));
@@ -534,6 +539,7 @@ impl Orchestrator {
                 | "codex"
                 | "gemini_cli"
                 | "qwen_code"
+                | "qoder_cli"
                 | "grok_cli"
                 | "kimi_cli"
                 | "minimax_cli"
@@ -556,6 +562,10 @@ impl Orchestrator {
                     "--sandbox",
                     "--max-wall-time",
                 ],
+            ),
+            "qoder_cli" => (
+                "qodercli",
+                &["--output-format", "--permission-mode", "--cwd", "--no-session-persistence"],
             ),
             "grok_cli" => (
                 "grok",

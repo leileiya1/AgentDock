@@ -71,6 +71,7 @@ describe("buildDots", () => {
       codex: tool({ authenticated: true }),
       geminiCli: tool({ found: false, compatible: false }),
       qwenCode: tool({ found: false, compatible: false }),
+      qoderCli: tool({ found: false, compatible: false }),
       grokCli: tool({}),
       kimiCli: tool({}),
       minimaxCli: tool({}),

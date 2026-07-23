@@ -363,6 +363,7 @@ export type EnvReport = {
 	codex: ToolStatus,
 	geminiCli: ToolStatus,
 	qwenCode: ToolStatus,
+	qoderCli: ToolStatus,
 	grokCli: ToolStatus,
 	kimiCli: ToolStatus,
 	minimaxCli: ToolStatus,
@@ -734,6 +735,7 @@ export type ProjectSettings = {
 	codexPath?: string | null,
 	geminiPath?: string | null,
 	qwenPath?: string | null,
+	qoderPath?: string | null,
 	grokPath?: string | null,
 	kimiPath?: string | null,
 	minimaxPath?: string | null,
@@ -759,6 +761,7 @@ export type ProjectSettingsArgs = {
 };
 
 export type ProviderCapabilities = {
+	planning?: boolean,
 	development: boolean,
 	review: boolean,
 	streaming: boolean,

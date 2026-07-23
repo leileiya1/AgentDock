@@ -18,14 +18,15 @@ import { errorLine } from "@/copy/errors";
 import { toast } from "@/stores/toastStore";
 import { cn } from "@/lib/utils";
 
-type CliId = "claude_code" | "codex" | "gemini_cli" | "qwen_code" | "grok_cli" | "kimi_cli" | "minimax_cli";
+type CliId = "claude_code" | "codex" | "gemini_cli" | "qwen_code" | "qoder_cli" | "grok_cli" | "kimi_cli" | "minimax_cli";
 type ApiId = "openai_api" | "anthropic_api" | "deepseek_api" | "grok_api" | "minimax_api" | "kimi_api";
 
 interface CliDefinition {
   id: CliId;
   label: string;
-  field: "claudeCode" | "codex" | "geminiCli" | "qwenCode" | "grokCli" | "kimiCli" | "minimaxCli";
+  field: "claudeCode" | "codex" | "geminiCli" | "qwenCode" | "qoderCli" | "grokCli" | "kimiCli" | "minimaxCli";
   packageName: string;
+  installable?: boolean;
   apiKeyAuth?: boolean;
 }
 
@@ -43,6 +44,7 @@ const MAIN_CLIS: CliDefinition[] = [
 
 const EXTRA_CLIS: CliDefinition[] = [
   { id: "qwen_code", label: "Qwen Code", field: "qwenCode", packageName: "@qwen-code/qwen-code@latest" },
+  { id: "qoder_cli", label: "Qoder CLI", field: "qoderCli", packageName: "qoder.com 官方安装器", installable: false },
   { id: "grok_cli", label: "Grok Build", field: "grokCli", packageName: "@xai-official/grok" },
   { id: "kimi_cli", label: "Kimi Code", field: "kimiCli", packageName: "@moonshot-ai/kimi-code" },
   { id: "minimax_cli", label: "MiniMax CLI", field: "minimaxCli", packageName: "mmx-cli" },
@@ -217,7 +219,7 @@ function CliRow({ item, status, onInstall, onConfigureCredential }: {
       statusText={statusText}
       actions={
         <>
-          {!status.found && <Button variant="primary" size="sm" onClick={onInstall}>安装</Button>}
+          {!status.found && item.installable !== false && <Button variant="primary" size="sm" onClick={onInstall}>安装</Button>}
           {status.found && onConfigureCredential && <Button variant="ghost" size="sm" onClick={onConfigureCredential}>认证</Button>}
           <Button variant="ghost" size="sm" onClick={() => setDetails((value) => !value)}>{details ? "收起" : "详情"}</Button>
         </>

@@ -323,6 +323,7 @@ pub struct EnvReport {
     pub codex: ToolStatus,
     pub gemini_cli: ToolStatus,
     pub qwen_code: ToolStatus,
+    pub qoder_cli: ToolStatus,
     pub grok_cli: ToolStatus,
     pub kimi_cli: ToolStatus,
     pub minimax_cli: ToolStatus,

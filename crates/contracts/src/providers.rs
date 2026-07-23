@@ -10,6 +10,7 @@ pub enum AgentKind {
     Codex,
     GeminiCli,
     QwenCode,
+    QoderCli,
     GrokCli,
     KimiCli,
     MiniMaxCli,
@@ -29,6 +30,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::GeminiCli => "gemini_cli",
             Self::QwenCode => "qwen_code",
+            Self::QoderCli => "qoder_cli",
             Self::GrokCli => "grok_cli",
             Self::KimiCli => "kimi_cli",
             Self::MiniMaxCli => "minimax_cli",
@@ -70,6 +72,7 @@ impl std::str::FromStr for AgentKind {
             "codex" => Self::Codex,
             "gemini_cli" => Self::GeminiCli,
             "qwen_code" => Self::QwenCode,
+            "qoder_cli" => Self::QoderCli,
             "grok_cli" => Self::GrokCli,
             "kimi_cli" => Self::KimiCli,
             "minimax_cli" => Self::MiniMaxCli,
@@ -161,6 +164,8 @@ pub struct ProviderPermissions {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCapabilities {
+    #[serde(default)]
+    pub planning: bool,
     pub development: bool,
     pub review: bool,
     pub streaming: bool,

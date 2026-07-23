@@ -44,6 +44,7 @@ const BRAND_COLORS: Record<string, string> = {
   codex: "var(--color-t1)",
   gemini_cli: "#8E75FF",
   qwen_code: "#7C6CFF",
+  qoder_cli: "#7C6CFF",
   grok_cli: "var(--color-t1)",
   grok_api: "var(--color-t1)",
   kimi_cli: "var(--color-t1)",

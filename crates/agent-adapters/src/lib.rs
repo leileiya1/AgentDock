@@ -215,6 +215,32 @@ pub struct QwenCodeAdapter {
     schema_path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct QoderCliAdapter {
+    executable: PathBuf,
+}
+
+impl QoderCliAdapter {
+    pub fn new(executable: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GrokCliAdapter {
+    executable: PathBuf,
+}
+
+impl GrokCliAdapter {
+    pub fn new(executable: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
+}
+
 impl QwenCodeAdapter {
     pub fn new(executable: impl Into<PathBuf>, schema_path: impl Into<PathBuf>) -> Self {
         Self {

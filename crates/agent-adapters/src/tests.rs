@@ -45,6 +45,16 @@ mod tests {
         assert!(runtime_probe_supported("codex"));
         assert!(!runtime_probe_supported("gemini"));
         assert!(!runtime_probe_supported("qwen"));
+        assert!(runtime_probe_supported("qodercli"));
+        assert!(runtime_probe_supported("grok"));
+        let (qoder, qoder_versions) =
+            support_level("qodercli", Some("1.1.3"), true, &matrix);
+        assert_eq!(qoder, CliSupportLevel::Verified);
+        assert_eq!(qoder_versions, vec!["1.1.3"]);
+        let (grok, grok_versions) =
+            support_level("grok", Some("grok 0.2.111 (build)"), true, &matrix);
+        assert_eq!(grok, CliSupportLevel::Verified);
+        assert_eq!(grok_versions, vec!["0.2.111"]);
         Ok(())
     }
 
@@ -320,6 +330,23 @@ mod tests {
                 .windows(2)
                 .any(|value| value == ["--resume", "session-123"])
         );
+    }
+
+    #[test]
+    fn qoder_and_grok_are_read_only_for_planning_and_resume_only_explicitly() {
+        let mut qoder_request = test_request(RunRole::Planner, PermissionTier::ReadOnly);
+        let qoder = qoder_args(&qoder_request);
+        assert!(qoder.windows(2).any(|v| v == ["--permission-mode", "plan"]));
+        assert!(qoder.iter().any(|v| v == "--no-session-persistence"));
+        qoder_request.resume_session_id = Some("qoder-session".into());
+        let resumed = qoder_args(&qoder_request);
+        assert!(resumed.windows(2).any(|v| v == ["--resume", "qoder-session"]));
+        assert!(!resumed.iter().any(|v| v == "--no-session-persistence"));
+
+        let grok = grok_args(&test_request(RunRole::Reviewer, PermissionTier::ReadOnly));
+        assert!(grok.windows(2).any(|v| v == ["--permission-mode", "plan"]));
+        assert!(grok.windows(2).any(|v| v == ["--sandbox", "read-only"]));
+        assert!(grok.iter().any(|v| v == "--disable-web-search"));
     }
 
     #[tokio::test]

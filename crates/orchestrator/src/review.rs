@@ -295,6 +295,12 @@ impl Orchestrator {
                 project.settings.qwen_path.as_deref().unwrap_or("qwen"),
                 self.app_data.join("schemas/review.schema.json"),
             )),
+            AgentKind::QoderCli => Box::new(QoderCliAdapter::new(
+                project.settings.qoder_path.as_deref().unwrap_or("qodercli"),
+            )),
+            AgentKind::GrokCli => Box::new(GrokCliAdapter::new(
+                project.settings.grok_path.as_deref().unwrap_or("grok"),
+            )),
             AgentKind::OpenAiApi => Box::new(ApiProviderAdapter::new(
                 AgentKind::OpenAiApi,
                 project.settings.openai.clone(),
@@ -319,7 +325,7 @@ impl Orchestrator {
                 AgentKind::KimiApi,
                 project.settings.kimi.clone(),
             )),
-            AgentKind::GrokCli | AgentKind::KimiCli | AgentKind::MiniMaxCli => {
+            AgentKind::KimiCli | AgentKind::MiniMaxCli => {
                 Box::new(UnavailableProviderAdapter::new(kind))
             }
             AgentKind::External(id) => Box::new(UnavailableProviderAdapter::new(
@@ -354,7 +360,15 @@ impl Orchestrator {
             .into_iter()
             .filter(|kind| excluded.as_ref() != Some(kind))
             .filter(|kind| !matches!(role, RunRole::Planner | RunRole::Developer) || !kind.is_api())
-            .filter(|kind| role != RunRole::Planner || !matches!(kind, AgentKind::External(_)))
+            .filter(|kind| {
+                role != RunRole::Planner
+                    || self
+                        .provider_registry
+                        .read()
+                        .ok()
+                        .and_then(|registry| registry.get(kind).cloned())
+                        .is_none_or(|provider| provider.manifest.capabilities.planning)
+            })
             .filter(|kind| allow_api_egress || !self.provider_requires_egress(kind))
             .filter(|kind| seen.insert(kind.clone()))
             .collect()

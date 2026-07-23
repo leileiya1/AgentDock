@@ -15,4 +15,5 @@ pub use types::{
     HandshakeParams, HandshakeResult, HealthResult, HealthStatus, PROTOCOL_VERSION,
     ProtocolPermission, ProtocolResult, ProtocolRunRequest, ProtocolRunResult,
     ProviderPermissionRequest, RpcError, RpcNotification, RpcRequest, RpcResponse,
+    SUPPORTED_PROTOCOLS,
 };

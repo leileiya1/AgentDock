@@ -426,3 +426,187 @@ fn qwen_args(req: &AgentRunRequest, schema_path: &Path) -> Vec<String> {
     }
     args
 }
+
+#[async_trait]
+impl AgentProvider for QoderCliAdapter {
+    fn kind(&self) -> AgentKind {
+        AgentKind::QoderCli
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streams_events: true,
+            native_output_schema: false,
+            supports_resume: true,
+            read_only_mode: true,
+            supports_development: true,
+            supports_review: true,
+        }
+    }
+
+    async fn detect(&self, env: &CliEnv) -> Result<AgentInstallation, AdapterError> {
+        detect_cli(
+            "qodercli",
+            env.explicit_path.as_ref().unwrap_or(&self.executable),
+            &["--output-format", "--permission-mode", "--cwd", "--no-session-persistence"],
+            self.capabilities(),
+        )
+        .await
+    }
+
+    async fn start(
+        &self,
+        req: AgentRunRequest,
+        cancel: CancellationToken,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<RunningAgent, AdapterError> {
+        let args = qoder_args(&req);
+        let executable = resolve_cli("qodercli", &self.executable).await?;
+        start_process("qoder", executable, args, req, cancel, tx).await
+    }
+
+    async fn collect_result(
+        &self,
+        run_dir: &Path,
+        role: RunRole,
+    ) -> Result<CollectedResult, AdapterError> {
+        match role {
+            RunRole::Planner => read_plan_output(run_dir, "qoder")
+                .await
+                .map(CollectedResult::Plan),
+            RunRole::Developer => read_development_output(run_dir, "qoder")
+                .await
+                .map(CollectedResult::Development),
+            RunRole::Reviewer => read_review(&run_dir.join("stdout.log"))
+                .await
+                .map(CollectedResult::Review),
+            _ => Err(AdapterError::UnsupportedRole(role)),
+        }
+    }
+}
+
+fn qoder_args(req: &AgentRunRequest) -> Vec<String> {
+    let read_only = req.role != RunRole::Developer
+        || matches!(req.permission, PermissionTier::ReadOnly);
+    let mut args = vec![
+        "-p".into(),
+        agentflow_prompt(req),
+        "--cwd".into(),
+        req.worktree.to_string_lossy().into_owned(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--permission-mode".into(),
+        if read_only { "plan" } else { "dont_ask" }.into(),
+        "--max-output-tokens".into(),
+        req.budget
+            .remaining_tokens
+            .unwrap_or(8_000)
+            .min(8_000)
+            .to_string(),
+    ];
+    if read_only {
+        args.extend([
+            "--disallowed-tools".into(),
+            "Write,Edit,Bash".into(),
+        ]);
+    }
+    if matches!(req.permission, PermissionTier::Yolo) {
+        args.push("--dangerously-skip-permissions".into());
+    }
+    if let Some(session_id) = &req.resume_session_id {
+        args.extend(["--resume".into(), session_id.clone()]);
+    } else {
+        args.push("--no-session-persistence".into());
+    }
+    args
+}
+
+#[async_trait]
+impl AgentProvider for GrokCliAdapter {
+    fn kind(&self) -> AgentKind {
+        AgentKind::GrokCli
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streams_events: true,
+            native_output_schema: true,
+            supports_resume: true,
+            read_only_mode: true,
+            supports_development: true,
+            supports_review: true,
+        }
+    }
+
+    async fn detect(&self, env: &CliEnv) -> Result<AgentInstallation, AdapterError> {
+        detect_cli(
+            "grok",
+            env.explicit_path.as_ref().unwrap_or(&self.executable),
+            &["--output-format", "--permission-mode", "--cwd", "--sandbox"],
+            self.capabilities(),
+        )
+        .await
+    }
+
+    async fn start(
+        &self,
+        req: AgentRunRequest,
+        cancel: CancellationToken,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<RunningAgent, AdapterError> {
+        let args = grok_args(&req);
+        let executable = resolve_cli("grok", &self.executable).await?;
+        start_process("grok", executable, args, req, cancel, tx).await
+    }
+
+    async fn collect_result(
+        &self,
+        run_dir: &Path,
+        role: RunRole,
+    ) -> Result<CollectedResult, AdapterError> {
+        match role {
+            RunRole::Planner => read_plan_output(run_dir, "grok")
+                .await
+                .map(CollectedResult::Plan),
+            RunRole::Developer => read_development_output(run_dir, "grok")
+                .await
+                .map(CollectedResult::Development),
+            RunRole::Reviewer => read_review(&run_dir.join("stdout.log"))
+                .await
+                .map(CollectedResult::Review),
+            _ => Err(AdapterError::UnsupportedRole(role)),
+        }
+    }
+}
+
+fn grok_args(req: &AgentRunRequest) -> Vec<String> {
+    let read_only = req.role != RunRole::Developer
+        || matches!(req.permission, PermissionTier::ReadOnly);
+    let mut args = vec![
+        "-p".into(),
+        agentflow_prompt(req),
+        "--cwd".into(),
+        req.worktree.to_string_lossy().into_owned(),
+        "--output-format".into(),
+        "streaming-json".into(),
+        "--permission-mode".into(),
+        if read_only { "plan" } else { "dontAsk" }.into(),
+        "--sandbox".into(),
+        if read_only { "read-only" } else { "workspace-write" }.into(),
+        "--max-turns".into(),
+        "100".into(),
+        "--no-memory".into(),
+        "--no-subagents".into(),
+        "--disable-web-search".into(),
+    ];
+    if read_only {
+        args.extend(["--disallowed-tools".into(), "Write,Edit,Bash".into()]);
+    }
+    if matches!(req.permission, PermissionTier::Yolo) {
+        args.push("--always-approve".into());
+    }
+    if let Some(session_id) = &req.resume_session_id {
+        args.extend(["--resume".into(), session_id.clone()]);
+    }
+    args
+}

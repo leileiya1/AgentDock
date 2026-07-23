@@ -150,6 +150,7 @@ impl Orchestrator {
             AgentKind::Codex => ("codex", "codex"),
             AgentKind::GeminiCli => ("gemini", "gemini_cli"),
             AgentKind::QwenCode => ("qwen", "qwen_code"),
+            AgentKind::QoderCli => ("qodercli", "qoder_cli"),
             AgentKind::GrokCli => ("grok", "grok_cli"),
             AgentKind::KimiCli => ("kimi", "kimi_cli"),
             AgentKind::MiniMaxCli => ("mmx", "minimax_cli"),

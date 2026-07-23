@@ -588,8 +588,10 @@ mod tests {
             orchestrator.provider_chain(AgentKind::ClaudeCode, RunRole::Developer, None, &settings, false);
         assert_eq!(developers.first(), Some(&AgentKind::ClaudeCode));
         assert!(!developers.contains(&AgentKind::OpenAiApi));
-        assert!(developers.contains(&AgentKind::GeminiCli));
-        assert!(developers.contains(&AgentKind::QwenCode));
+        assert_eq!(
+            &developers[1..],
+            &[AgentKind::QoderCli, AgentKind::GrokCli]
+        );
 
         let reviewers = orchestrator.provider_chain(
             AgentKind::Codex,
@@ -600,10 +602,10 @@ mod tests {
         );
         assert_eq!(reviewers.first(), Some(&AgentKind::Codex));
         assert!(!reviewers.contains(&AgentKind::ClaudeCode));
-        assert!(reviewers.contains(&AgentKind::OpenAiApi));
-        assert!(reviewers.contains(&AgentKind::GrokApi));
-        assert!(reviewers.contains(&AgentKind::MiniMaxApi));
-        assert!(reviewers.contains(&AgentKind::KimiApi));
+        assert_eq!(
+            &reviewers[1..],
+            &[AgentKind::QoderCli, AgentKind::GrokCli]
+        );
         let private_reviewers = orchestrator.provider_chain(
             AgentKind::Codex,
             RunRole::Reviewer,

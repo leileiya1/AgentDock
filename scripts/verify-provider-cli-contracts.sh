@@ -16,6 +16,10 @@ verify_cli() {
     executable="$AGENTFLOW_CODEX_BIN"
   elif [[ "$name" == "claude" && -n "${AGENTFLOW_CLAUDE_BIN:-}" ]]; then
     executable="$AGENTFLOW_CLAUDE_BIN"
+  elif [[ "$name" == "qodercli" && -n "${AGENTFLOW_QODER_BIN:-}" ]]; then
+    executable="$AGENTFLOW_QODER_BIN"
+  elif [[ "$name" == "grok" && -n "${AGENTFLOW_GROK_BIN:-}" ]]; then
+    executable="$AGENTFLOW_GROK_BIN"
   elif [[ "$name" == "codex" && -x "/Applications/ChatGPT.app/Contents/Resources/codex" ]]; then
     # Mirrors AgentFlow's macOS resolver: the ChatGPT-bundled binary is the cache-compatible
     # candidate and can differ from an older standalone `codex` earlier on PATH.
@@ -51,3 +55,5 @@ NODE
 
 verify_cli claude claude
 verify_cli codex codex
+verify_cli qodercli qodercli
+verify_cli grok grok

@@ -134,6 +134,7 @@ fn generic_probe_targets_cover_every_builtin_cli_without_covering_apis() {
         AgentKind::Codex,
         AgentKind::GeminiCli,
         AgentKind::QwenCode,
+        AgentKind::QoderCli,
         AgentKind::GrokCli,
         AgentKind::KimiCli,
         AgentKind::MiniMaxCli,
@@ -161,8 +162,7 @@ async fn preflight_report_maps_roles_to_their_fallback_chains()
         )
         .await?;
     let settings = orchestrator.project(&project.id).await?.settings;
-    // The chosen developer (Claude) is not logged in, but the default developer fallback chain also
-    // contains Codex, which can run — so the developer role is still satisfiable.
+    // The chosen developer (Claude) is not logged in, but the configured Qoder fallback can run.
     let catalog = vec![
         descriptor(
             AgentKind::ClaudeCode,
@@ -173,6 +173,11 @@ async fn preflight_report_maps_roles_to_their_fallback_chains()
             AgentKind::Codex,
             "Codex",
             tool_status(true, true, Some(true), None, None),
+        ),
+        descriptor(
+            AgentKind::QoderCli,
+            "Qoder CLI",
+            tool_status(true, true, None, None, None),
         ),
     ];
     let report = orchestrator.build_preflight_report(

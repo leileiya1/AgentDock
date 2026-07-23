@@ -1,7 +1,8 @@
 use agentflow_agent_adapters::{
     AgentAdapter, AgentRunRequest, ApiProviderAdapter, BudgetMode, ClaudeCodeAdapter,
     CliRuntimeProbe, CodexAdapter, CollectedResult, ExternalProviderAdapter, GeminiCliAdapter,
-    PermissionTier, QwenCodeAdapter, RunBudget, UnavailableProviderAdapter,
+    GrokCliAdapter, PermissionTier, QoderCliAdapter, QwenCodeAdapter, RunBudget,
+    UnavailableProviderAdapter,
 };
 use agentflow_contracts::*;
 use agentflow_git_engine::{Git, GitError, summarize};
@@ -131,6 +132,7 @@ fn cli_descriptor(id: AgentKind, display_name: &str, status: &ToolStatus) -> Pro
         source: ProviderSource::Builtin,
         protocol_version: PROTOCOL_VERSION.into(),
         capabilities: ProviderCapabilities {
+            planning: true,
             development: true,
             review: true,
             streaming: true,
@@ -166,6 +168,7 @@ fn api_descriptor(
         source: ProviderSource::Builtin,
         protocol_version: PROTOCOL_VERSION.into(),
         capabilities: ProviderCapabilities {
+            planning: false,
             development: false,
             review: true,
             streaming: true,

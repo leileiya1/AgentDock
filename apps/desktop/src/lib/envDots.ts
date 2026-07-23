@@ -45,6 +45,8 @@ export function buildDots(env: EnvReport | undefined, daemonRunning: boolean | u
     toolDot("codex", "Codex", env.codex, false),
     toolDot("gemini", "Gemini CLI", env.geminiCli, true),
     toolDot("qwen", "Qwen Code", env.qwenCode, true),
+    toolDot("qoder", "Qoder CLI", env.qoderCli, true),
+    toolDot("grok", "Grok CLI", env.grokCli, true),
     providerDot("openai", "OpenAI API", env.openaiApi),
     providerDot("anthropic", "Anthropic API", env.anthropicApi),
     providerDot("deepseek", "DeepSeek API", env.deepseekApi),

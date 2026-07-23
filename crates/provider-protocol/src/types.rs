@@ -1,11 +1,12 @@
 use agentflow_contracts::{
     AgentEvent, AgentKind, DevelopmentResult, EffectivePermissions, PermissionActionType,
-    PermissionOperation, ProviderCapabilities, ReviewResult, RunRole, SandboxGuarantee,
+    PermissionOperation, PlanResult, ProviderCapabilities, ReviewResult, RunRole, SandboxGuarantee,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: &str = "1.2";
+pub const PROTOCOL_VERSION: &str = "1.3";
+pub const SUPPORTED_PROTOCOLS: &[&str] = &["1.3", "1.2"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +95,7 @@ pub struct ProtocolRunRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ProtocolResult {
+    Planning(PlanResult),
     Development(DevelopmentResult),
     Review(ReviewResult),
 }
