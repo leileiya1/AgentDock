@@ -6,6 +6,7 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 export const commands = {
 	envCheck: () => typedError<EnvReport, AppError>(__TAURI_INVOKE("env_check")),
 	providerList: () => typedError<ProviderDescriptor[], AppError>(__TAURI_INVOKE("provider_list")),
+	providerPreflight: (args: ProviderPreflightArgs) => typedError<TaskPreflightReport, AppError>(__TAURI_INVOKE("provider_preflight", { args })),
 	onboardingCheck: () => typedError<OnboardingReport, AppError>(__TAURI_INVOKE("onboarding_check")),
 	onboardingComplete: () => typedError<null, AppError>(__TAURI_INVOKE("onboarding_complete")),
 	storageReport: () => typedError<StorageReport, AppError>(__TAURI_INVOKE("storage_report")),
@@ -26,14 +27,28 @@ export const commands = {
 	projectImport: (args: ProjectImportArgs) => typedError<Project, AppError>(__TAURI_INVOKE("project_import", { args })),
 	projectList: () => typedError<Project[], AppError>(__TAURI_INVOKE("project_list")),
 	projectGitCompatibility: (args: ProjectIdArgs) => typedError<GitCompatibilityReport, AppError>(__TAURI_INVOKE("project_git_compatibility", { args })),
+	projectPruneStaleWorktrees: (args: ProjectIdArgs) => typedError<GitCompatibilityReport, AppError>(__TAURI_INVOKE("project_prune_stale_worktrees", { args })),
 	taskCreate: (args: TaskCreateArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_create", { args })),
 	taskList: (args: ProjectIdArgs) => typedError<TaskSummary[], AppError>(__TAURI_INVOKE("task_list", { args })),
 	taskGet: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_get", { args })),
 	taskStart: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_start", { args })),
 	taskCancel: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_cancel", { args })),
-	queueTaskPause: (args: TaskIdArgs) => typedError<QueueMutationResult, AppError>(__TAURI_INVOKE("queue_task_pause", { args })),
-	queueTaskResume: (args: TaskIdArgs) => typedError<QueueMutationResult, AppError>(__TAURI_INVOKE("queue_task_resume", { args })),
-	queueTaskPriority: (args: QueuePriorityArgs) => typedError<QueueMutationResult, AppError>(__TAURI_INVOKE("queue_task_priority", { args })),
+	queueTaskPause: (args: TaskIdArgs) => typedError<QueueTaskState, AppError>(__TAURI_INVOKE("queue_task_pause", { args })),
+	queueTaskResume: (args: TaskIdArgs) => typedError<QueueTaskState, AppError>(__TAURI_INVOKE("queue_task_resume", { args })),
+	queueTaskPriority: (args: QueuePriorityArgs) => typedError<QueueTaskState, AppError>(__TAURI_INVOKE("queue_task_priority", { args })),
+	queueTaskStatus: (args: TaskIdArgs) => typedError<{
+	taskId: string,
+	state: QueueState,
+	paused: boolean,
+	priority: number,
+	position: number | null,
+	waitingReason: QueueWaitingReason | null,
+	notBefore: string | null,
+	lastError: string | null,
+	attempts: number,
+	enqueuedAt: string,
+	updatedAt: string,
+} | null, AppError>(__TAURI_INVOKE("queue_task_status", { args })),
 	taskResumeWithGuidance: (args: GuidanceArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_resume_with_guidance", { args })),
 	taskRepairInspect: (args: TaskIdArgs) => typedError<RepairReport, AppError>(__TAURI_INVOKE("task_repair_inspect", { args })),
 	taskRepairApply: (args: TaskRepairArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_repair_apply", { args })),
@@ -44,11 +59,13 @@ export const commands = {
 	taskMarkMergedExternal: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_mark_merged_external", { args })),
 	taskPlanApprove: (args: PlanActionArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_plan_approve", { args })),
 	taskPlanReject: (args: PlanRejectArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_plan_reject", { args })),
+	taskPlanReviewContext: (args: TaskIdArgs) => typedError<PlanReviewContext, AppError>(__TAURI_INVOKE("task_plan_review_context", { args })),
 	taskBudgetUpdate: (args: BudgetUpdateArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_budget_update", { args })),
 	taskGovernanceGet: (args: GovernanceArgs) => typedError<TaskGovernance, AppError>(__TAURI_INVOKE("task_governance_get", { args })),
-	taskQualityReplay: (args: GovernanceArgs) => typedError<QualityEvaluation, AppError>(__TAURI_INVOKE("task_quality_replay", { args })),
+	taskQualityReplay: (args: GovernanceArgs) => typedError<QualityReplayAttempt, AppError>(__TAURI_INVOKE("task_quality_replay", { args })),
 	taskDeliveryStart: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_delivery_start", { args })),
 	taskDeliveryRefresh: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_delivery_refresh", { args })),
+	taskRollbackPreflight: (args: TaskIdArgs) => typedError<RollbackPreflight, AppError>(__TAURI_INVOKE("task_rollback_preflight", { args })),
 	taskRollback: (args: RollbackArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_rollback", { args })),
 	executionNodeList: () => typedError<ExecutionNode[], AppError>(__TAURI_INVOKE("execution_node_list")),
 	executionNodeUpsert: (args: NodeUpsertArgs) => typedError<ExecutionNode, AppError>(__TAURI_INVOKE("execution_node_upsert", { args })),
@@ -57,12 +74,16 @@ export const commands = {
 	diffGet: (args: DiffArgs) => typedError<DiffPayload, AppError>(__TAURI_INVOKE("diff_get", { args })),
 	runList: (args: TaskIdArgs) => typedError<RunSummary[], AppError>(__TAURI_INVOKE("run_list", { args })),
 	eventsList: (args: EventsArgs) => typedError<TaskEvent[], AppError>(__TAURI_INVOKE("events_list", { args })),
-	eventsExport: (args: ProjectIdArgs) => typedError<ExportPath, AppError>(__TAURI_INVOKE("events_export", { args })),
+	eventsExport: (args: AuditExportArgs) => typedError<AuditExportResult, AppError>(__TAURI_INVOKE("events_export", { args })),
 	projectSettingsGet: (args: ProjectIdArgs) => typedError<ProjectSettings, AppError>(__TAURI_INVOKE("project_settings_get", { args })),
 	projectSettingsUpdate: (args: ProjectSettingsArgs) => typedError<ProjectSettings, AppError>(__TAURI_INVOKE("project_settings_update", { args })),
 	projectConfigTrustGet: (args: ProjectIdArgs) => typedError<ProjectConfigTrust, AppError>(__TAURI_INVOKE("project_config_trust_get", { args })),
-	projectConfigTrustApprove: (args: ProjectIdArgs) => typedError<ProjectConfigTrust, AppError>(__TAURI_INVOKE("project_config_trust_approve", { args })),
+	projectConfigTrustApprove: (args: ProjectConfigApprovalArgs) => typedError<ProjectConfigTrust, AppError>(__TAURI_INVOKE("project_config_trust_approve", { args })),
 	projectConfigTrustRevoke: (args: ProjectIdArgs) => typedError<ProjectConfigTrust, AppError>(__TAURI_INVOKE("project_config_trust_revoke", { args })),
+	permissionRequestList: (args: TaskIdArgs) => typedError<PermissionRequest[], AppError>(__TAURI_INVOKE("permission_request_list", { args })),
+	permissionDecide: (args: PermissionDecisionArgs) => typedError<PermissionDecision, AppError>(__TAURI_INVOKE("permission_decide", { args })),
+	permissionRuleList: (args: ProjectIdArgs) => typedError<PermissionRule[], AppError>(__TAURI_INVOKE("permission_rule_list", { args })),
+	permissionRuleRevoke: (args: PermissionRuleRevokeArgs) => typedError<PermissionRule, AppError>(__TAURI_INVOKE("permission_rule_revoke", { args })),
 	settingsGet: () => typedError<GlobalSettings, AppError>(__TAURI_INVOKE("settings_get")),
 	settingsUpdate: (args: GlobalSettingsArgs) => typedError<GlobalSettings, AppError>(__TAURI_INVOKE("settings_update", { args })),
 	reviewGet: (args: DiffArgs) => typedError<{
@@ -72,12 +93,28 @@ export const commands = {
 	decision: ReviewDecision,
 	summary: string | null,
 	reviewerAgents?: AgentKind[],
+	/**  委员会每位成员的独立结论（跨厂商分工的可解释性）。单一审查时为空。 */
+	memberVotes?: CouncilMemberVote[],
 	issues: ReviewIssue[],
 } | null, AppError>(__TAURI_INVOKE("review_get", { args })),
 	runLogTail: (args: RunLogArgs) => typedError<RunLogPage, AppError>(__TAURI_INVOKE("run_log_tail", { args })),
 };
 
 /* Types */
+export type AcceptanceCriterion = {
+	id: string,
+	kind: AcceptanceCriterionKind,
+	text: string,
+	position: number,
+};
+
+export type AcceptanceCriterionInput = {
+	kind: AcceptanceCriterionKind,
+	text: string,
+};
+
+export type AcceptanceCriterionKind = "build" | "test" | "behavior" | "manual";
+
 export type Actor = "orchestrator" | "agent" | "human" | "system";
 
 export type AgentEvent = {
@@ -131,7 +168,30 @@ export type ApproveArgs = {
 	diffSha256: string,
 };
 
-export type BlockedReason = "no_changes" | "needs_clarification" | "run_failed" | "validation_infra" | "review_block" | "review_failed" | "max_revisions" | "worktree_missing" | "commit_guard" | "budget_exceeded" | "remote_node_unavailable" | "ci_failed" | "quality_gate";
+export type AuditExportArgs = {
+	projectId: string,
+	taskId: string | null,
+};
+
+/**
+ *  Result of a local, redacted audit export. `redacted` means the export policy
+ *  was applied; callers must never interpret it as proof that the source held a secret.
+ */
+export type AuditExportResult = {
+	path: string,
+	scope: AuditExportScope,
+	projectId: string,
+	taskId: string | null,
+	eventCount: number,
+	taskCount: number,
+	bytes: number | null,
+	redacted: boolean,
+	createdAt: string,
+};
+
+export type AuditExportScope = "project" | "task";
+
+export type BlockedReason = "no_changes" | "needs_clarification" | "run_failed" | "validation_infra" | "review_block" | "review_failed" | "max_revisions" | "worktree_missing" | "commit_guard" | "budget_exceeded" | "remote_node_unavailable" | "ci_failed" | "quality_gate" | "permission_required" | "agent_unresponsive" | "auth_expired" | "convergence_stalled" | "quality_regressed";
 
 export type BudgetEnforcement = "hard" | "soft" | "unavailable";
 
@@ -169,6 +229,20 @@ export type BudgetUsage = {
 	exceeded: boolean,
 };
 
+export type CiCheck = {
+	name: string,
+	status: CiCheckStatus,
+	required: boolean,
+	workflow: string | null,
+	description: string | null,
+	failureSummary: string | null,
+	detailsUrl: string | null,
+	startedAt: string | null,
+	completedAt: string | null,
+};
+
+export type CiCheckStatus = "pending" | "passed" | "failed" | "cancelled" | "skipped" | "unknown";
+
 export type CiStatus = "unknown" | "pending" | "passed" | "failed";
 
 export type CleanupResult = {
@@ -192,6 +266,8 @@ export type CliPathArgs = {
 	path: string,
 };
 
+export type CliSupportLevel = "untracked" | "verified" | "compatible_untested" | "unsupported";
+
 export type CodingPlan = {
 	id: string,
 	version: number,
@@ -203,6 +279,18 @@ export type CodingPlan = {
 	planSha256: string | null,
 	createdAt: string,
 	approvedAt: string | null,
+};
+
+export type CodingPlanHistoryEntry = {
+	plan: CodingPlan,
+	rejectionReason: string | null,
+};
+
+/**  审查委员会单个成员的独立投票，用于向用户展示「谁投了什么」与裁决依据。 */
+export type CouncilMemberVote = {
+	agent: AgentKind,
+	decision: ReviewDecision,
+	summary: string | null,
 };
 
 export type DataEgress = "none" | "metadata" | "diff" | "full_files";
@@ -231,6 +319,7 @@ export type DeliveryRecord = {
 	remoteUrl: string | null,
 	number: number | null,
 	ciStatus: CiStatus | null,
+	ciChecks?: CiCheck[],
 	mergeCommit: string | null,
 	preMergeCommit: string | null,
 	rollbackCommit: string | null,
@@ -257,10 +346,19 @@ export type DiffStat = {
 	insertions: number,
 	deletions: number,
 	flagged: string[],
+	/**
+	 *  §45: how many files this revision fully deleted. Surfaced at approval so a mass deletion is
+	 *  never merged without a human noticing. `#[serde(default)]` keeps older diff_stat_json rows
+	 *  (written before this field existed) loadable.
+	 */
+	deletedFiles?: number,
 };
 
 export type EnvReport = {
+	system: SystemEnvironment,
 	git: ToolStatus,
+	node: ToolStatus,
+	bun: ToolStatus,
 	claudeCode: ToolStatus,
 	codex: ToolStatus,
 	geminiCli: ToolStatus,
@@ -276,7 +374,13 @@ export type EnvReport = {
 	kimiApi: ProviderStatus,
 };
 
-export type ErrorCode = "ENV_CLI_NOT_FOUND" | "ENV_CLI_INCOMPATIBLE" | "CLI_INSTALL_FAILED" | "API_CREDENTIAL_FAILED" | "API_EGRESS_APPROVAL_REQUIRED" | "PROJECT_NOT_GIT" | "PROJECT_ALREADY_IMPORTED" | "TASK_INVALID_STATE" | "TASK_SAME_AGENT" | "RUN_SPAWN_FAILED" | "RESULT_INVALID_SCHEMA" | "DIFF_STALE" | "MERGE_PRECONDITION_FAILED" | "MERGE_CONFLICT" | "WORKTREE_MISSING" | "DB_ERROR" | "PLAN_APPROVAL_REQUIRED" | "BUDGET_EXCEEDED" | "QUALITY_GATE_FAILED" | "SCM_CLI_NOT_FOUND" | "CI_FAILED" | "REMOTE_NODE_UNAVAILABLE" | "ROLLBACK_UNSAFE" | "IO_ERROR" | "INTERNAL";
+export type EnvironmentCheck = {
+	available: boolean,
+	detail: string | null,
+	problem: string | null,
+};
+
+export type ErrorCode = "ENV_CLI_NOT_FOUND" | "ENV_CLI_INCOMPATIBLE" | "CLI_INSTALL_FAILED" | "API_CREDENTIAL_FAILED" | "API_EGRESS_APPROVAL_REQUIRED" | "PROJECT_NOT_GIT" | "PROJECT_ALREADY_IMPORTED" | "TASK_INVALID_STATE" | "TASK_SAME_AGENT" | "RUN_SPAWN_FAILED" | "RESULT_INVALID_SCHEMA" | "DIFF_STALE" | "MERGE_PRECONDITION_FAILED" | "MERGE_CONFLICT" | "WORKTREE_MISSING" | "DB_ERROR" | "PLAN_APPROVAL_REQUIRED" | "BUDGET_EXCEEDED" | "QUALITY_GATE_FAILED" | "SCM_CLI_NOT_FOUND" | "CI_FAILED" | "REMOTE_NODE_UNAVAILABLE" | "ROLLBACK_UNSAFE" | "PERMISSION_REQUEST_STALE" | "PERMISSION_PATH_ESCAPE" | "PERMISSION_RULE_TOO_BROAD" | "PERMISSION_NOT_GRANTABLE" | "PERMISSION_EXPIRED" | "PERMISSION_DENIED" | "IO_ERROR" | "INTERNAL";
 
 export type EventStream = "stdout" | "stderr";
 
@@ -301,10 +405,17 @@ export type ExecutionNode = {
 	gitVersion: string | null,
 	problem: string | null,
 	lastCheckedAt: string | null,
+	diagnostics?: ExecutionNodeDiagnostic[],
 };
 
-export type ExportPath = {
-	path: string,
+export type ExecutionNodeDiagnostic = {
+	step: NodeDiagnosticStep,
+	status: NodeDiagnosticStatus,
+	blocking: boolean,
+	summary: string,
+	detail: string | null,
+	durationMs: number,
+	checkedAt: string,
 };
 
 export type FileDiff = {
@@ -331,6 +442,14 @@ export type GitCompatibilityReport = {
 	networkFilesystem: boolean,
 	caseInsensitive: boolean,
 	caseCollisions: string[],
+	/**
+	 *  Paths whose Git registration is explicitly marked `prunable`. Running `git worktree prune`
+	 *  removes only these stale registrations; it never deletes a live project directory.
+	 */
+	prunableWorktrees: string[],
+	repoReadable: boolean,
+	repoWritable: boolean,
+	worktreeRootWritable: boolean,
 	warnings: string[],
 	blockers: string[],
 };
@@ -365,6 +484,10 @@ export type GuidanceArgs = {
 	guidance: string,
 };
 
+export type NodeDiagnosticStatus = "passed" | "failed" | "skipped";
+
+export type NodeDiagnosticStep = "dns" | "tcp" | "ssh_authentication" | "work_root" | "platform" | "git" | "archive_tool" | "toolchain";
+
 export type NodeIdArgs = {
 	nodeId: string,
 };
@@ -385,6 +508,11 @@ export type NotificationSettings = {
 export type OnboardingReport = {
 	firstRun: boolean,
 	daemonRunning: boolean,
+	/**  The desktop and its local data directory can be opened safely. */
+	appReady: boolean,
+	/**  At least one independent developer/reviewer combination can complete the workflow. */
+	workflowReady: boolean,
+	/**  Backwards-compatible alias for `workflow_ready`. */
 	ready: boolean,
 	dataDir: string,
 	env: EnvReport,
@@ -392,6 +520,108 @@ export type OnboardingReport = {
 	recommendedReviewer: AgentKind | null,
 	notices: string[],
 	storage: StorageReport,
+};
+
+export type PermissionActionType = "worktree_read" | "worktree_write" | "worktree_delete" | "control_plane_write" | "command_execute" | "dependency_install" | "network_access" | "environment_read" | "secret_access" | "process_control" | "git_read" | "git_mutation" | "system_change" | "external_path";
+
+export type PermissionDecision = {
+	id: string,
+	requestId: string,
+	operationSha256: string,
+	policySha256: string,
+	decision: PermissionDecisionKind,
+	scope: PermissionGrantScope,
+	expiresAt: string | null,
+	approvedBy: string,
+	guidance: string | null,
+	createdAt: string,
+	consumedAt: string | null,
+};
+
+export type PermissionDecisionArgs = {
+	input: PermissionDecisionInput,
+};
+
+export type PermissionDecisionInput = {
+	requestId: string,
+	operationSha256: string,
+	policySha256: string,
+	decision: PermissionDecisionKind,
+	scope: PermissionGrantScope,
+	guidance: string | null,
+};
+
+export type PermissionDecisionKind = "approve" | "deny" | "cancel_task";
+
+export type PermissionGrantScope = "once" | "task" | "project_rule";
+
+/**  Canonical, value-free operation used for policy matching and sealing. */
+export type PermissionOperation = {
+	argv: string[],
+	cwd: string,
+	paths: PermissionPath[],
+	networkDomains: string[],
+	environmentNames: string[],
+	attributes?: { [key in string]: string },
+};
+
+export type PermissionPath = {
+	path: string,
+	access: PermissionPathAccess,
+	outsideWorktree: boolean,
+};
+
+export type PermissionPathAccess = "read" | "write" | "delete";
+
+export type PermissionRequest = {
+	id: string,
+	projectId: string,
+	taskId: string,
+	revision: number,
+	runId: string | null,
+	providerId: AgentKind,
+	role: RunRole,
+	actionType: PermissionActionType,
+	summary: string,
+	reason: string,
+	operation: PermissionOperation,
+	riskLevel: PermissionRiskLevel,
+	grantable: boolean,
+	operationSha256: string,
+	policySha256: string,
+	status: PermissionRequestStatus,
+	matchedRuleId: string | null,
+	requestCount: number,
+	requestedAt: string,
+	expiresAt: string,
+	decidedAt: string | null,
+	providerResumeToken: string | null,
+};
+
+export type PermissionRequestStatus = "pending" | "approved" | "denied" | "cancelled" | "expired";
+
+export type PermissionRiskLevel = "low" | "medium" | "high" | "forbidden";
+
+export type PermissionRule = {
+	id: string,
+	projectId: string,
+	projectIdentity: string,
+	providerId: AgentKind,
+	role: RunRole,
+	actionType: PermissionActionType,
+	operation: PermissionOperation,
+	ruleSha256: string,
+	enabled: boolean,
+	createdBy: string,
+	createdAt: string,
+	expiresAt: string | null,
+	lastMatchedAt: string | null,
+	revokedAt: string | null,
+};
+
+export type PermissionRuleRevokeArgs = {
+	projectId: string,
+	ruleId: string,
 };
 
 export type PlanActionArgs = {
@@ -405,6 +635,15 @@ export type PlanRejectArgs = {
 	reason: string,
 };
 
+export type PlanReviewContext = {
+	taskId: string,
+	plans: CodingPlanHistoryEntry[],
+	latestDiff: PlanVersionDiff | null,
+	detectedDeviations: string[],
+	deviationPlanId: string | null,
+	deviationDetectedAt: string | null,
+};
+
 export type PlanStatus = "pending" | "approved" | "rejected";
 
 export type PlanStep = {
@@ -412,6 +651,20 @@ export type PlanStep = {
 	detail: string,
 	validation: string | null,
 };
+
+export type PlanVersionDiff = {
+	fromVersion: number,
+	toVersion: number,
+	summaryChanged: boolean,
+	addedSteps: string[],
+	removedSteps: string[],
+	addedAllowedPaths: string[],
+	removedAllowedPaths: string[],
+	addedRisks: string[],
+	removedRisks: string[],
+};
+
+export type PreflightRole = "developer" | "reviewer";
 
 export type Project = {
 	id: string,
@@ -421,6 +674,27 @@ export type Project = {
 	defaultBranch: string,
 	worktreeRoot: string,
 	createdAt: string,
+};
+
+export type ProjectConfigApprovalArgs = {
+	projectId: string,
+	expectedSha256: string,
+};
+
+export type ProjectConfigChange = {
+	path: string,
+	kind: ProjectConfigChangeKind,
+	before: string | null,
+	after: string | null,
+	highRisk: boolean,
+};
+
+export type ProjectConfigChangeKind = "added" | "removed" | "changed";
+
+export type ProjectConfigCommand = {
+	name: string,
+	argv: string[],
+	timeoutSecs: number,
 };
 
 /**
@@ -435,6 +709,15 @@ export type ProjectConfigTrust = {
 	trusted: boolean,
 	validationSteps: string[],
 	extraAllowedCommands: string[],
+	validationCommands: ProjectConfigCommand[],
+	environmentAllowlist: string[],
+	externalDependencies: string[],
+	containerImages: string[],
+	lockEnvironment: boolean,
+	hermetic: boolean,
+	previousApprovedSha256: string | null,
+	changes: ProjectConfigChange[],
+	byteOnlyChange: boolean,
 	approvedAt: string | null,
 };
 
@@ -513,6 +796,23 @@ export type ProviderPermissions = {
 	commands?: string[],
 };
 
+export type ProviderPreflightArgs = {
+	projectId: string,
+	developerAgent: AgentKind,
+	reviewerAgent: AgentKind,
+	allowApiEgress: boolean,
+	requirePlanApproval: boolean,
+};
+
+export type ProviderReadiness = {
+	provider: AgentKind,
+	displayName: string,
+	/**  True only when the provider is installed, protocol-compatible and authenticated. */
+	available: boolean,
+	/**  Why the provider cannot run right now (missing CLI, not logged in, incompatible protocol…). */
+	problem: string | null,
+};
+
 export type ProviderSource = "builtin" | "external";
 
 export type ProviderStatus = {
@@ -546,16 +846,54 @@ export type QualityEvaluation = {
 
 export type QualityGrade = "A" | "B" | "C" | "D";
 
-export type QueueMutationResult = {
+export type QualityReplayAttempt = {
+	id: string,
 	taskId: string,
-	paused: boolean | null,
-	priority: number | null,
+	revision: number,
+	status: QualityReplayStatus,
+	reproducibilityLevel: ReproducibilityLevel,
+	environmentMatch: boolean,
+	drift: ReproducibilityDrift[],
+	originalQuality: QualityEvaluation | null,
+	replayQuality: QualityEvaluation | null,
+	scoreDelta: number | null,
+	errorCode: string | null,
+	errorDetail: string | null,
+	createdAt: string,
+	finishedAt: string,
 };
+
+export type QualityReplayStatus = "succeeded" | "validation_failed" | "drift_blocked" | "failed";
 
 export type QueuePriorityArgs = {
 	taskId: string,
 	priority: number,
 };
+
+export type QueueState = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+
+/**
+ *  Authoritative scheduler state persisted in `daemon_queue`.
+ *
+ *  The desktop must query this record instead of inferring queue state from a
+ *  task status or retaining the last mutation response in memory. That keeps
+ *  pause, priority and position accurate after either process restarts.
+ */
+export type QueueTaskState = {
+	taskId: string,
+	state: QueueState,
+	paused: boolean,
+	priority: number,
+	position: number | null,
+	waitingReason: QueueWaitingReason | null,
+	notBefore: string | null,
+	lastError: string | null,
+	attempts: number,
+	enqueuedAt: string,
+	updatedAt: string,
+};
+
+export type QueueWaitingReason = "paused" | "scheduler_paused" | "outside_run_window" | "daily_budget_exhausted" | "retry_delay" | "concurrency_limit" | "tasks_ahead";
 
 export type RejectArgs = {
 	taskId: string,
@@ -574,6 +912,14 @@ export type RepairReport = {
 	latestCheckpoint: TaskCheckpoint | null,
 	actions: RepairAction[],
 };
+
+export type ReproducibilityDrift = {
+	kind: ReproducibilityDriftKind,
+	/**  Names only. Environment values and credentials are never exposed. */
+	changedKeys: string[],
+};
+
+export type ReproducibilityDriftKind = "tool_versions" | "environment_variables" | "system_dependencies" | "container_images" | "git_submodules" | "git_lfs_objects" | "external_dependencies";
 
 export type ReproducibilityLevel = "fixed_commit" | "environment_locked" | "hermetic";
 
@@ -606,6 +952,8 @@ export type Review = {
 	decision: ReviewDecision,
 	summary: string | null,
 	reviewerAgents?: AgentKind[],
+	/**  委员会每位成员的独立结论（跨厂商分工的可解释性）。单一审查时为空。 */
+	memberVotes?: CouncilMemberVote[],
 	issues: ReviewIssue[],
 };
 
@@ -630,6 +978,11 @@ export type ReviewIssue = {
 	resolved: boolean,
 	reportedBy?: AgentKind[],
 	agreementCount: number,
+	/**
+	 *  §24: true when council members disagreed on this issue's severity across the serious↔minor
+	 *  boundary. Informational only — the aggregate decision uses the highest severity regardless.
+	 */
+	severityDisagreement?: boolean,
 };
 
 export type RevisionInfo = {
@@ -639,10 +992,56 @@ export type RevisionInfo = {
 	createdAt: string,
 };
 
+export type RoleReadiness = {
+	role: PreflightRole,
+	/**  The provider the task tries first for this role. */
+	primary: AgentKind,
+	/**  At least one provider in the ordered fallback chain can actually run. */
+	ready: boolean,
+	/**  The whole ordered chain (primary first), each annotated with whether — and why not — it runs. */
+	chain: ProviderReadiness[],
+};
+
 export type RollbackArgs = {
 	taskId: string,
 	strategy: RollbackStrategy,
 };
+
+export type RollbackBlocker = "task_not_merged" | "delivery_record_missing" | "remote_delivery_unsupported" | "target_branch_not_checked_out" | "dirty_working_tree" | "merge_commit_missing" | "pre_merge_commit_missing" | "later_commits_exist" | "merge_not_in_head";
+
+export type RollbackCommitPreview = {
+	sha: string,
+	subject: string,
+};
+
+/**
+ *  Read-only safety analysis captured immediately before a rollback choice.
+ *  Execution repeats the same checks so a stale dialog can never bypass Git safety.
+ */
+export type RollbackPreflight = {
+	taskId: string,
+	deliveryMode: DeliveryMode,
+	targetBranch: string,
+	currentBranch: string | null,
+	headCommit: string | null,
+	mergeCommit: string | null,
+	preMergeCommit: string | null,
+	workingTreeClean: boolean,
+	laterCommitCount: number,
+	laterCommits: RollbackCommitPreview[],
+	affectedFileCount: number,
+	affectedFiles: string[],
+	affectedFilesTruncated: boolean,
+	canUndo: boolean,
+	undoBlockers: RollbackBlocker[],
+	canRevert: boolean,
+	revertBlockers: RollbackBlocker[],
+	recommendedStrategy: RollbackStrategy | null,
+	recommendationReason: RollbackRecommendationReason,
+	generatedAt: string,
+};
+
+export type RollbackRecommendationReason = "undo_exact_head" | "revert_preserves_later_commits" | "no_safe_strategy";
 
 export type RollbackStrategy = "undo" | "revert";
 
@@ -704,6 +1103,17 @@ export type StorageReport = {
 	runLogsEncrypted: boolean,
 };
 
+export type SystemEnvironment = {
+	os: string,
+	osVersion: string | null,
+	architecture: string,
+	agentflowVersion: string,
+	shell: string | null,
+	diskAvailableBytes: number | null,
+	network: EnvironmentCheck,
+	keychain: EnvironmentCheck,
+};
+
 export type TaskCheckpoint = {
 	id: string,
 	revision: number,
@@ -723,6 +1133,7 @@ export type TaskCreateArgs = {
 	projectId: string,
 	title: string,
 	description: string,
+	acceptanceCriteria: AcceptanceCriterionInput[],
 	developerAgent: AgentKind,
 	reviewerAgent: AgentKind,
 	targetBranch: string | null,
@@ -737,6 +1148,7 @@ export type TaskDetail = {
 	baseCommit: string | null,
 	branch: string | null,
 	maxRevisions: number,
+	acceptanceCriteria: AcceptanceCriterion[],
 	blockedDetail: string | null,
 	revisions: RevisionInfo[],
 	policy: TaskPolicy,
@@ -759,6 +1171,8 @@ export type TaskEvent = {
 export type TaskGovernance = {
 	manifest: ReproducibilityManifest | null,
 	quality: QualityEvaluation | null,
+	originalQuality: QualityEvaluation | null,
+	latestReplay: QualityReplayAttempt | null,
 	budget: BudgetUsage,
 	delivery: DeliveryRecord | null,
 };
@@ -777,6 +1191,12 @@ export type TaskPolicy = {
 	minimumQualityScore?: number,
 	deliveryMode?: DeliveryMode,
 	executionNodeId?: string | null,
+};
+
+export type TaskPreflightReport = {
+	/**  Every required role has at least one runnable provider, so a run is worth starting. */
+	ready: boolean,
+	roles: RoleReadiness[],
 };
 
 export type TaskRepairArgs = {
@@ -809,6 +1229,10 @@ export type ToolStatus = {
 	/**  Normalized source such as `account`, `api_key`, or `oauth_token`. */
 	authMethod: string | null,
 	authProblem: string | null,
+	/**  Whether this exact CLI version has passed AgentFlow's pinned compatibility suite. */
+	supportLevel: CliSupportLevel,
+	/**  Exact upstream versions exercised by the compatibility workflow. */
+	verifiedVersions: string[],
 };
 
 export type TrashEntry = {

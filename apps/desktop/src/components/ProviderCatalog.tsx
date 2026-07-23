@@ -105,7 +105,7 @@ export function ProviderCatalog({ env, providers = [] }: Props) {
           <Button variant="ghost" size="sm" className="px-1 text-t3" onClick={() => setShowMore((value) => !value)}>
             {showMore ? <ChevronUp /> : <ChevronDown />}
             更多 Provider
-            <span className="rounded-full bg-raised px-1.5 text-[10px]">{EXTRA_CLIS.length + EXTRA_APIS.length + external.length}</span>
+            <span className="rounded-full bg-raised px-1.5 text-[11px]">{EXTRA_CLIS.length + EXTRA_APIS.length + external.length}</span>
           </Button>
           {showMore && (
             <div className="mt-2 overflow-hidden rounded-[var(--radius-control)] border border-line bg-app">
@@ -193,7 +193,7 @@ function CliRow({ item, status, onInstall, onConfigureCredential }: {
   const ready = cliReady(status);
   const keychainProblem = status.authProblem?.includes("钥匙串") ?? false;
   const statusText = ready
-    ? "已连接"
+    ? status.supportLevel === "verified" ? "已连接 · 已验证" : "已连接 · 兼容待验证"
     : !status.found
       ? "未安装"
       : status.authenticated === false
@@ -225,6 +225,8 @@ function CliRow({ item, status, onInstall, onConfigureCredential }: {
       details={details && (
         <div className="ml-[52px] mt-2 rounded-md bg-panel/70 px-3 py-2 text-[12px] text-t3">
           {status.version && <div>版本 {status.version}</div>}
+          <div>支持状态 {status.supportLevel === "verified" ? "已通过固定版本回归" : status.supportLevel === "compatible_untested" ? "参数兼容，创建任务时运行真实探针" : status.supportLevel === "unsupported" ? "不兼容" : "未纳入支持矩阵"}</div>
+          {status.verifiedVersions.length > 0 && <div>已验证基线 {status.verifiedVersions.join("、")}</div>}
           {status.authMethod && <div>认证方式 {authMethodLabel(status.authMethod)}</div>}
           {status.problem && <div className="mb-2 text-bad">{status.problem}</div>}
           {status.authProblem && <div className="mb-2 text-bad">{status.authProblem}</div>}

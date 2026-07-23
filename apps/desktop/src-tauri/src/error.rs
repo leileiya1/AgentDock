@@ -2,6 +2,22 @@ use agentflow_contracts::{AppError, ErrorCode};
 use agentflow_orchestrator::OrchestratorError;
 
 pub(super) fn app_error(error: OrchestratorError) -> AppError {
+    let detail = match &error {
+        OrchestratorError::MergePrecondition(value)
+        | OrchestratorError::RemoteNodeUnavailable(value)
+        | OrchestratorError::QualityGate(value)
+        | OrchestratorError::ScmCliNotFound(value)
+        | OrchestratorError::RollbackUnsafe(value) => Some(value.clone()),
+        // §65: surface the egress provider list (everything after the code) as the error detail.
+        OrchestratorError::InvalidState(value)
+            if value.starts_with("API_EGRESS_APPROVAL_REQUIRED:") =>
+        {
+            value
+                .split_once(':')
+                .map(|(_, rest)| format!("会外发到：{}", rest.trim()))
+        }
+        _ => None,
+    };
     let code = match &error {
         OrchestratorError::DiffStale => ErrorCode::DiffStale,
         OrchestratorError::MergePrecondition(_) => ErrorCode::MergePreconditionFailed,
@@ -19,7 +35,9 @@ pub(super) fn app_error(error: OrchestratorError) -> AppError {
         OrchestratorError::InvalidState(value) if value == "PROJECT_NOT_GIT" => {
             ErrorCode::ProjectNotGit
         }
-        OrchestratorError::InvalidState(value) if value == "API_EGRESS_APPROVAL_REQUIRED" => {
+        OrchestratorError::InvalidState(value)
+            if value.starts_with("API_EGRESS_APPROVAL_REQUIRED") =>
+        {
             ErrorCode::ApiEgressApprovalRequired
         }
         OrchestratorError::InvalidState(value) if value.starts_with("PLAN_APPROVAL_REQUIRED") => {
@@ -40,12 +58,18 @@ pub(super) fn app_error(error: OrchestratorError) -> AppError {
         OrchestratorError::InvalidState(value) if value.starts_with("ROLLBACK_UNSAFE") => {
             ErrorCode::RollbackUnsafe
         }
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_REQUEST_STALE" => ErrorCode::PermissionRequestStale,
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_PATH_ESCAPE" => ErrorCode::PermissionPathEscape,
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_RULE_TOO_BROAD" => ErrorCode::PermissionRuleTooBroad,
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_NOT_GRANTABLE" => ErrorCode::PermissionNotGrantable,
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_EXPIRED" => ErrorCode::PermissionExpired,
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_DENIED" => ErrorCode::PermissionDenied,
         OrchestratorError::InvalidState(_) => ErrorCode::TaskInvalidState,
         _ => ErrorCode::Internal,
     };
     AppError {
         code,
         message: error.to_string(),
-        detail: None,
+        detail,
     }
 }

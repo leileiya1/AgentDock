@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Pencil, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
+import { ChevronDown, Pencil, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import type { ExecutionNode } from "@/generated/bindings";
 import { useExecutionNodeMutations, useExecutionNodes } from "@/hooks/useGovernance";
 import { errorLine } from "@/copy/errors";
@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { ExecutionNodeDiagnostics } from "@/components/governance/ExecutionNodeDiagnostics";
+import { nodeStatusCopy } from "@/lib/governance/executionNode";
 import { sectionCls, sectionH } from "@/routes/Settings";
 
 type Draft = Pick<ExecutionNode, "id" | "name" | "host" | "port" | "username" | "workRoot" | "enabled">;
@@ -22,6 +24,7 @@ export function ExecutionNodeSection() {
   const mutations = useExecutionNodeMutations();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [deleting, setDeleting] = useState<ExecutionNode | null>(null);
+  const [expandedNode, setExpandedNode] = useState<string | null>(null);
 
   const save = async () => {
     if (!draft || !draft.name.trim() || !draft.host.trim() || !draft.username.trim() || !draft.workRoot.trim()) return;
@@ -33,6 +36,7 @@ export function ExecutionNodeSection() {
         gitVersion: null,
         problem: null,
         lastCheckedAt: null,
+        diagnostics: [],
       });
       setDraft(null);
       toast.info("远程节点已保存；请执行连接检查");
@@ -42,7 +46,8 @@ export function ExecutionNodeSection() {
   const check = async (nodeId: string) => {
     try {
       const result = await mutations.check.mutateAsync(nodeId);
-      toast.info(result.status === "online" ? "远程节点连接正常" : "连接检查未通过");
+      if (result.status !== "online") setExpandedNode(nodeId);
+      toast.info(result.status === "online" ? "远程节点全部必需检查通过" : "节点诊断发现阻塞项，已展开明细");
     } catch (error) { toast.error(errorLine(error)); }
   };
 
@@ -70,20 +75,24 @@ export function ExecutionNodeSection() {
       ) : nodes.data?.length ? (
         <div className="flex flex-col gap-2">
           {nodes.data.map((node) => (
-            <div key={node.id} className="flex items-center justify-between gap-3 rounded-lg border border-line bg-app/55 p-3">
-              <div className="flex min-w-0 items-start gap-3">
-                <div className="relative grid size-9 shrink-0 place-items-center rounded-lg border border-line bg-raised"><Server className="size-4 text-t2" /><span className={`absolute -right-0.5 -top-0.5 size-2.5 rounded-full border-2 border-panel ${statusDot(node.status)}`} /></div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-[13px] font-medium"><span>{node.name}</span>{!node.enabled && <span className="text-[11px] text-t3">已停用</span>}</div>
-                  <div className="mt-0.5 truncate text-[11px] text-t3">{node.username}@{node.host}:{node.port} · {node.workRoot}</div>
-                  <div className="mt-1 text-[11px] text-t2">{node.status === "online" ? `${node.platform ?? "远端"} · ${node.gitVersion ?? "Git 可用"}` : node.problem ?? "尚未检查连接"}</div>
+            <div key={node.id} className="overflow-hidden rounded-lg border border-line bg-app/55">
+              <div className="flex items-center justify-between gap-3 p-3">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="relative grid size-9 shrink-0 place-items-center rounded-lg border border-line bg-raised"><Server className="size-4 text-t2" /><span className={`absolute -right-0.5 -top-0.5 size-2.5 rounded-full border-2 border-panel ${statusDot(node.status)}`} /></div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-[13px] font-medium"><span>{node.name}</span><span className="text-[11px] font-normal text-t3">{nodeStatusCopy(node.status)}</span>{!node.enabled && <span className="text-[11px] text-t3">已停用</span>}</div>
+                    <div className="mt-0.5 truncate text-[11px] text-t3">{node.username}@{node.host}:{node.port} · {node.workRoot}</div>
+                    <div className="mt-1 text-[11px] text-t2">{node.status === "online" ? `${node.platform ?? "远端"} · ${node.gitVersion ?? "Git 可用"}` : node.problem ?? "尚未检查连接"}</div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  <Button variant="ghost" size="icon" aria-label="诊断明细" title="诊断明细" onClick={() => setExpandedNode(expandedNode === node.id ? null : node.id)}><ChevronDown className={`transition-transform ${expandedNode === node.id ? "rotate-180" : ""}`} /></Button>
+                  <Button variant="ghost" size="icon" aria-label="检查连接" title="运行分步诊断" disabled={mutations.check.isPending} onClick={() => check(node.id)}><RefreshCw className={mutations.check.isPending && mutations.check.variables === node.id ? "animate-spin" : ""} /></Button>
+                  <Button variant="ghost" size="icon" aria-label="编辑节点" title="编辑节点" onClick={() => setDraft(pickDraft(node))}><Pencil /></Button>
+                  <Button variant="ghost" size="icon" aria-label="删除节点" title="删除节点" onClick={() => setDeleting(node)}><Trash2 /></Button>
                 </div>
               </div>
-              <div className="flex shrink-0 gap-1">
-                <Button variant="ghost" size="icon" aria-label="检查连接" title="检查连接" disabled={mutations.check.isPending} onClick={() => check(node.id)}><RefreshCw className={mutations.check.isPending ? "animate-spin" : ""} /></Button>
-                <Button variant="ghost" size="icon" aria-label="编辑节点" title="编辑节点" onClick={() => setDraft(pickDraft(node))}><Pencil /></Button>
-                <Button variant="ghost" size="icon" aria-label="删除节点" title="删除节点" onClick={() => setDeleting(node)}><Trash2 /></Button>
-              </div>
+              {expandedNode === node.id && <ExecutionNodeDiagnostics diagnostics={node.diagnostics ?? []} />}
             </div>
           ))}
         </div>

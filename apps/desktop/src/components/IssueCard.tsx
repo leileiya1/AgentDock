@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type { ReviewIssue, Severity } from "@/generated/bindings";
+import { agentLabel } from "@/copy/agents";
+import { AgentMark } from "@/components/AgentMark";
 import { cn } from "@/lib/utils";
 
 const SEVERITY_LABEL: Record<Severity, string> = { critical: "严重", high: "高", medium: "中", low: "低" };
@@ -11,11 +13,14 @@ function severityColor(sev: Severity): string {
 
 interface Props {
   issue: ReviewIssue;
+  /** 委员会成员总数，用于把「几人同意」表达成 2/3 而不是裸数字 (05 §6.11)。 */
+  memberCount?: number;
   onJump?: (file: string, line: number | null) => void;
 }
 
-export function IssueCard({ issue, onJump }: Props) {
+export function IssueCard({ issue, memberCount, onJump }: Props) {
   const [open, setOpen] = useState(false);
+  const reporters = issue.reportedBy ?? [];
   const color = severityColor(issue.severity);
   const isHigh = issue.severity === "critical" || issue.severity === "high";
   const loc = issue.file != null ? `${issue.file}${issue.lineStart != null ? `:${issue.lineStart}` : ""}` : null;
@@ -29,9 +34,48 @@ export function IssueCard({ issue, onJump }: Props) {
             {SEVERITY_LABEL[issue.severity]}
           </span>
           <span className="font-medium text-t1">{issue.title}</span>
-          {issue.agreementCount > 1 && <span className="rounded-full bg-raised px-1.5 py-0.5 text-[10px] text-t2">{issue.agreementCount} 人同意</span>}
           {issue.resolved && <span className="ml-auto text-[12px] text-ok">已解决</span>}
         </div>
+
+        {/* §24 严重度分歧 / §25 无文件证据：只提示、不改变门控，帮助人工判断意见质量。 */}
+        {(issue.severityDisagreement || issue.file == null) && (
+          <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
+            {issue.severityDisagreement && (
+              <span className="rounded-full bg-human-bg px-1.5 py-0.5 text-human" title="不同审查者对这条意见的严重程度判断不一致，建议人工裁决">
+                ⚠ 严重度存在分歧
+              </span>
+            )}
+            {issue.file == null && (
+              <span className="rounded-full bg-raised px-1.5 py-0.5 text-t3" title="这条意见没有指向具体文件，无法直接对照代码，请人工核实">
+                无文件定位，请人工核实
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* 每个问题显示由谁发现、几人同意 (05 §6.11)。 */}
+        {(reporters.length > 0 || issue.agreementCount > 1) && (
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-t3">
+            {reporters.length > 0 && (
+              <>
+                <span>由</span>
+                {reporters.map((agent) => (
+                  <span key={agent} className="flex items-center gap-1">
+                    <AgentMark kind={agent} size={22} />
+                    <span className="text-t2">{agentLabel(agent)}</span>
+                  </span>
+                ))}
+                <span>发现</span>
+              </>
+            )}
+            {issue.agreementCount > 1 && (
+              <span className="rounded-full bg-raised px-1.5 py-0.5 text-t2">
+                {memberCount ? `${issue.agreementCount}/${memberCount} 位成员同意` : `${issue.agreementCount} 人同意`}
+                {reporters.length > 1 && " · 已合并重复报告"}
+              </span>
+            )}
+          </div>
+        )}
         {loc && (
           <button
             type="button"

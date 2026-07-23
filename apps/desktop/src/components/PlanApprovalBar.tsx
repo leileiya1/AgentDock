@@ -1,13 +1,14 @@
 import { useState } from "react";
 import type { TaskDetail } from "@/generated/bindings";
 import { useCancelTask } from "@/hooks/useTasks";
-import { usePlanApprove, usePlanReject } from "@/hooks/useGovernance";
+import { usePlanApprove, usePlanReject, usePlanReviewContext } from "@/hooks/useGovernance";
 import { errorLine } from "@/copy/errors";
 import { toast } from "@/stores/toastStore";
 import { Dialog } from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/input";
+import { PlanVersionComparison } from "@/components/governance/PlanVersionComparison";
 
 export function PlanApprovalBar({ task }: { task: TaskDetail }) {
   const approve = usePlanApprove();
@@ -18,6 +19,7 @@ export function PlanApprovalBar({ task }: { task: TaskDetail }) {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reason, setReason] = useState("");
   const plan = task.plan;
+  const reviewContext = usePlanReviewContext(task.id, planOpen);
 
   const approvePlan = async () => {
     if (!plan) return;
@@ -73,6 +75,9 @@ export function PlanApprovalBar({ task }: { task: TaskDetail }) {
       >
         {plan && (
           <div className="flex flex-col gap-4 text-[13px]">
+            {reviewContext.isLoading && <div className="rounded-md border border-line bg-raised p-3 text-[12px] text-t3">正在读取计划版本和越界记录…</div>}
+            {reviewContext.isError && <div className="rounded-md border border-human/40 bg-human-bg p-3 text-[12px] text-human">计划历史读取失败；请关闭后重试，批准操作仍会执行后端计划封印检查。</div>}
+            {reviewContext.data && <PlanVersionComparison context={reviewContext.data} />}
             <p className="leading-relaxed text-t1">{plan.summary}</p>
             <ol className="flex flex-col gap-2">
               {plan.steps.map((step, index) => (

@@ -39,6 +39,7 @@ dependencies = [
  "security-framework",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-util",
@@ -125,12 +126,14 @@ dependencies = [
  "agentflow-workflow",
  "anyhow",
  "chrono",
+ "futures",
  "globset",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "sha2",
  "sqlx",
+ "sysinfo",
  "thiserror 2.0.19",
  "tokio",
  "tokio-util",
@@ -1447,6 +1450,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a88cf1f829d945f548cf8fec32c61b1f202b6d93b45848602fc02af4b12ad218"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1519,6 +1537,7 @@ version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a77a90a256fce34da66415271e30f94ee91c57b04b8a2c042d9cf3220179deaa"
 dependencies = [
+ "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",

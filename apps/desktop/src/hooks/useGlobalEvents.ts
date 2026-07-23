@@ -25,7 +25,12 @@ export function useGlobalEvents(): void {
     });
     // Detail refetches for the richer TaskDetail fields.
     client.invalidateQueries({ queryKey: qk.task(task.id) });
+    client.invalidateQueries({ queryKey: qk.queue(task.id) });
     client.invalidateQueries({ queryKey: qk.events(task.id) });
+    // A task entering/leaving BLOCKED(permission_required) surfaces or clears
+    // pending 权限请求 (06 §9 第 4 条). Event-driven refresh keeps the 授权弹窗
+    // and 任务树「等待你授权」标记live without polling.
+    client.invalidateQueries({ queryKey: qk.permissionRequests(task.id) });
   });
 
   useTauriEvent("task:removed", ({ taskId, projectId }) => {
@@ -33,6 +38,7 @@ export function useGlobalEvents(): void {
       prev?.filter((task) => task.id !== taskId)
     );
     client.removeQueries({ queryKey: qk.task(taskId) });
+    client.removeQueries({ queryKey: qk.queue(taskId) });
     client.removeQueries({ queryKey: qk.runs(taskId) });
     client.removeQueries({ queryKey: qk.events(taskId) });
   });
@@ -40,6 +46,7 @@ export function useGlobalEvents(): void {
   const onRun = (run: RunSummary) => {
     client.invalidateQueries({ queryKey: qk.runs(run.taskId) });
     client.invalidateQueries({ queryKey: qk.events(run.taskId) });
+    client.invalidateQueries({ queryKey: qk.queue(run.taskId) });
   };
   useTauriEvent("run:started", onRun);
   useTauriEvent("run:finished", onRun);

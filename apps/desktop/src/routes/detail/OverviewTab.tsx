@@ -12,6 +12,10 @@ import type { TaskDetail, TaskEvent, TaskStatus } from "@/generated/bindings";
 import { BLOCKED_COPY } from "@/copy/blocked";
 import { relativeTime, shortSha } from "@/lib/format";
 import { CopyText } from "@/components/CopyText";
+import { latestValidationReport, latestValidationOutcome } from "@/lib/execution/testReport";
+import { isMassDeletion } from "@/lib/execution/massDeletion";
+import { ValidationReportCard } from "@/components/execution/ValidationReportCard";
+import { AcceptanceCriteriaPanel } from "@/components/AcceptanceCriteriaPanel";
 
 interface Props {
   task: TaskDetail;
@@ -100,6 +104,14 @@ function RevisionSummary({ text }: { text: string }) {
 
 export function OverviewTab({ task, events }: Props) {
   const summaries = useMemo(() => summariesByRevision(events), [events]);
+  const validation = useMemo(
+    () => latestValidationReport(events, task.currentRevision),
+    [events, task.currentRevision]
+  );
+  const validationOutcome = useMemo(
+    () => latestValidationOutcome(events, task.currentRevision),
+    [events, task.currentRevision]
+  );
   const blockedCopy = task.blockedReason ? BLOCKED_COPY[task.blockedReason] : null;
   const hasCurrentRevision = task.revisions.some((revision) => revision.revision === task.currentRevision);
   const currentMeta = currentProgress(task.status);
@@ -129,6 +141,35 @@ export function OverviewTab({ task, events }: Props) {
           <p className="text-t3">（没有填写描述）</p>
         )}
       </section>
+
+      {task.acceptanceCriteria.length > 0 && (
+        <section className="mb-6">
+          <AcceptanceCriteriaPanel
+            criteria={task.acceptanceCriteria}
+            validation={validationOutcome}
+            title="验收条件与验证证据"
+          />
+        </section>
+      )}
+
+      {validation && (
+        <section className="mb-6">
+          <h2 className={sectionH}>验证结果（r{task.currentRevision}）</h2>
+          <ValidationReportCard report={validation} />
+        </section>
+      )}
+
+      {/* §9/§18-19: 未配置测试/构建命令时验证会被跳过——如实告知，避免用户以为代码已被验证。 */}
+      {validationOutcome === "skipped" && (
+        <section className="mb-6">
+          <h2 className={sectionH}>验证结果（r{task.currentRevision}）</h2>
+          <div className="rounded-[var(--radius-panel)] border border-human bg-human-bg px-3 py-2 text-[13px] text-t1">
+            ⚠ 本轮未运行任何验证：这个项目还没有配置测试或构建命令，代码没有被自动验证过。
+            在项目设置里配置 <span className="font-mono text-[12px]">.agentflow/project.toml</span> 的
+            验证命令后重跑，即可启用自动验证；若这个项目确实无需验证，可放心批准。
+          </div>
+        </section>
+      )}
 
       <section className="mb-6">
         <h2 className={sectionH}>各轮进展</h2>
@@ -177,6 +218,12 @@ export function OverviewTab({ task, events }: Props) {
                 <RevisionSummary text={summaries.get(r.revision) ?? "（本轮没有自述总结）"} />
                 {r.stat && r.stat.flagged.length > 0 && (
                   <div className="mt-2 text-[12px] text-human">⚠ 触及控制面文件：{r.stat.flagged.join("、")}</div>
+                )}
+                {/* §45 大规模删除属于高风险操作，合并前必须让用户注意到 */}
+                {r.stat && isMassDeletion(r.stat.deletedFiles) && (
+                  <div className="mt-2 text-[12px] text-human">
+                    ⚠ 本轮删除了 {r.stat.deletedFiles} 个文件，合并前请确认这是预期操作
+                  </div>
                 )}
               </div>
             ))}

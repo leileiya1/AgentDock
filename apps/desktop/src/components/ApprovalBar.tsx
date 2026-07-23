@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertTriangle } from "lucide-react";
 import type { TaskDetail } from "@/generated/bindings";
@@ -14,7 +15,12 @@ import {
   useApplyRepair,
   useStartTask,
 } from "@/hooks/useTasks";
-import { useDiff, useReview } from "@/hooks/useTaskData";
+import { useDiff, useEvents, useReview, useRuns } from "@/hooks/useTaskData";
+import { summarizeRunFailure } from "@/lib/execution/runFailure";
+import { isMassDeletion } from "@/lib/execution/massDeletion";
+import { RunFailureDetail } from "@/components/execution/RunFailureDetail";
+import { ValidationSkipNotice } from "@/components/execution/ValidationSkipNotice";
+import { highRiskConfirmation, summarizeRisk, unresolvedIssues } from "@/lib/risk";
 import { qk } from "@/lib/queryKeys";
 import { shortSha } from "@/lib/format";
 import { toAppError, errorLine } from "@/copy/errors";
@@ -28,6 +34,10 @@ import { Label } from "@/components/ui/label";
 import { PlanApprovalBar } from "@/components/PlanApprovalBar";
 import { useDeliveryRefresh, useDeliveryStart } from "@/hooks/useGovernance";
 import { BudgetResumeDialog } from "@/components/BudgetResumeDialog";
+import { useEnv } from "@/hooks/useEnv";
+import { useProviders } from "@/hooks/useProviders";
+import { latestValidationOutcome } from "@/lib/execution/testReport";
+import { AcceptanceCriteriaPanel } from "@/components/AcceptanceCriteriaPanel";
 
 interface Props {
   task: TaskDetail;
@@ -96,7 +106,7 @@ export function ApprovalBar({ task }: Props) {
   );
 }
 
-const rowCls = "flex items-center justify-between gap-4";
+const rowCls = "flex flex-wrap items-center justify-between gap-x-4 gap-y-2";
 const leadCls = "font-semibold text-human";
 
 /* ---- DRAFT ---------------------------------------------------------- */
@@ -136,6 +146,7 @@ function WaitingBar({ task }: Props) {
   const client = useQueryClient();
   const diff = useDiff(task.id, rev);
   const review = useReview(task.id, rev);
+  const events = useEvents(task.id);
   const approve = useApproveTask();
   const reject = useRejectTask();
   const cancel = useCancelTask();
@@ -144,14 +155,29 @@ function WaitingBar({ task }: Props) {
   const [rejectOpen, setRejectOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reason, setReason] = useState("");
+  const [riskAcknowledged, setRiskAcknowledged] = useState(false);
+  const [manualChecked, setManualChecked] = useState<Set<string>>(() => new Set());
 
   const payload = diff.data;
-  const flaggedCount = payload?.files.filter((f) => f.flagged).length ?? 0;
   const ins = payload?.files.reduce((a, f) => a + f.insertions, 0) ?? 0;
   const del = payload?.files.reduce((a, f) => a + f.deletions, 0) ?? 0;
+  // §45: the accurate deleted-file count comes from the stored revision stat (the diff payload
+  // can't tell a full deletion from line removals). Surface it right at the approval gate.
+  const deletedFiles = task.revisions.find((r) => r.revision === rev)?.stat?.deletedFiles ?? 0;
+
+  // 未解决的 critical/high 数量在审批按钮旁边持续可见 (05 §6.9)。
+  const risk = summarizeRisk(payload?.files ?? []);
+  const unresolved = unresolvedIssues(review.data);
+  const confirmations = highRiskConfirmation(risk, unresolved);
+  // 高风险变更需要额外确认，且确认内容具体到风险和文件。
+  const needsAcknowledgement = confirmations.length > 0;
+  const validationOutcome = latestValidationOutcome(events.data ?? [], rev);
+  const manualCriteria = task.acceptanceCriteria.filter((criterion) => criterion.kind === "manual");
+  const manualReady = manualCriteria.every((criterion) => manualChecked.has(criterion.id));
 
   const doApprove = async () => {
     if (!payload) return;
+    if ((needsAcknowledgement && !riskAcknowledged) || !manualReady) return;
     try {
       await approve.mutateAsync({ taskId: task.id, revision: rev, commitSha: payload.commitSha, diffSha256: payload.diffSha256 });
       setConfirmOpen(false);
@@ -181,6 +207,7 @@ function WaitingBar({ task }: Props) {
 
   return (
     <>
+      <ValidationSkipNotice taskId={task.id} revision={rev} />
       <div className={rowCls}>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className={leadCls}>{review.data?.decision === "pass" ? "审查通过" : "等你批准"}</span>
@@ -194,17 +221,41 @@ function WaitingBar({ task }: Props) {
                 <span className="text-ok">+{ins}</span>
                 <span className="text-bad">−{del}</span>
               </span>
-              {flaggedCount > 0 && <span className="text-[12px] text-human">⚠ {flaggedCount} 个控制面文件</span>}
+              {risk.counts.control_plane > 0 && (
+                <span className="text-[12px] text-human">⚠ {risk.counts.control_plane} 个控制面文件</span>
+              )}
+              {risk.removedTests.length > 0 && (
+                <span className="text-[12px] text-human">⚠ 删除 {risk.removedTests.length} 个测试</span>
+              )}
+              {isMassDeletion(deletedFiles) && (
+                <span className="text-[12px] text-human">⚠ 删除 {deletedFiles} 个文件</span>
+              )}
             </>
           )}
           {review.data?.summary && (
             <span className="max-w-md truncate text-[13px] text-t2">{review.data.summary}</span>
           )}
         </div>
-        <div className="flex shrink-0 gap-2">
+        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {unresolved.requiresExtraConfirmation && (
+            <span className="text-[12px] font-medium text-human">
+              {unresolved.critical > 0 && `${unresolved.critical} 个严重`}
+              {unresolved.critical > 0 && unresolved.high > 0 && " · "}
+              {unresolved.high > 0 && `${unresolved.high} 个高风险`}
+              未解决
+            </span>
+          )}
           <Button variant="outline" onClick={() => setCancelOpen(true)}>取消任务</Button>
           <Button variant="danger" onClick={() => setRejectOpen(true)}>驳回…</Button>
-          <Button variant="human" disabled={!payload || approve.isPending} onClick={() => setConfirmOpen(true)}>
+          <Button
+            variant="human"
+            disabled={!payload || approve.isPending}
+            onClick={() => {
+              setRiskAcknowledged(false);
+              setManualChecked(new Set());
+              setConfirmOpen(true);
+            }}
+          >
             批准并进入合并
           </Button>
         </div>
@@ -218,7 +269,11 @@ function WaitingBar({ task }: Props) {
         footer={
           <>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>取消</Button>
-            <Button variant="human" onClick={doApprove} disabled={approve.isPending}>
+            <Button
+              variant="human"
+              onClick={doApprove}
+              disabled={approve.isPending || (needsAcknowledgement && !riskAcknowledged) || !manualReady}
+            >
               {approve.isPending ? "批准中…" : "确认批准 (⌘↵)"}
             </Button>
           </>
@@ -238,11 +293,45 @@ function WaitingBar({ task }: Props) {
                 <span className="text-t3">· {payload.files.length} 个文件</span>
               </span>
             </div>
-            {flaggedCount > 0 && (
-              <div className="flex items-center gap-2 rounded-md border border-human bg-human-bg px-3 py-2 text-human">
-                <AlertTriangle className="size-4 shrink-0" />
-                本轮修改了 {flaggedCount} 个规则/控制面文件，请确认这是你想要的。
+            {needsAcknowledgement && (
+              <div className="rounded-md border border-human bg-human-bg px-3 py-2">
+                <div className="flex items-center gap-2 font-medium text-human">
+                  <AlertTriangle className="size-4 shrink-0" />
+                  这次批准包含高风险内容
+                </div>
+                <ul className="mt-1.5 list-none space-y-1 text-[13px] text-t1">
+                  {confirmations.map((line) => (
+                    <li key={line} className="flex gap-2">
+                      <span className="text-human" aria-hidden>•</span>
+                      <span className="min-w-0">{line}</span>
+                    </li>
+                  ))}
+                </ul>
+                <label className="mt-2.5 flex items-start gap-2 text-[13px] text-t1">
+                  <input
+                    type="checkbox"
+                    checked={riskAcknowledged}
+                    onChange={(e) => setRiskAcknowledged(e.target.checked)}
+                    className="mt-1 accent-[var(--color-human)]"
+                  />
+                  我已逐条确认上述风险，仍要批准这一轮改动。
+                </label>
               </div>
+            )}
+            <AcceptanceCriteriaPanel
+              criteria={task.acceptanceCriteria}
+              validation={validationOutcome}
+              review={review.data?.decision ?? null}
+              title="逐条确认验收条件"
+              manualChecked={manualChecked}
+              onManualChange={(id, checked) => setManualChecked((current) => {
+                const next = new Set(current);
+                if (checked) next.add(id); else next.delete(id);
+                return next;
+              })}
+            />
+            {!manualReady && (
+              <p className="text-[12px] text-human">请逐条确认所有人工验收条件后再批准。</p>
             )}
             <p className="text-[12px] text-t2">批准后任务将进入合并流程。</p>
           </div>
@@ -371,12 +460,27 @@ function ConflictBar({ task }: Props) {
 
 /* ---- BLOCKED -------------------------------------------------------- */
 function BlockedBar({ task }: Props) {
+  const navigate = useNavigate();
   const reasonKey = task.blockedReason;
   const copy = reasonKey ? BLOCKED_COPY[reasonKey] : null;
+  // §16: an abnormal exit / unresponsive hang carries structured specifics — surface which Agent
+  // failed and how, composed from the already-persisted agent_runs history (no backend change).
+  // review_failed is included for consistency; summarizeRunFailure returns null for the non-crash
+  // review failures (invalid output, too few council members), so the card only shows on a real crash.
+  const showsRunFailure =
+    reasonKey === "run_failed" ||
+    reasonKey === "agent_unresponsive" ||
+    reasonKey === "review_failed";
+  const runs = useRuns(showsRunFailure ? task.id : undefined);
+  const failure = showsRunFailure
+    ? summarizeRunFailure(runs.data ?? [], task.currentRevision)
+    : null;
   const resume = useResumeWithGuidance();
   const forceApprove = useForceApprove();
   const cancel = useCancelTask();
   const applyRepair = useApplyRepair();
+  const env = useEnv();
+  const providers = useProviders();
 
   const [guidanceOpen, setGuidanceOpen] = useState(false);
   const [asAnswer, setAsAnswer] = useState(false);
@@ -406,6 +510,20 @@ function BlockedBar({ task }: Props) {
     setText("");
   };
 
+  const redetect = async () => {
+    const [, providerResult] = await Promise.all([env.refetch(), providers.refetch()]);
+    const ready = providerResult.data?.filter((provider) => provider.available).length ?? 0;
+    toast.info(`检测完成：${ready} 个 Provider 当前可运行`);
+  };
+
+  const retryAvailable = async () => {
+    await redetect();
+    await run(() => resume.mutateAsync({
+      taskId: task.id,
+      guidance: "环境已重新检测；请从保存的检查点继续，并由 AgentFlow 选择降级链中第一个可用 Provider。",
+    }));
+  };
+
   const renderAction = (action: BlockedAction) => {
     const label = BLOCKED_ACTION_LABEL[action];
     switch (action) {
@@ -429,6 +547,14 @@ function BlockedBar({ task }: Props) {
         return <Button key={action} variant="human" onClick={() => setRepairOpen(true)}>{label}</Button>;
       case "budget":
         return <Button key={action} variant="human" onClick={() => setBudgetOpen(true)}>{label}</Button>;
+      case "providerSetup":
+        return <Button key={action} variant="human" onClick={() => navigate("/settings#providers")}>{label}</Button>;
+      case "redetect":
+        return <Button key={action} variant="outline" disabled={env.isFetching || providers.isFetching} onClick={() => run(redetect)}>{label}</Button>;
+      case "retryAvailable":
+        return <Button key={action} variant="human" disabled={resume.isPending || env.isFetching || providers.isFetching} onClick={() => run(retryAvailable)}>{label}</Button>;
+      case "editFallback":
+        return <Button key={action} variant="outline" onClick={() => navigate("/settings#project-settings")}>{label}</Button>;
     }
   };
 
@@ -444,6 +570,7 @@ function BlockedBar({ task }: Props) {
             </blockquote>
           )}
         </div>
+        {failure && <RunFailureDetail failure={failure} />}
         <div className="flex flex-wrap justify-end gap-2">{(copy?.actions ?? ["guidance", "cancel"]).map(renderAction)}</div>
       </div>
 

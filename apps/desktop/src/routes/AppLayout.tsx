@@ -4,7 +4,9 @@ import { Sidebar } from "@/components/Sidebar";
 import { Toaster } from "@/components/Toaster";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { NewTaskDialog } from "@/routes/NewTaskDialog";
+import { CloseGuard } from "@/components/CloseGuard";
 import { FullAccessBanner } from "@/components/FullAccessBanner";
+import { SchedulerBanner } from "@/components/SchedulerBanner";
 import { useGlobalEvents } from "@/hooks/useGlobalEvents";
 import { useUiStore } from "@/stores/uiStore";
 
@@ -32,15 +34,17 @@ export function AppLayout() {
   }, [listMatch, detailMatch, openNewTask]);
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-dvh min-h-0 w-full overflow-hidden">
       <Sidebar />
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <FullAccessBanner />
+        <SchedulerBanner />
         <ErrorBoundary resetKey={location.pathname}>
           <Outlet />
         </ErrorBoundary>
       </main>
       <NewTaskDialog />
+      <CloseGuard />
       <Toaster />
     </div>
   );

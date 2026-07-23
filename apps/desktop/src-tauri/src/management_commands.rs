@@ -1,6 +1,6 @@
 use super::*;
 use crate::view_types::RunLogPage;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 #[derive(Deserialize, Type)]
 pub(super) struct DatabaseRestoreArgs {
@@ -14,21 +14,32 @@ pub(super) struct QueuePriorityArgs {
     priority: i16,
 }
 
-#[derive(Deserialize, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct QueueMutationResult {
-    task_id: String,
-    paused: Option<bool>,
-    #[specta(type = Option<i32>)]
-    priority: Option<i16>,
-}
-
 #[derive(Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RunLogArgs {
     run_id: String,
     from_line: u32,
     max_lines: u32,
+}
+
+#[derive(Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ProjectConfigApprovalArgs {
+    project_id: String,
+    expected_sha256: String,
+}
+
+#[derive(Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PermissionDecisionArgs {
+    input: agentflow_contracts::PermissionDecisionInput,
+}
+
+#[derive(Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PermissionRuleRevokeArgs {
+    project_id: String,
+    rule_id: String,
 }
 
 #[tauri::command]
@@ -75,10 +86,25 @@ pub(super) async fn project_git_compatibility(
 
 #[tauri::command]
 #[specta::specta]
+pub(super) async fn project_prune_stale_worktrees(
+    state: State<'_, Backend>,
+    args: ProjectIdArgs,
+) -> Result<agentflow_contracts::GitCompatibilityReport, AppError> {
+    daemon_mutate(
+        &state,
+        DaemonRequest::ProjectPruneStaleWorktrees {
+            project_id: args.project_id,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(super) async fn queue_task_pause(
     state: State<'_, Backend>,
     args: TaskIdArgs,
-) -> Result<QueueMutationResult, AppError> {
+) -> Result<agentflow_contracts::QueueTaskState, AppError> {
     daemon_mutate(
         &state,
         DaemonRequest::QueueTaskPause {
@@ -93,7 +119,7 @@ pub(super) async fn queue_task_pause(
 pub(super) async fn queue_task_resume(
     state: State<'_, Backend>,
     args: TaskIdArgs,
-) -> Result<QueueMutationResult, AppError> {
+) -> Result<agentflow_contracts::QueueTaskState, AppError> {
     daemon_mutate(
         &state,
         DaemonRequest::QueueTaskResume {
@@ -108,12 +134,27 @@ pub(super) async fn queue_task_resume(
 pub(super) async fn queue_task_priority(
     state: State<'_, Backend>,
     args: QueuePriorityArgs,
-) -> Result<QueueMutationResult, AppError> {
+) -> Result<agentflow_contracts::QueueTaskState, AppError> {
     daemon_mutate(
         &state,
         DaemonRequest::QueueTaskPriority {
             task_id: args.task_id,
             priority: args.priority,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(super) async fn queue_task_status(
+    state: State<'_, Backend>,
+    args: TaskIdArgs,
+) -> Result<Option<agentflow_contracts::QueueTaskState>, AppError> {
+    daemon_mutate(
+        &state,
+        DaemonRequest::QueueTaskStatus {
+            task_id: args.task_id,
         },
     )
     .await
@@ -136,12 +177,13 @@ pub(super) async fn project_config_trust_get(
 #[specta::specta]
 pub(super) async fn project_config_trust_approve(
     state: State<'_, Backend>,
-    args: ProjectIdArgs,
+    args: ProjectConfigApprovalArgs,
 ) -> Result<agentflow_contracts::ProjectConfigTrust, AppError> {
     daemon_mutate(
         &state,
         DaemonRequest::ProjectConfigTrustApprove {
             project_id: args.project_id,
+            expected_sha256: args.expected_sha256,
         },
     )
     .await
@@ -182,4 +224,40 @@ pub(super) async fn run_log_tail(
             eof,
         })
         .map_err(app_error)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(super) async fn permission_request_list(
+    state: State<'_, Backend>,
+    args: TaskIdArgs,
+) -> Result<Vec<agentflow_contracts::PermissionRequest>, AppError> {
+    state.0.permission_requests(&args.task_id).await.map_err(app_error)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(super) async fn permission_decide(
+    state: State<'_, Backend>,
+    args: PermissionDecisionArgs,
+) -> Result<agentflow_contracts::PermissionDecision, AppError> {
+    daemon_mutate(&state, DaemonRequest::PermissionDecide { input: args.input }).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(super) async fn permission_rule_list(
+    state: State<'_, Backend>,
+    args: ProjectIdArgs,
+) -> Result<Vec<agentflow_contracts::PermissionRule>, AppError> {
+    state.0.permission_rules(&args.project_id).await.map_err(app_error)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(super) async fn permission_rule_revoke(
+    state: State<'_, Backend>,
+    args: PermissionRuleRevokeArgs,
+) -> Result<agentflow_contracts::PermissionRule, AppError> {
+    daemon_mutate(&state, DaemonRequest::PermissionRuleRevoke { project_id: args.project_id, rule_id: args.rule_id }).await
 }

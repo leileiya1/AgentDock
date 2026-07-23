@@ -1,52 +1,34 @@
 import { NavLink, useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
 import { ChevronsLeft, ChevronsRight, Plus } from "lucide-react";
-import type { EnvReport, ProviderStatus, ToolStatus } from "@/generated/bindings";
 import { useProjects } from "@/hooks/useProjects";
 import { useOnboarding } from "@/hooks/useEnv";
 import { useUiStore } from "@/stores/uiStore";
+import { useLayout } from "@/hooks/useBreakpoint";
+import { buildDots, type DotTone } from "@/lib/envDots";
 import { cn } from "@/lib/utils";
-
-type DotTone = "ok" | "bad" | "idle";
-interface Dot { key: string; label: string; tone: DotTone; blocking: boolean }
-
-function toolDot(key: string, label: string, s: ToolStatus, optional: boolean): Dot {
-  if (s.found && s.compatible) return { key, label: `${label}：就绪`, tone: "ok", blocking: false };
-  if (!s.found && optional) return { key, label: `${label}：适配器已就绪，可稍后安装`, tone: "idle", blocking: false };
-  return { key, label: `${label}：${s.problem ?? "未就绪"}`, tone: "bad", blocking: !optional };
-}
-function providerDot(key: string, label: string, s: ProviderStatus): Dot {
-  if (s.available) return { key, label: `${label}：可用`, tone: "ok", blocking: false };
-  if (s.configured) return { key, label: `${label}：${s.problem ?? "凭据不可用"}`, tone: "bad", blocking: false };
-  return { key, label: `${label}：未配置`, tone: "idle", blocking: false };
-}
-function buildDots(env: EnvReport | undefined, daemonRunning: boolean | undefined): Dot[] {
-  if (!env) return [];
-  return [
-    { key: "daemon", label: daemonRunning ? "调度服务：运行中" : "调度服务：未运行", tone: daemonRunning ? "ok" : "bad", blocking: !daemonRunning },
-    toolDot("git", "Git", env.git, false),
-    toolDot("claude", "Claude Code", env.claudeCode, false),
-    toolDot("codex", "Codex", env.codex, false),
-    toolDot("gemini", "Gemini CLI", env.geminiCli, true),
-    toolDot("qwen", "Qwen Code", env.qwenCode, true),
-    providerDot("openai", "OpenAI API", env.openaiApi),
-    providerDot("anthropic", "Anthropic API", env.anthropicApi),
-    providerDot("deepseek", "DeepSeek API", env.deepseekApi),
-  ];
-}
 
 const DOT_COLOR: Record<DotTone, string> = { ok: "bg-ok", bad: "bg-bad", idle: "bg-idle" };
 
 export function Sidebar() {
   const { projectId } = useParams();
   const navigate = useNavigate();
-  const collapsed = useUiStore((s) => s.sidebarCollapsed);
+  const userCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const toggle = useUiStore((s) => s.toggleSidebar);
   const projects = useProjects();
   const onboarding = useOnboarding();
+  const layout = useLayout();
+
+  // 窄屏（含 200% 缩放）下强制收成图标栏，把宽度让给正文 (05 §8)。
+  const collapsed = userCollapsed || layout === "compact";
 
   const dots = buildDots(onboarding.data?.env, onboarding.data?.daemonRunning);
-  const blocked = dots.some((d) => d.blocking);
+  const blocked = onboarding.data ? !onboarding.data.workflowReady || !onboarding.data.daemonRunning : dots.some((d) => d.blocking);
+  const environmentLabel = onboarding.data?.workflowReady
+    ? "端到端环境就绪"
+    : onboarding.data?.appReady
+      ? "应用可用 · 工作流未就绪"
+      : "环境有阻塞项";
 
   return (
     <motion.aside
@@ -124,7 +106,7 @@ export function Sidebar() {
             <span key={d.key} className={cn("size-[7px] rounded-full", DOT_COLOR[d.tone], d.tone === "ok" && "shadow-[0_0_6px_-1px_currentColor]")} title={d.label} />
           ))}
         </span>
-        {!collapsed && <span className="text-[12px]">{blocked ? "环境有阻塞项" : "环境就绪"}</span>}
+        {!collapsed && <span className="text-[12px]">{environmentLabel}</span>}
       </button>
     </motion.aside>
   );

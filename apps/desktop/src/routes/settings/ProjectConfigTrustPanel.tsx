@@ -11,6 +11,7 @@ import { SkeletonRows } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { errorLine } from "@/copy/errors";
 import { toast } from "@/stores/toastStore";
+import { ProjectConfigChangePreview } from "@/components/governance/ProjectConfigChangePreview";
 
 export function ProjectConfigTrustPanel({ projectId }: { projectId: string }) {
   const trust = useProjectConfigTrust(projectId);
@@ -32,7 +33,8 @@ export function ProjectConfigTrustPanel({ projectId }: { projectId: string }) {
 
   const approveCurrent = async () => {
     try {
-      await approve.mutateAsync();
+      if (!value.sha256) return;
+      await approve.mutateAsync(value.sha256);
       setConfirmOpen(false);
       toast.info("已信任当前版本的项目配置");
     } catch (error) {
@@ -70,12 +72,14 @@ export function ProjectConfigTrustPanel({ projectId }: { projectId: string }) {
         <div className="mt-2 break-all font-mono text-[11px] text-t3">SHA-256 {value.sha256}</div>
         {!!value.validationSteps.length && <div className="mt-2 text-[12px] text-t2">验证步骤：{value.validationSteps.join("、")}</div>}
         {!!value.extraAllowedCommands.length && <div className="mt-1 text-[12px] text-human">额外命令权限：{value.extraAllowedCommands.join("、")}</div>}
+        {!value.trusted && value.changes.length > 0 && <div className="mt-1 text-[11px] text-human">检测到 {value.changes.length} 项配置变化，其中 {value.changes.filter((change) => change.highRisk).length} 项会改变执行或复现权限。</div>}
       </div>
 
       <Dialog
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
         title="批准当前项目配置"
+        width={680}
         onConfirmKey={approveCurrent}
         footer={
           <>
@@ -86,11 +90,9 @@ export function ProjectConfigTrustPanel({ projectId }: { projectId: string }) {
           </>
         }
       >
-        <p className="text-[13px] text-t2">批准后，AgentFlow 可以执行下列仓库提供的验证步骤和额外 CLI 权限。文件只要变化一个字节，授权就会自动失效。</p>
-        <div className="mt-3 rounded-md border border-line bg-raised p-3 text-[12px]">
-          <div>验证：{value.validationSteps.length ? value.validationSteps.join("、") : "无"}</div>
-          <div className="mt-1">额外权限：{value.extraAllowedCommands.length ? value.extraAllowedCommands.join("、") : "无"}</div>
-        </div>
+        <p className="mb-3 text-[13px] text-t2">批准后，AgentFlow 可以执行下列仓库命令并使用所列复现配置。文件只要变化一个字节，授权就会自动失效。</p>
+        <ProjectConfigChangePreview value={value} />
+        <div className="mt-3 break-all font-mono text-[10px] text-t3">上次 {value.previousApprovedSha256 ?? "无"}<br />当前 {value.sha256}</div>
       </Dialog>
     </>
   );

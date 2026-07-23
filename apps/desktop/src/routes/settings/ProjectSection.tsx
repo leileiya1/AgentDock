@@ -1,22 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
-import { GitBranch, ShieldAlert, ShieldCheck, ShieldOff } from "lucide-react";
+import { GitBranch, ShieldAlert, ShieldCheck } from "lucide-react";
 import type { AgentKind, Project, ProjectSettings } from "@/generated/bindings";
-import { useProjectGitCompatibility, useProjectSettings, useUpdateProjectSettings } from "@/hooks/useSettings";
+import { useProjectGitCompatibility, useProjectSettings, usePruneStaleWorktrees, useUpdateProjectSettings } from "@/hooks/useSettings";
 import { useProviders } from "@/hooks/useProviders";
 import { AGENT_META, ALL_AGENTS, agentLabel } from "@/copy/agents";
 import { Toggle } from "@/routes/Settings";
-import { Dialog } from "@/components/Dialog";
 import { SkeletonRows } from "@/components/Skeleton";
 import { ErrorState } from "@/components/ErrorState";
 import { errorLine } from "@/copy/errors";
 import { toast } from "@/stores/toastStore";
 import { Button } from "@/components/ui/button";
-import { Input, Textarea } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { ApiRuntimeSettings } from "@/routes/settings/ApiRuntimeSettings";
 import { ProjectConfigTrustPanel } from "@/routes/settings/ProjectConfigTrustPanel";
+import { ExecutionPermissionSection } from "@/routes/settings/ExecutionPermissionSection";
+import { PermissionRulesPanel } from "@/routes/settings/PermissionRulesPanel";
 
 const FALLBACK_DEVELOPERS = ALL_AGENTS.filter((a) => AGENT_META[a].cli);
 const FALLBACK_REVIEWERS = ALL_AGENTS;
@@ -24,10 +25,10 @@ const FALLBACK_READ_ONLY = ALL_AGENTS.filter((a) => !AGENT_META[a].cli);
 
 export function SettingsProjectSection({ projects }: { projects: Project[] }) {
   const [projectId, setProjectId] = useState(projects[0].id);
-  const project = projects.find((p) => p.id === projectId)!;
   const settings = useProjectSettings(projectId);
   const gitCompatibility = useProjectGitCompatibility(projectId);
   const update = useUpdateProjectSettings(projectId);
+  const pruneWorktrees = usePruneStaleWorktrees(projectId);
   const providers = useProviders();
   const developerAgents = providers.data
     ?.filter((provider) => provider.capabilities.development)
@@ -40,8 +41,6 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
     .map((provider) => provider.id) ?? FALLBACK_READ_ONLY;
 
   const [draft, setDraft] = useState<ProjectSettings | null>(null);
-  const [confirmName, setConfirmName] = useState("");
-  const [fullAccessDialog, setFullAccessDialog] = useState(false);
 
   useEffect(() => {
     if (settings.data) setDraft(settings.data);
@@ -74,30 +73,6 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
     try {
       await update.mutateAsync(draft);
       toast.info("项目设置已保存");
-    } catch (e) {
-      toast.error(errorLine(e));
-    }
-  };
-
-  const enableFullAccess = async () => {
-    if (confirmName !== project.name || !draft) return;
-    try {
-      await update.mutateAsync({ ...draft, fullAccess: true });
-      patch({ fullAccess: true });
-      setFullAccessDialog(false);
-      setConfirmName("");
-      toast.info("已开启完全放权模式");
-    } catch (e) {
-      toast.error(errorLine(e));
-    }
-  };
-
-  const disableFullAccess = async () => {
-    if (!draft) return;
-    try {
-      await update.mutateAsync({ ...draft, fullAccess: false });
-      patch({ fullAccess: false });
-      toast.info("已关闭完全放权模式");
     } catch (e) {
       toast.error(errorLine(e));
     }
@@ -147,8 +122,38 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
                 {gitCompatibility.data.sshRemote && <span className="rounded bg-raised px-2 py-1">SSH remote</span>}
                 {!gitCompatibility.data.shallow && !gitCompatibility.data.sparseCheckout && !gitCompatibility.data.submodules.length && !gitCompatibility.data.lfsTracked && <span>标准本地仓库</span>}
               </div>
+              <div className="mt-2 grid gap-1 text-[12px] sm:grid-cols-3">
+                <PermissionState label="项目可读" ready={gitCompatibility.data.repoReadable} />
+                <PermissionState label="项目可写" ready={gitCompatibility.data.repoWritable} />
+                <PermissionState label="隔离工作区可写" ready={gitCompatibility.data.worktreeRootWritable} />
+              </div>
               {gitCompatibility.data.blockers.map((message) => <p key={message} className="mt-2 text-[12px] text-danger">阻断：{message}</p>)}
               {gitCompatibility.data.warnings.map((message) => <p key={message} className="mt-1 text-[12px] text-human">{message}</p>)}
+              {gitCompatibility.data.prunableWorktrees.length > 0 && (
+                <div className="mt-3 rounded-md border border-human/40 bg-human-bg px-3 py-2 text-[12px]">
+                  <div className="font-medium text-human">失效 worktree 注册 × {gitCompatibility.data.prunableWorktrees.length}</div>
+                  <ul className="mt-1 list-inside list-disc break-all text-t3">
+                    {gitCompatibility.data.prunableWorktrees.map((path) => <li key={path}>{path}</li>)}
+                  </ul>
+                  <p className="mt-2 text-t2">清理只执行 Git 的 prune，移除失效注册；不会删除项目源文件或仍存在的工作目录。</p>
+                  <Button
+                    className="mt-2"
+                    variant="outline"
+                    size="sm"
+                    disabled={pruneWorktrees.isPending}
+                    onClick={async () => {
+                      try {
+                        await pruneWorktrees.mutateAsync();
+                        toast.info("失效 worktree 注册已清理，项目文件未被删除");
+                      } catch (error) {
+                        toast.error(errorLine(error));
+                      }
+                    }}
+                  >
+                    {pruneWorktrees.isPending ? "清理中…" : "安全清理失效注册"}
+                  </Button>
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -234,50 +239,20 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
 
           <Toggle label="复用支持该能力的 Provider 会话（默认关闭）" checked={draft.resumeSessions ?? false} onChange={(v) => patch({ resumeSessions: v })} />
 
-          <div className="rounded-[var(--radius-panel)] border border-line bg-app p-3">
-            <div className="mb-2 flex items-center justify-between font-semibold">
-              <span className="flex items-center gap-2"><ShieldOff className="size-4 text-human" /> 完全放权模式</span>
-              {draft.fullAccess ? (
-                <Button variant="danger" size="sm" onClick={disableFullAccess}>关闭</Button>
-              ) : (
-                <Button variant="outline" size="sm" onClick={() => setFullAccessDialog(true)}>开启…</Button>
-              )}
-            </div>
-            <p className="text-[12px] text-t3">
-              开启后该项目的 Agent 运行将不再使用命令确认防护/沙箱。风险自负，仅在你完全信任任务时使用。
-            </p>
-            {draft.fullAccess && <div className="mt-2 text-[12px] text-human">⚠ 已开启——该项目所有页面顶部会常驻警示条。</div>}
-          </div>
+          <ExecutionPermissionSection projectId={projectId} />
+          <PermissionRulesPanel projectId={projectId} />
 
           <div className="flex justify-end">
             <Button variant="primary" onClick={save} disabled={update.isPending}>保存项目设置</Button>
           </div>
         </>
       )}
-
-      <Dialog
-        open={fullAccessDialog}
-        onClose={() => { setFullAccessDialog(false); setConfirmName(""); }}
-        title="开启完全放权模式"
-        onConfirmKey={enableFullAccess}
-        footer={
-          <>
-            <Button variant="outline" onClick={() => { setFullAccessDialog(false); setConfirmName(""); }}>取消</Button>
-            <Button variant="danger" disabled={confirmName !== project.name || update.isPending} onClick={enableFullAccess}>确认开启</Button>
-          </>
-        }
-      >
-        <div className="flex items-start gap-2 rounded-md border border-human bg-human-bg px-3 py-2 text-[13px] text-human">
-          <ShieldOff className="mt-0.5 size-4 shrink-0" />
-          这会关闭该项目所有 Agent 运行的命令确认防护。Agent 可能执行任意命令、修改任意文件。
-        </div>
-        <div className="mt-3 flex flex-col gap-2">
-          <Label>输入项目名 <span className="font-mono">{project.name}</span> 以确认</Label>
-          <Input value={confirmName} onChange={(e) => setConfirmName(e.target.value)} placeholder={project.name} autoFocus />
-        </div>
-      </Dialog>
     </div>
   );
+}
+
+function PermissionState({ label, ready }: { label: string; ready: boolean }) {
+  return <span className={ready ? "text-ok" : "text-bad"}>{ready ? "✓" : "×"} {label}</span>;
 }
 
 function FallbackPicker({ title, hint, options, selected, onToggle }: {

@@ -61,6 +61,16 @@ export function Onboarding() {
             <ErrorState error={onboarding.error} onRetry={() => onboarding.refetch()} />
           ) : onboarding.data && (
             <>
+              <div className="mb-4 grid gap-2 sm:grid-cols-2">
+                <div className={`rounded-[var(--radius-panel)] border px-4 py-3 ${onboarding.data.appReady ? "border-ok/30 bg-ok/5" : "border-human/40 bg-human-bg"}`}>
+                  <div className="font-medium">应用基础环境：{onboarding.data.appReady ? "可用" : "需要处理"}</div>
+                  <p className="mt-1 text-[12px] text-t3">应用能否安全打开并使用本地数据。</p>
+                </div>
+                <div className={`rounded-[var(--radius-panel)] border px-4 py-3 ${onboarding.data.workflowReady ? "border-ok/30 bg-ok/5" : "border-human/40 bg-human-bg"}`}>
+                  <div className="font-medium">端到端工作流：{onboarding.data.workflowReady ? "就绪" : "未就绪"}</div>
+                  <p className="mt-1 text-[12px] text-t3">至少一组开发与独立审查 Provider 通过检测。</p>
+                </div>
+              </div>
               {onboarding.data.notices.length > 0 && (
                 <ul className="mb-4 list-inside list-disc rounded-[var(--radius-panel)] border border-bad/25 bg-panel px-4 py-3 text-[13px] text-t2">
                   {onboarding.data.notices.map((notice, index) => <li key={index}>{notice}</li>)}

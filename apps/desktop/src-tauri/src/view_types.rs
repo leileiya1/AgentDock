@@ -8,8 +8,3 @@ pub(crate) struct RunLogPage {
     pub next_from_line: u32,
     pub eof: bool,
 }
-
-#[derive(Serialize, Type)]
-pub(crate) struct ExportPath {
-    pub path: String,
-}
