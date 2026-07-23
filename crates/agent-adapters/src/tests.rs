@@ -15,6 +15,7 @@ mod tests {
             permission,
             effective_permissions: agentflow_contracts::EffectivePermissions::default(),
             resume_session_id: None,
+            permission_hook_program: None,
             extra_allowed_commands: Vec::new(),
             env_denylist: Vec::new(),
             budget: RunBudget::default(),
@@ -333,6 +334,25 @@ mod tests {
     }
 
     #[test]
+    fn claude_dynamic_bash_uses_a_structured_deferred_hook() {
+        let mut request = test_request(RunRole::Developer, PermissionTier::Normal);
+        request.permission_hook_program = Some(PathBuf::from("/opt/Agent Flow/agentflowd"));
+        request.extra_allowed_commands = vec!["cargo test".into()];
+        let args = claude_args(&request);
+        let Some(settings_index) = args.iter().position(|arg| arg == "--settings") else {
+            panic!("Claude settings hook was not configured");
+        };
+        let settings: Value = serde_json::from_str(&args[settings_index + 1])
+            .unwrap_or_else(|error| panic!("invalid settings JSON: {error}"));
+        let command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(command.contains("claude-permission-hook"));
+        assert!(command.contains("'cargo test'"));
+        assert!(command.contains("'/opt/Agent Flow/agentflowd'"));
+    }
+
+    #[test]
     fn qoder_and_grok_are_read_only_for_planning_and_resume_only_explicitly() {
         let mut qoder_request = test_request(RunRole::Planner, PermissionTier::ReadOnly);
         let qoder = qoder_args(&qoder_request);
@@ -629,6 +649,7 @@ mod tests {
                     permission: PermissionTier::Normal,
                     effective_permissions: agentflow_contracts::EffectivePermissions::default(),
                     resume_session_id: None,
+                    permission_hook_program: None,
                     extra_allowed_commands: Vec::new(),
                     env_denylist: Vec::new(),
                     budget: RunBudget::default(),

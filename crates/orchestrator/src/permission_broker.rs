@@ -53,8 +53,16 @@ impl Orchestrator {
             sqlx::query_scalar("SELECT COUNT(*) FROM permission_requests WHERE task_id=? AND operation_sha256=? AND status='denied'")
                 .bind(&task.id).bind(&operation_sha256).fetch_one(self.store.pool()).await?
         };
+        let provider_resume_secret_ref = if grantable {
+            match input.provider_resume_token.as_deref() {
+                Some(token) => Some(self.store.put_resume_token(token).await?),
+                None => None,
+            }
+        } else {
+            None
+        };
         let mut transaction = self.store.pool().begin().await?;
-        sqlx::query("INSERT INTO permission_requests(id,project_id,task_id,revision,run_id,provider_id,role,action_type,summary,reason,operation_json,risk_level,grantable,operation_sha256,policy_sha256,status,resume_status,retry_revision,requested_at,expires_at,decided_at,provider_resume_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO permission_requests(id,project_id,task_id,revision,run_id,provider_id,role,action_type,summary,reason,operation_json,risk_level,grantable,operation_sha256,policy_sha256,status,resume_status,retry_revision,requested_at,expires_at,decided_at,provider_resume_token,provider_resume_secret_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&id).bind(&task.project_id).bind(&task.id).bind(task.revision)
             .bind(&input.run_id).bind(input.provider_id.to_string()).bind(input.role.to_string())
             .bind(action_type.to_string()).bind(&summary).bind(&reason)
@@ -63,9 +71,8 @@ impl Orchestrator {
             .bind(&policy_sha256).bind(status.to_string()).bind(&resume_status).bind(retry_revision)
             .bind(now.to_rfc3339()).bind(&expires_at)
             .bind((!grantable).then(|| now.to_rfc3339()))
-            // Resume tokens are Provider capabilities, not audit facts. Until protected token
-            // storage is available we deliberately checkpoint-restart instead of persisting one.
             .bind(Option::<String>::None)
+            .bind(&provider_resume_secret_ref)
             .execute(&mut *transaction).await?;
         if grantable && matches!(task.status, TaskStatus::Developing | TaskStatus::Revising) {
             sqlx::query("UPDATE tasks SET status='BLOCKED',blocked_reason='permission_required',blocked_detail=?,updated_at=? WHERE id=? AND current_revision=?")
@@ -88,7 +95,12 @@ impl Orchestrator {
             .bind(&task.id).bind(&input.run_id).bind(task.revision).bind(event_type)
             .bind(json!({"request_id":id,"action_type":action_type,"risk_level":risk_level,"grantable":grantable,"operation_sha256":operation_sha256,"policy_sha256":policy_sha256}).to_string())
             .bind(now.to_rfc3339()).execute(&mut *transaction).await?;
-        transaction.commit().await?;
+        if let Err(error) = transaction.commit().await {
+            if let Some(secret_ref) = provider_resume_secret_ref {
+                let _ = self.store.delete_resume_token(&secret_ref).await;
+            }
+            return Err(error.into());
+        }
         self.permission_request_get(&id).await
     }
 
@@ -266,6 +278,20 @@ impl Orchestrator {
             .bind(json!({"request_id":request.id,"decision":input.decision,"scope":input.scope,"operation_sha256":request.operation_sha256,"policy_sha256":request.policy_sha256,"expires_at":expires_at}).to_string())
             .bind(now.to_rfc3339()).execute(&mut *transaction).await?;
         transaction.commit().await?;
+        if matches!(input.decision, PermissionDecisionKind::Deny | PermissionDecisionKind::CancelTask)
+            && let Some(secret_ref) = sqlx::query_scalar::<_, String>(
+                "SELECT provider_resume_secret_ref FROM permission_requests WHERE id=?",
+            )
+            .bind(&request.id)
+            .fetch_optional(self.store.pool())
+            .await?
+        {
+            sqlx::query("UPDATE permission_requests SET provider_resume_secret_ref=NULL WHERE id=?")
+                .bind(&request.id)
+                .execute(self.store.pool())
+                .await?;
+            self.store.delete_resume_token(&secret_ref).await?;
+        }
         self.permission_decision_get(&decision_id).await
     }
 
@@ -420,7 +446,7 @@ async fn record_permission_match(transaction: &mut sqlx::Transaction<'_, sqlx::S
 }
 
 fn permission_request_from_row(row: sqlx::sqlite::SqliteRow) -> Result<PermissionRequest, OrchestratorError> {
-    Ok(PermissionRequest { id: row.get("id"), project_id: row.get("project_id"), task_id: row.get("task_id"), revision: row.get("revision"), run_id: row.get("run_id"), provider_id: parse(row.get("provider_id"))?, role: parse(row.get("role"))?, action_type: parse(row.get("action_type"))?, summary: row.get("summary"), reason: row.get("reason"), operation: serde_json::from_str(&row.get::<String,_>("operation_json")).map_err(|error| OrchestratorError::Config(error.to_string()))?, risk_level: parse(row.get("risk_level"))?, grantable: row.get::<i64,_>("grantable") != 0, operation_sha256: row.get("operation_sha256"), policy_sha256: row.get("policy_sha256"), status: parse(row.get("status"))?, matched_rule_id: row.get("matched_rule_id"), request_count: row.get("request_count"), requested_at: row.get("requested_at"), expires_at: row.get("expires_at"), decided_at: row.get("decided_at"), provider_resume_token: row.get("provider_resume_token") })
+    Ok(PermissionRequest { id: row.get("id"), project_id: row.get("project_id"), task_id: row.get("task_id"), revision: row.get("revision"), run_id: row.get("run_id"), provider_id: parse(row.get("provider_id"))?, role: parse(row.get("role"))?, action_type: parse(row.get("action_type"))?, summary: row.get("summary"), reason: row.get("reason"), operation: serde_json::from_str(&row.get::<String,_>("operation_json")).map_err(|error| OrchestratorError::Config(error.to_string()))?, risk_level: parse(row.get("risk_level"))?, grantable: row.get::<i64,_>("grantable") != 0, operation_sha256: row.get("operation_sha256"), policy_sha256: row.get("policy_sha256"), status: parse(row.get("status"))?, matched_rule_id: row.get("matched_rule_id"), request_count: row.get("request_count"), requested_at: row.get("requested_at"), expires_at: row.get("expires_at"), decided_at: row.get("decided_at"), provider_resume_token: None })
 }
 
 fn permission_rule_from_row(row: sqlx::sqlite::SqliteRow) -> Result<PermissionRule, OrchestratorError> {

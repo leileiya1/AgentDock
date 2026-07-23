@@ -29,6 +29,24 @@ async fn cached_file_key_is_reused_without_keychain_access()
 }
 
 #[tokio::test]
+async fn resume_tokens_are_opaque_references_and_can_be_revoked()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::in_memory().await?;
+    let secret = "provider-session-secret";
+    let secret_ref = store.put_resume_token(secret).await?;
+    assert!(secret_ref.starts_with("resume-"));
+    assert!(!secret_ref.contains(secret));
+    assert_eq!(
+        store.get_resume_token(&secret_ref).await?.as_deref(),
+        Some(secret)
+    );
+
+    store.delete_resume_token(&secret_ref).await?;
+    assert_eq!(store.get_resume_token(&secret_ref).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
 async fn transition_and_event_are_atomic_and_invalid_transition_changes_nothing()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::in_memory().await?;

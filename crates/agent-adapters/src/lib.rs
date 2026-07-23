@@ -99,6 +99,9 @@ pub struct AgentRunRequest {
     /// Optional opaque Provider session token. Artifact history remains authoritative;
     /// this is supplied only when the user explicitly enables session reuse.
     pub resume_session_id: Option<String>,
+    /// AgentFlow daemon executable used as Claude's structured PreToolUse permission hook.
+    /// Absent in library-only tests and non-daemon embeddings, which then fail closed.
+    pub permission_hook_program: Option<PathBuf>,
     pub extra_allowed_commands: Vec<String>,
     pub env_denylist: Vec<String>,
     pub budget: RunBudget,

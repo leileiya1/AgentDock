@@ -1,8 +1,10 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
+use tokio::sync::Mutex;
 
 use agentflow_contracts::{
     AcceptanceCriterionInput, Actor, AgentKind, BlockedReason, Project, TaskEvent, TaskPolicy,
@@ -45,9 +47,11 @@ pub struct Store {
     pool: SqlitePool,
     path: Option<PathBuf>,
     data_key: Arc<[u8; 32]>,
+    ephemeral_resume_tokens: Arc<Mutex<HashMap<String, Vec<u8>>>>,
 }
 
 mod protection;
+mod resume_tokens;
 
 impl Store {
     pub async fn open(path: &Path) -> Result<Self, PersistenceError> {
@@ -96,6 +100,7 @@ impl Store {
             pool,
             path: Some(path.to_path_buf()),
             data_key,
+            ephemeral_resume_tokens: Arc::default(),
         })
     }
 
@@ -110,6 +115,7 @@ impl Store {
             pool,
             path: None,
             data_key: protection::new_data_key()?,
+            ephemeral_resume_tokens: Arc::default(),
         })
     }
 
@@ -135,6 +141,7 @@ impl Store {
             pool,
             path: Some(path.to_path_buf()),
             data_key,
+            ephemeral_resume_tokens: Arc::default(),
         })
     }
 

@@ -3,6 +3,9 @@ use agentflow_daemon::{DaemonRequest, default_data_dir, request, serve};
 use anyhow::Context;
 use anyhow::bail;
 use clap::{Parser, Subcommand};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
@@ -27,6 +30,14 @@ enum Command {
     InstallService,
     RollbackService,
     UninstallService,
+    /// Internal structured hook used by Claude Code headless runs.
+    #[command(hide = true)]
+    ClaudePermissionHook {
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long = "allow")]
+        allowed: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -61,8 +72,187 @@ async fn main() -> anyhow::Result<()> {
         Command::InstallService => install_service(&data_dir).await?,
         Command::RollbackService => rollback_service(&data_dir).await?,
         Command::UninstallService => uninstall_service().await?,
+        Command::ClaudePermissionHook { output, allowed } => {
+            claude_permission_hook(&output, &allowed)?;
+        }
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeHookInput {
+    session_id: Option<String>,
+    cwd: String,
+    tool_name: String,
+    #[serde(default)]
+    tool_input: Value,
+}
+
+fn claude_permission_hook(output: &Path, allowed: &[String]) -> anyhow::Result<()> {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let hook: ClaudeHookInput = serde_json::from_str(&input)?;
+    if hook.tool_name != "Bash" {
+        println!("{{}}");
+        return Ok(());
+    }
+    let command = hook
+        .tool_input
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if allowed
+        .iter()
+        .any(|prefix| command_matches_allow(prefix, command))
+    {
+        println!("{{}}");
+        return Ok(());
+    }
+
+    let sensitive = command_is_sensitive(command);
+    let action_type = classify_claude_command(command, sensitive);
+    let captured_command = if sensitive {
+        "[REDACTED_SECRET_ARGUMENT]"
+    } else {
+        command
+    };
+    let request = json!({
+        "actionType": action_type,
+        "reason": hook.tool_input.get("description").and_then(Value::as_str)
+            .unwrap_or("Claude Code 请求执行未预授权的 Bash 命令"),
+        "operation": {
+            "argv": ["Bash", "-lc", captured_command],
+            "cwd": hook.cwd,
+            "paths": [],
+            "networkDomains": [],
+            "environmentNames": [],
+            "attributes": {"source": "claude_pre_tool_use"}
+        },
+        "resumeToken": hook.session_id
+    });
+    write_secure_atomic(output, &serde_json::to_vec(&request)?)?;
+    println!(
+        "{}",
+        json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "defer"
+            }
+        })
+    );
+    Ok(())
+}
+
+fn command_matches_allow(prefix: &str, command: &str) -> bool {
+    let Some(rest) = command.strip_prefix(prefix.trim()) else {
+        return false;
+    };
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return false;
+    }
+    !["&&", "||", ";", "\n", "`", "$("]
+        .iter()
+        .any(|operator| rest.contains(operator))
+}
+
+fn command_is_sensitive(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    [
+        "--token=",
+        "--password=",
+        "--secret=",
+        "--api-key=",
+        "authorization:",
+        "private_key",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn classify_claude_command(command: &str, sensitive: bool) -> &'static str {
+    if sensitive {
+        return "secret_access";
+    }
+    let words = command.split_whitespace().collect::<Vec<_>>();
+    if matches!(
+        words.first().copied(),
+        Some("sudo" | "security" | "launchctl" | "systemctl")
+    ) {
+        return "system_change";
+    }
+    if matches!(words.as_slice(), ["git", subcommand, ..] if matches!(*subcommand, "add" | "commit" | "push" | "pull" | "merge" | "rebase" | "reset" | "checkout" | "switch" | "clean" | "tag"))
+    {
+        return "git_mutation";
+    }
+    if matches!(words.as_slice(), [tool, subcommand, ..]
+        if matches!((*tool, *subcommand),
+            ("npm" | "pnpm" | "yarn" | "bun", "install" | "add")
+            | ("cargo", "add" | "install")
+            | ("pip" | "pip3", "install")
+            | ("brew", "install")))
+    {
+        return "dependency_install";
+    }
+    "command_execute"
+}
+
+fn write_secure_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("permission capture path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(".claude-permission-{}.tmp", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    std::fs::rename(temporary, path)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod permission_hook_tests {
+    use super::*;
+
+    #[test]
+    fn allow_rules_never_accept_compound_shell_commands() {
+        assert!(command_matches_allow("git status", "git status --short"));
+        assert!(!command_matches_allow(
+            "git status",
+            "git status && rm -rf build"
+        ));
+        assert!(!command_matches_allow("git status", "git statusx"));
+    }
+
+    #[test]
+    fn command_classification_fails_closed_for_secrets_and_system_changes() {
+        assert_eq!(
+            classify_claude_command("npm install zod", false),
+            "dependency_install"
+        );
+        assert_eq!(
+            classify_claude_command("git commit -m test", false),
+            "git_mutation"
+        );
+        assert_eq!(
+            classify_claude_command("sudo launchctl list", false),
+            "system_change"
+        );
+        assert!(command_is_sensitive(
+            "curl -H 'Authorization: bearer secret' example.test"
+        ));
+        assert_eq!(
+            classify_claude_command("curl --token=secret", true),
+            "secret_access"
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]

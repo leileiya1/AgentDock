@@ -37,7 +37,16 @@ impl AgentProvider for ClaudeCodeAdapter {
     ) -> Result<RunningAgent, AdapterError> {
         let args = claude_args(&req);
         let executable = resolve_cli("claude", &self.executable).await?;
-        start_process("claude", executable, args, req, cancel, tx).await
+        let permission_capture = req.run_dir.join("claude-permission-request.json");
+        let running = start_process("claude", executable, args, req, cancel, tx).await?;
+        if permission_capture.is_file() {
+            let bytes = tokio::fs::read(&permission_capture).await?;
+            let _ = tokio::fs::remove_file(&permission_capture).await;
+            let request = serde_json::from_slice(&bytes)
+                .map_err(|error| AdapterError::InvalidResult(error.to_string()))?;
+            return Err(AdapterError::PermissionRequired(Box::new(request)));
+        }
+        Ok(running)
     }
     async fn collect_result(
         &self,
@@ -95,6 +104,34 @@ fn claude_args(req: &AgentRunRequest) -> Vec<String> {
         "--max-turns".into(),
         "100".into(),
     ];
+    if let Some(program) = &req.permission_hook_program {
+        let capture = req.run_dir.join("claude-permission-request.json");
+        let mut command = format!(
+            "{} claude-permission-hook --output {}",
+            shell_quote(program.to_string_lossy().as_ref()),
+            shell_quote(capture.to_string_lossy().as_ref())
+        );
+        for allowed in ["git status", "git diff", "git log"]
+            .into_iter()
+            .chain(req.extra_allowed_commands.iter().map(String::as_str))
+        {
+            command.push_str(" --allow ");
+            command.push_str(&shell_quote(allowed));
+        }
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": command,
+                        "timeout": 5
+                    }]
+                }]
+            }
+        });
+        args.extend(["--settings".into(), settings.to_string()]);
+    }
     if req.role == RunRole::Reviewer || matches!(req.permission, PermissionTier::ReadOnly) {
         args.extend(["--disallowedTools".into(), "Write,Edit".into()]);
     }
@@ -108,6 +145,10 @@ fn claude_args(req: &AgentRunRequest) -> Vec<String> {
         args.extend(["--max-budget-usd".into(), format!("{remaining:.6}")]);
     }
     args
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[async_trait]

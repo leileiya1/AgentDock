@@ -101,15 +101,29 @@ impl Orchestrator {
         } else {
             "FAILED"
         };
+        let session_secret_ref = match telemetry.session_id.as_deref() {
+            Some(session_id) => match self.store.put_resume_token(session_id).await {
+                Ok(secret_ref) => Some(secret_ref),
+                Err(error) => {
+                    sqlx::query("UPDATE agent_runs SET status='FAILED',finished_at=? WHERE id=?")
+                        .bind(Utc::now().to_rfc3339())
+                        .bind(run_id)
+                        .execute(self.store.pool())
+                        .await?;
+                    return Err(error.into());
+                }
+            },
+            None => None,
+        };
         sqlx::query(
             "UPDATE agent_runs SET status=?,child_pid=?,child_started_at=?,exit_code=?, \
-             session_id=?,cost_usd=?,tokens_in=?,tokens_out=?,finished_at=? WHERE id=?",
+             session_id=NULL,session_secret_ref=?,cost_usd=?,tokens_in=?,tokens_out=?,finished_at=? WHERE id=?",
         )
         .bind(status)
         .bind(running.outcome.pid as i64)
         .bind(&running.outcome.started_at)
         .bind(running.outcome.exit_code)
-        .bind(telemetry.session_id)
+        .bind(session_secret_ref)
         .bind(telemetry.cost_usd)
         .bind(telemetry.tokens_in)
         .bind(telemetry.tokens_out)

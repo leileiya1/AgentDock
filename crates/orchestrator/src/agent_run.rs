@@ -143,23 +143,43 @@ impl Orchestrator {
         } else {
             None
         };
-        let resume_session_id = if project.settings.resume_sessions
+        let resume_secret_ref = if project.settings.resume_sessions
             && adapter.capabilities().supports_resume
-            && task.revision > 1
         {
-            sqlx::query_scalar::<_, String>(
-                "SELECT session_id FROM agent_runs WHERE task_id=? AND revision<? AND role=? \
-                 AND agent=? AND status='SUCCEEDED' AND session_id IS NOT NULL \
-                 ORDER BY revision DESC,created_at DESC LIMIT 1",
+            let permission_ref = sqlx::query_scalar::<_, String>(
+                "SELECT provider_resume_secret_ref FROM permission_requests \
+                 WHERE task_id=? AND provider_id=? AND role=? AND status='approved' \
+                 AND provider_resume_secret_ref IS NOT NULL \
+                 ORDER BY decided_at DESC LIMIT 1",
             )
             .bind(&task.id)
-            .bind(task.revision)
-            .bind(role.to_string())
             .bind(adapter.kind().to_string())
+            .bind(role.to_string())
             .fetch_optional(self.store.pool())
-            .await?
+            .await?;
+            if permission_ref.is_some() {
+                permission_ref
+            } else if task.revision > 1 {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT session_secret_ref FROM agent_runs WHERE task_id=? AND revision<? AND role=? \
+                     AND agent=? AND status='SUCCEEDED' AND session_secret_ref IS NOT NULL \
+                     ORDER BY revision DESC,created_at DESC LIMIT 1",
+                )
+                .bind(&task.id)
+                .bind(task.revision)
+                .bind(role.to_string())
+                .bind(adapter.kind().to_string())
+                .fetch_optional(self.store.pool())
+                .await?
+            } else {
+                None
+            }
         } else {
             None
+        };
+        let resume_session_id = match resume_secret_ref {
+            Some(secret_ref) => self.store.get_resume_token(&secret_ref).await?,
+            None => None,
         };
         let request = AgentRunRequest {
             task_id: task.id.clone(),
@@ -178,6 +198,7 @@ impl Orchestrator {
                 .permission_effective_for_run(&task.id, &adapter.kind(), role)
                 .await?,
             resume_session_id,
+            permission_hook_program: self.claude_permission_hook_program(),
             extra_allowed_commands: config.agents.extra_allowed_commands.clone(),
             env_denylist: project.settings.env_denylist.clone(),
             budget,
@@ -280,6 +301,18 @@ impl Orchestrator {
             self.protect_run_files(&running.run_dir).await?;
         }
         Ok(running)
+    }
+
+    fn claude_permission_hook_program(&self) -> Option<PathBuf> {
+        let installed = self.app_data.join("bin/agentflowd");
+        if installed.is_file() {
+            return Some(installed);
+        }
+        std::env::current_exe().ok().filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("agentflowd"))
+        })
     }
 
     async fn record_provider_end_event(

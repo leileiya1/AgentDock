@@ -434,6 +434,47 @@ async fn permission_database_never_stores_secret_argument_or_resume_token()
 }
 
 #[tokio::test]
+async fn grantable_resume_token_is_keychain_referenced_and_never_exposed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_root, orchestrator, project, task) = setup_permission_task().await?;
+    let secret = "provider-resume-secret";
+    let request = orchestrator
+        .permission_request(PermissionRequestInput {
+            task_id: task.id,
+            run_id: Some("run-protected".into()),
+            provider_id: AgentKind::ClaudeCode,
+            role: RunRole::Developer,
+            action_type: PermissionActionType::DependencyInstall,
+            reason: "install locked dependencies".into(),
+            operation: operation(Path::new(&project.repo_path), &["bun", "install"]),
+            provider_resume_token: Some(secret.into()),
+        })
+        .await?;
+    assert_eq!(request.provider_resume_token, None);
+
+    let stored: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT provider_resume_token,provider_resume_secret_ref FROM permission_requests WHERE id=?",
+    )
+    .bind(&request.id)
+    .fetch_one(orchestrator.store.pool())
+    .await?;
+    assert_eq!(stored.0, None);
+    let secret_ref = stored
+        .1
+        .ok_or_else(|| std::io::Error::other("missing opaque secret reference"))?;
+    assert!(!secret_ref.contains(secret));
+    assert_eq!(
+        orchestrator
+            .store
+            .get_resume_token(&secret_ref)
+            .await?
+            .as_deref(),
+        Some(secret)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn expired_request_is_persisted_and_cannot_be_approved()
 -> Result<(), Box<dyn std::error::Error>> {
     let (_root, orchestrator, project, task) = setup_permission_task().await?;
