@@ -173,6 +173,18 @@ function cliReady(status: ToolStatus) {
   return status.found && status.compatible && status.authenticated !== false;
 }
 
+export function cliStatusText(status: ToolStatus) {
+  const versionStatus = status.supportLevel === "verified" ? "已验证版本" : "兼容版本";
+  if (!status.found) return "未安装";
+  if (!status.compatible) return "需要处理";
+  if (status.authenticated === false) {
+    return status.authProblem?.includes("钥匙串") ? "钥匙串异常" : "需要登录";
+  }
+  return status.authenticated === true
+    ? `已登录 · ${versionStatus}`
+    : `已安装 · ${versionStatus} · 任务前实测`;
+}
+
 function authMethodLabel(method: string | null) {
   const labels: Record<string, string> = {
     account: "账号登录",
@@ -193,14 +205,7 @@ function CliRow({ item, status, onInstall, onConfigureCredential }: {
   const [path, setPath] = useState(status.path ?? "");
   const setCliPath = useSetCliPath();
   const ready = cliReady(status);
-  const keychainProblem = status.authProblem?.includes("钥匙串") ?? false;
-  const statusText = ready
-    ? status.supportLevel === "verified" ? "已连接 · 已验证" : "已连接 · 兼容待验证"
-    : !status.found
-      ? "未安装"
-      : status.authenticated === false
-        ? keychainProblem ? "钥匙串异常" : "需要登录"
-        : "需要处理";
+  const statusText = cliStatusText(status);
 
   const savePath = async () => {
     try {
