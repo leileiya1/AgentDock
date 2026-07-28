@@ -13,6 +13,7 @@ use std::{
     fs::OpenOptions,
     path::{Path, PathBuf},
     sync::Arc,
+    sync::atomic::{AtomicI64, Ordering},
     time::Duration,
 };
 use thiserror::Error;
@@ -199,8 +200,14 @@ pub async fn request(
     request: &DaemonRequest,
 ) -> Result<DaemonResponse, DaemonError> {
     let mut stream = UnixStream::connect(socket_path(data_dir)).await?;
+    // The socket is reachable by every process running as this user, so each request proves it
+    // can read the daemon's 0600 session token before the daemon will act on it.
+    let envelope = AuthenticatedRequest {
+        token: read_session_token(data_dir).await?,
+        request: request.clone(),
+    };
     let mut bytes =
-        serde_json::to_vec(request).map_err(|error| DaemonError::Protocol(error.to_string()))?;
+        serde_json::to_vec(&envelope).map_err(|error| DaemonError::Protocol(error.to_string()))?;
     bytes.push(b'\n');
     stream.write_all(&bytes).await?;
     let mut line = String::new();
@@ -232,12 +239,20 @@ pub async fn serve(data_dir: PathBuf, shutdown: CancellationToken) -> Result<(),
         }
         tokio::fs::remove_file(&path).await?;
     }
+    // Tighten the directory before binding: between `bind` and the socket's own chmod the
+    // socket briefly carries umask-derived permissions, and a 0700 parent closes that window.
+    restrict_data_dir(&data_dir).await?;
     let listener = UnixListener::bind(&path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await?;
     }
+    let session_token = Arc::new(publish_session_token(&data_dir).await?);
+    #[cfg(unix)]
+    let expected_peer_uid = Some(own_uid(&data_dir).await?);
+    #[cfg(not(unix))]
+    let expected_peer_uid: Option<u32> = None;
 
     let orchestrator = Arc::new(Orchestrator::open(&data_dir).await?);
     sqlx::query("UPDATE daemon_queue SET state='QUEUED',updated_at=? WHERE state='RUNNING'")
@@ -245,12 +260,13 @@ pub async fn serve(data_dir: PathBuf, shutdown: CancellationToken) -> Result<(),
         .execute(orchestrator.store.pool())
         .await?;
 
+    let scheduler_heartbeat = Arc::new(AtomicI64::new(Utc::now().timestamp()));
     let scheduler_shutdown = shutdown.clone();
     let scheduler_orchestrator = Arc::clone(&orchestrator);
-    let mut scheduler =
-        tokio::spawn(
-            async move { scheduler_loop(scheduler_orchestrator, scheduler_shutdown).await },
-        );
+    let heartbeat_writer = Arc::clone(&scheduler_heartbeat);
+    let mut scheduler = tokio::spawn(async move {
+        scheduler_loop(scheduler_orchestrator, scheduler_shutdown, heartbeat_writer).await
+    });
     let maintenance_shutdown = shutdown.clone();
     let maintenance_orchestrator = Arc::clone(&orchestrator);
     let mut maintenance = tokio::spawn(async move {
@@ -264,8 +280,11 @@ pub async fn serve(data_dir: PathBuf, shutdown: CancellationToken) -> Result<(),
                 let (stream, _) = accepted?;
                 let orchestrator = Arc::clone(&orchestrator);
                 let shutdown = shutdown.clone();
+                let heartbeat = Arc::clone(&scheduler_heartbeat);
+                let token = Arc::clone(&session_token);
+                let peer_uid = expected_peer_uid;
                 tokio::spawn(async move {
-                    if let Err(error) = handle_connection(stream, orchestrator, shutdown).await {
+                    if let Err(error) = handle_connection(stream, orchestrator, shutdown, heartbeat, token, peer_uid).await {
                         tracing::warn!(%error, "daemon IPC request failed");
                     }
                 });
@@ -329,17 +348,52 @@ async fn handle_connection(
     stream: UnixStream,
     orchestrator: Arc<Orchestrator>,
     shutdown: CancellationToken,
+    scheduler_heartbeat: Arc<AtomicI64>,
+    session_token: Arc<String>,
+    daemon_uid: Option<u32>,
 ) -> Result<(), DaemonError> {
+    // Reject another user outright. On Unix the 0700 data directory should already prevent this,
+    // but checking the peer makes the guarantee explicit instead of relying on file modes alone.
+    #[cfg(unix)]
+    if let Some(daemon_uid) = daemon_uid {
+        let peer = stream.peer_cred()?;
+        if peer.uid() != daemon_uid {
+            tracing::warn!(
+                peer_uid = peer.uid(),
+                "rejected daemon IPC from another user"
+            );
+            return Err(DaemonError::Protocol("IPC_UNAUTHORIZED".into()));
+        }
+    }
     let (read, mut write) = stream.into_split();
     let mut line = String::new();
     BufReader::new(read).read_line(&mut line).await?;
-    let request: DaemonRequest =
-        serde_json::from_str(&line).map_err(|error| DaemonError::Protocol(error.to_string()))?;
-    let response = match dispatch(request, &orchestrator, &shutdown).await {
-        Ok(payload) => DaemonResponse::Ok { payload },
-        Err(error) => DaemonResponse::Error {
-            message: error.to_string(),
+    // Authenticate before the command is even interpreted. A caller without the token — including
+    // an outdated client that still speaks the unauthenticated shape — gets a clear refusal
+    // instead of a dropped connection, but learns nothing about whether its command was valid.
+    let authenticated = serde_json::from_str::<AuthenticatedRequest>(&line)
+        .ok()
+        .filter(|envelope| token_matches(&session_token, &envelope.token));
+    let response = match authenticated {
+        Some(envelope) => match dispatch(
+            envelope.request,
+            &orchestrator,
+            &shutdown,
+            &scheduler_heartbeat,
+        )
+        .await
+        {
+            Ok(payload) => DaemonResponse::Ok { payload },
+            Err(error) => DaemonResponse::Error {
+                message: error.to_string(),
+            },
         },
+        None => {
+            tracing::warn!("rejected daemon IPC request with an invalid or missing session token");
+            DaemonResponse::Error {
+                message: "IPC_UNAUTHORIZED: invalid or missing agentflowd session token".into(),
+            }
+        }
     };
     let mut bytes =
         serde_json::to_vec(&response).map_err(|error| DaemonError::Protocol(error.to_string()))?;
@@ -352,13 +406,18 @@ async fn dispatch(
     request: DaemonRequest,
     orchestrator: &Orchestrator,
     shutdown: &CancellationToken,
+    scheduler_heartbeat: &AtomicI64,
 ) -> Result<serde_json::Value, DaemonError> {
     match request {
         DaemonRequest::Ping => Ok(json!({
             "pid": std::process::id(),
             "version": env!("CARGO_PKG_VERSION"),
             "ipcVersion": 2,
-            "queueDepth": queue_depth(orchestrator).await?
+            "queueDepth": queue_depth(orchestrator).await?,
+            // A live process with a stalled scheduler must not look healthy: the loop stamps
+            // this every 500ms tick, so anything beyond 10s means scheduling has stopped.
+            "schedulerAlive": Utc::now().timestamp()
+                .saturating_sub(scheduler_heartbeat.load(Ordering::Relaxed)) <= 10
         })),
         DaemonRequest::Enqueue { task_id } => {
             enqueue_task(orchestrator, &task_id).await?;
@@ -732,6 +791,7 @@ async fn enqueue_task(orchestrator: &Orchestrator, task_id: &str) -> Result<(), 
 }
 
 include!("scheduler.rs");
+include!("ipc_auth.rs");
 
 #[cfg(test)]
 mod tests;

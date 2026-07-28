@@ -26,6 +26,7 @@ impl agentflow_agent_adapters::AgentProvider for RepairOnlyAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: false,
+            permission_broker: false,
         }
     }
 

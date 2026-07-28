@@ -459,6 +459,7 @@ mod failure_tests {
                 read_only_mode: false,
                 supports_development: true,
                 supports_review: false,
+                permission_broker: false,
             }
         }
         async fn start(

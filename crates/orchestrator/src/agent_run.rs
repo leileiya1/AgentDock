@@ -107,18 +107,40 @@ impl Orchestrator {
             .bind(&now)
             .execute(self.store.pool())
             .await?;
+        // Providers that cannot defer a tool call run development work under their own
+        // auto-approval mode, bounded only by the CLI sandbox flag. The absence of permission
+        // requests would otherwise read as "nothing needed approval"; record the weaker
+        // guarantee explicitly so the audit trail cannot be misread.
+        if role == RunRole::Developer && !adapter.capabilities().permission_broker {
+            sqlx::query("INSERT INTO events(task_id,run_id,revision,actor,event_type,payload_json,created_at) VALUES(?,?,?,'system','permission:broker_unavailable',?,?)")
+                .bind(&task.id)
+                .bind(&run_id)
+                .bind(task.revision)
+                .bind(json!({
+                    "agent": adapter.kind(),
+                    "detail": "该 Provider 不支持逐次工具授权，本轮开发在其自带沙箱内自动批准执行",
+                }).to_string())
+                .bind(&now)
+                .execute(self.store.pool())
+                .await?;
+        }
         let cancellation = CancellationToken::new();
         let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);
         let events_path = run_dir.join("agent-events.jsonl");
         let live_cancel = cancellation.clone();
         let permission_prompt_seen = Arc::new(AtomicBool::new(false));
         let live_permission_prompt = Arc::clone(&permission_prompt_seen);
+        // Budget cancellation must stay distinguishable from a user cancel: callers treat a plain
+        // cancelled outcome as "the user stopped this task" and simply return.
+        let budget_cancel_seen = Arc::new(AtomicBool::new(false));
+        let live_budget_cancel = Arc::clone(&budget_cancel_seen);
         let live_provider = adapter.kind();
         let live_budget = budget.clone();
         let sink = tokio::spawn(async move {
             let mut file = tokio::fs::File::create(events_path).await?;
             while let Some(event) = rx.recv().await {
                 if live_budget_exceeded(&live_provider, &event, &live_budget) {
+                    live_budget_cancel.store(true, Ordering::SeqCst);
                     live_cancel.cancel();
                 }
                 if event.text.as_deref().is_some_and(looks_like_permission_prompt) {
@@ -293,6 +315,18 @@ impl Orchestrator {
             return Err(OrchestratorError::InvalidState(
                 "PERMISSION_UNSTRUCTURED_PROMPT: Provider requested interactive approval without an exact operation; stopped safely".into(),
             ));
+        }
+        if running.outcome.cancelled && budget_cancel_seen.load(Ordering::SeqCst) {
+            let task_status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?")
+                .bind(&task.id)
+                .fetch_one(self.store.pool())
+                .await?;
+            if task_status != TaskStatus::Cancelled.to_string() {
+                self.protect_run_files(&running.run_dir).await?;
+                return Err(OrchestratorError::InvalidState(
+                    "BUDGET_EXCEEDED: live usage crossed the remaining budget; provider stopped safely".into(),
+                ));
+            }
         }
         if running.outcome.exit_code != Some(0)
             || running.outcome.cancelled

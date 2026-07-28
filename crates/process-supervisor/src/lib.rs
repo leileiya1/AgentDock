@@ -207,6 +207,18 @@ pub async fn read_process_exit_code(path: &std::path::Path) -> Result<i32, std::
         .map_err(std::io::Error::other)
 }
 
+/// True when the supervisor stopped mirroring a run's logs at `MAX_LOG_BYTES`. A truncated
+/// stdout.log cannot be trusted to contain the Provider's final structured result, so result
+/// recovery must not fall back to it. Unknown/missing outcome files report `false`: the
+/// child-written exit marker has no such field and callers already handle a missing result.
+pub async fn read_process_log_truncated(path: &std::path::Path) -> bool {
+    tokio::fs::read(path)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ProcessOutcome>(&bytes).ok())
+        .is_some_and(|outcome| outcome.log_truncated)
+}
+
 async fn write_process_outcome(
     path: &std::path::Path,
     outcome: &ProcessOutcome,
@@ -539,6 +551,12 @@ pub fn redact(mut text: String) -> String {
         }
     }
     text
+}
+
+/// Terminate a caller-spawned process group after the caller gave up waiting (for example a
+/// validation-step timeout). The caller must have spawned the child in its own process group.
+pub async fn terminate_spawned_group(child: &mut Child, pid: u32) -> Result<(), std::io::Error> {
+    terminate_tree(child, pid, None).await
 }
 
 async fn terminate_tree(

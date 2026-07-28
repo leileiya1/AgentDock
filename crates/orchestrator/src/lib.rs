@@ -251,6 +251,9 @@ pub struct Orchestrator {
     provider_registry: Arc<RwLock<ProviderRegistry>>,
     active_cancellations: Arc<RwLock<HashMap<String, CancellationToken>>>,
     runtime_probe_cache: Arc<RwLock<HashMap<String, CachedRuntimeProbe>>>,
+    /// Resume points for live log tailing, so following a run does not re-read and re-split the
+    /// whole event file on every poll. Purely an optimisation: a miss falls back to a full read.
+    run_log_cursors: Arc<RwLock<HashMap<String, LogCursor>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,8 +262,29 @@ struct CachedRuntimeProbe {
     result: CliRuntimeProbe,
 }
 
+/// "`line` complete lines end at byte `byte` of a file that was `len` bytes long."
+/// A shrunk or rewritten file invalidates the entry.
+#[derive(Debug, Clone, Copy)]
+struct LogCursor {
+    line: usize,
+    byte: u64,
+    len: u64,
+}
+
+/// A page of run-log output, positioned by absolute line number so a viewer can reconcile it
+/// with the live stream instead of guessing whether lines overlap.
+#[derive(Debug, Clone)]
+pub struct RunLogWindow {
+    pub lines: Vec<AgentEvent>,
+    pub from_line: usize,
+    pub next_from_line: usize,
+    pub eof: bool,
+    pub total_lines: usize,
+}
+
 // Same-module includes preserve private invariants while keeping each workflow concern reviewable.
 include!("lifecycle.rs");
+include!("recovery.rs");
 include!("task_start.rs");
 include!("task_creation.rs");
 include!("planning.rs");
@@ -300,6 +324,8 @@ include!("support.rs");
 include!("test_support.rs");
 include!("tests.rs");
 include!("failure_tests.rs");
+include!("recovery_isolation_tests.rs");
+include!("budget_cancel_tests.rs");
 #[cfg(test)]
 mod audit_export_tests;
 #[cfg(test)]

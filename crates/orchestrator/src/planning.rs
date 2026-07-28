@@ -113,6 +113,9 @@ impl Orchestrator {
                     attempts.push(format!("{candidate_name}：{value}"));
                     previous = Some(candidate);
                     previous_error = attempts.last().cloned().unwrap_or_default();
+                    if self.enforce_budget(&self.task(&task.id).await?).await? {
+                        return Ok(());
+                    }
                     continue;
                 }
             };

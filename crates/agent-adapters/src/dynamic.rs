@@ -93,6 +93,10 @@ impl AgentProvider for ExternalProviderAdapter {
             read_only_mode: !capabilities.development,
             supports_development: capabilities.development,
             supports_review: capabilities.review,
+            // Protocol v1.1 defines permission/requested, and ProtocolClient enforces the
+            // signed manifest ceiling on anything a sidecar asks for, so external packages
+            // always go through AgentFlow's broker rather than self-approving.
+            permission_broker: true,
         }
     }
 
@@ -250,6 +254,7 @@ impl AgentProvider for UnavailableProviderAdapter {
             read_only_mode: true,
             supports_development: false,
             supports_review: false,
+            permission_broker: false,
         }
     }
 

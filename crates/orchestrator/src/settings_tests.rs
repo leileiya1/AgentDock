@@ -29,6 +29,7 @@ impl agentflow_agent_adapters::AgentProvider for TimeoutCaptureAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            permission_broker: false,
         }
     }
 

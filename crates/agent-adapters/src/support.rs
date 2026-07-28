@@ -90,6 +90,10 @@ async fn start_process(
     cancel: CancellationToken,
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<RunningAgent, AdapterError> {
+    // Single choke point for every CLI Provider: an extra allowed command carrying list
+    // separators would widen a CLI's own permission parsing beyond what was approved.
+    // Fail before spawning rather than after the process already holds the wider grant.
+    validate_extra_allowed_commands(&req.extra_allowed_commands)?;
     tokio::fs::create_dir_all(&req.run_dir).await?;
     let mut provider_env = provider_environment(provider_name);
     // A project-level deny rule remains authoritative even for AgentFlow-managed credentials.
@@ -259,6 +263,15 @@ pub(crate) async fn read_development(path: &Path) -> Result<DevelopmentResult, A
     parse_development(&text)
 }
 
+/// A run whose logs hit the supervisor's size ceiling lost the tail of stdout — exactly where a
+/// Provider writes its final result. Recovering from such a log would accept an earlier draft
+/// (echoed tool results, sample JSON in assistant text) as the authoritative deliverable, so the
+/// stdout fallback is refused. Atomically written artifacts (result.json) stay trusted.
+async fn log_recovery_is_unsafe(run_dir: &Path) -> bool {
+    agentflow_process_supervisor::read_process_log_truncated(&run_dir.join("process-outcome.json"))
+        .await
+}
+
 async fn read_development_output(
     run_dir: &Path,
     provider: &str,
@@ -267,6 +280,12 @@ async fn read_development_output(
     match read_development(&run_dir.join("result.json")).await {
         Ok(result) => return Ok(result),
         Err(error) => errors.push(error.to_string()),
+    }
+    if log_recovery_is_unsafe(run_dir).await {
+        return Err(AdapterError::InvalidResult(format!(
+            "provider logs were truncated at the size limit, so no result can be recovered from them: {}",
+            errors.join("; ")
+        )));
     }
     let paths = match provider {
         "codex" => vec!["last-message.json", "stdout.log"],
@@ -289,6 +308,12 @@ async fn read_development_output(
 }
 
 async fn read_plan_output(run_dir: &Path, provider: &str) -> Result<PlanResult, AdapterError> {
+    if log_recovery_is_unsafe(run_dir).await {
+        return Err(AdapterError::InvalidResult(
+            "provider logs were truncated at the size limit, so no plan can be recovered from them"
+                .into(),
+        ));
+    }
     let paths = match provider {
         "codex" => vec!["last-message.json", "stdout.log"],
         _ => vec!["stdout.log"],
@@ -435,13 +460,35 @@ fn parse_development_object(candidate: &str) -> Result<DevelopmentResult, Adapte
     }
     Ok(result)
 }
+/// Same guard as [`log_recovery_is_unsafe`], for readers that are handed a file path. Only
+/// mirrored logs can be truncated mid-result; atomically written artifacts stay trusted.
+async fn log_file_recovery_is_unsafe(path: &Path) -> bool {
+    if path.file_name().and_then(|name| name.to_str()) != Some("stdout.log") {
+        return false;
+    }
+    match path.parent() {
+        Some(run_dir) => log_recovery_is_unsafe(run_dir).await,
+        None => false,
+    }
+}
+
 pub(crate) async fn read_review(path: &Path) -> Result<ReviewResult, AdapterError> {
+    if log_file_recovery_is_unsafe(path).await {
+        return Err(AdapterError::InvalidResult(
+            "provider logs were truncated at the size limit, so no review can be recovered from them".into(),
+        ));
+    }
     let text = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| AdapterError::InvalidResult(format!("{}: {e}", path.display())))?;
     parse_review(&text)
 }
 async fn read_review_from_claude(path: &Path) -> Result<ReviewResult, AdapterError> {
+    if log_file_recovery_is_unsafe(path).await {
+        return Err(AdapterError::InvalidResult(
+            "provider logs were truncated at the size limit, so no review can be recovered from them".into(),
+        ));
+    }
     let text = tokio::fs::read_to_string(path).await?;
     for line in text.lines().rev() {
         if let Ok(v) = serde_json::from_str::<Value>(line)
@@ -456,6 +503,11 @@ async fn read_review_from_claude(path: &Path) -> Result<ReviewResult, AdapterErr
     ))
 }
 async fn read_review_from_gemini(path: &Path) -> Result<ReviewResult, AdapterError> {
+    if log_file_recovery_is_unsafe(path).await {
+        return Err(AdapterError::InvalidResult(
+            "provider logs were truncated at the size limit, so no review can be recovered from them".into(),
+        ));
+    }
     let text = tokio::fs::read_to_string(path).await?;
     let envelope: Value = serde_json::from_str(text.trim())
         .map_err(|error| AdapterError::InvalidResult(error.to_string()))?;
@@ -521,7 +573,28 @@ fn insert_null_for_missing(value: &mut Value, fields: &[&str]) {
 
 /// Providers sometimes add a short explanation before their required JSON. Extract complete
 /// top-level objects without being confused by braces or escaped quotes inside JSON strings.
+///
+/// Prose is not JSON, so an unmatched `{` in surrounding text (a `"{placeholder"` in a log line,
+/// a code sample) must not swallow every later object. The scan therefore tracks string state at
+/// every depth, and when it ends while still open it restarts just after the offending brace so
+/// the real result is still found.
 fn json_object_candidates(text: &str) -> Vec<&str> {
+    let mut objects = Vec::new();
+    let mut offset = 0;
+    while offset < text.len() {
+        let (found, resume) = scan_json_objects(text, offset);
+        objects.extend(found);
+        match resume {
+            Some(next) if next > offset => offset = next,
+            _ => break,
+        }
+    }
+    objects
+}
+
+/// Scans from `offset` and returns the complete top-level objects found, plus the byte offset to
+/// restart from when the scan ended inside an unterminated object.
+fn scan_json_objects(text: &str, offset: usize) -> (Vec<&str>, Option<usize>) {
     let bytes = text.as_bytes();
     let mut objects = Vec::new();
     let mut start = None;
@@ -529,7 +602,8 @@ fn json_object_candidates(text: &str) -> Vec<&str> {
     let mut in_string = false;
     let mut escaped = false;
 
-    for (index, byte) in bytes.iter().copied().enumerate() {
+    for index in offset..bytes.len() {
+        let byte = bytes[index];
         if in_string {
             if escaped {
                 escaped = false;
@@ -541,7 +615,9 @@ fn json_object_candidates(text: &str) -> Vec<&str> {
             continue;
         }
         match byte {
-            b'"' if depth > 0 => in_string = true,
+            // Tracked at every depth: a quote outside an object still opens a string, so a
+            // stray brace inside prose quotes cannot unbalance the scan.
+            b'"' => in_string = true,
             b'{' => {
                 if depth == 0 {
                     start = Some(index);
@@ -559,7 +635,10 @@ fn json_object_candidates(text: &str) -> Vec<&str> {
             _ => {}
         }
     }
-    objects
+    // An unterminated object means the text was truncated or contained a bare `{`. Resume just
+    // past that brace so genuine objects appearing after it are still extracted.
+    let resume = (depth > 0).then(|| start.map_or(bytes.len(), |value| value + 1));
+    (objects, resume)
 }
 fn validate_schema<T: serde::Serialize>(value: &Value, schema: &T) -> Result<(), AdapterError> {
     let schema =

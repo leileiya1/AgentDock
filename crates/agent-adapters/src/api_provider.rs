@@ -478,6 +478,7 @@ impl AgentProvider for ApiProviderAdapter {
             read_only_mode: true,
             supports_development: false,
             supports_review: true,
+            permission_broker: false,
         }
     }
 

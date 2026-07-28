@@ -50,6 +50,16 @@ impl Orchestrator {
         if trusted_sha.as_deref() != Some(&actual_sha) {
             return Err(OrchestratorError::UntrustedProjectConfig { sha256: actual_sha });
         }
+        // Approving the exact bytes is not enough: a reviewer reads one prose string, while a
+        // CLI may split it into several tool patterns. Reject the config outright so the widened
+        // permission is never handed to a Provider, even if the bytes were trusted.
+        for command in &snapshot.config.agents.extra_allowed_commands {
+            agentflow_agent_adapters::validate_extra_allowed_command(command).map_err(|detail| {
+                OrchestratorError::Config(format!(
+                    "项目配置 agents.extra_allowed_commands 含不安全条目 {command:?}：{detail}"
+                ))
+            })?;
+        }
         Ok(snapshot.config)
     }
 

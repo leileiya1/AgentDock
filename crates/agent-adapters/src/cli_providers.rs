@@ -11,6 +11,9 @@ impl AgentProvider for ClaudeCodeAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            // Claude is the only built-in CLI that can defer a tool call to AgentFlow's
+            // structured PreToolUse hook; the rest run under their own auto-approval mode.
+            permission_broker: true,
         }
     }
     fn budget_capabilities(&self) -> BudgetCapabilities {
@@ -132,7 +135,7 @@ fn claude_args(req: &AgentRunRequest) -> Vec<String> {
         });
         args.extend(["--settings".into(), settings.to_string()]);
     }
-    if req.role == RunRole::Reviewer || matches!(req.permission, PermissionTier::ReadOnly) {
+    if req.is_read_only() {
         args.extend(["--disallowedTools".into(), "Write,Edit".into()]);
     }
     if matches!(req.permission, PermissionTier::Yolo) {
@@ -164,6 +167,7 @@ impl AgentProvider for CodexAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            permission_broker: false,
         }
     }
     async fn detect(&self, env: &CliEnv) -> Result<AgentInstallation, AdapterError> {
@@ -217,10 +221,12 @@ impl AgentProvider for CodexAdapter {
 
 fn codex_args(req: &AgentRunRequest, schema_path: &Path) -> Vec<String> {
     let review = req.role == RunRole::Reviewer;
-    let sandbox = if matches!(req.permission, PermissionTier::Yolo) {
-        "danger-full-access"
-    } else if review || matches!(req.permission, PermissionTier::ReadOnly) {
+    // A broker decision that withholds write access outranks the Yolo escape hatch: the
+    // ordering here is what makes the authorization result binding rather than advisory.
+    let sandbox = if req.is_read_only() {
         "read-only"
+    } else if matches!(req.permission, PermissionTier::Yolo) {
+        "danger-full-access"
     } else {
         "workspace-write"
     };
@@ -283,6 +289,7 @@ impl AgentProvider for GeminiCliAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            permission_broker: false,
         }
     }
 
@@ -341,6 +348,7 @@ impl AgentProvider for QwenCodeAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            permission_broker: false,
         }
     }
 
@@ -407,21 +415,21 @@ fn gemini_args(req: &AgentRunRequest) -> Vec<String> {
         "-p".into(),
         agentflow_prompt(req),
         "--output-format".into(),
-        if review || matches!(req.permission, PermissionTier::ReadOnly) {
+        if review || req.is_read_only() {
             "json"
         } else {
             "stream-json"
         }
         .into(),
         "--approval-mode".into(),
-        if review || matches!(req.permission, PermissionTier::ReadOnly) {
+        if review || req.is_read_only() {
             "plan"
         } else {
             "yolo"
         }
         .into(),
     ];
-    if review || !matches!(req.permission, PermissionTier::Yolo) {
+    if review || req.is_read_only() || !matches!(req.permission, PermissionTier::Yolo) {
         args.push("--sandbox".into());
     }
     args
@@ -433,14 +441,14 @@ fn qwen_args(req: &AgentRunRequest, schema_path: &Path) -> Vec<String> {
         "-p".into(),
         agentflow_prompt(req),
         "--output-format".into(),
-        if review || matches!(req.permission, PermissionTier::ReadOnly) {
+        if review || req.is_read_only() {
             "text"
         } else {
             "stream-json"
         }
         .into(),
         "--approval-mode".into(),
-        if review || matches!(req.permission, PermissionTier::ReadOnly) {
+        if review || req.is_read_only() {
             "plan"
         } else {
             "yolo"
@@ -462,7 +470,7 @@ fn qwen_args(req: &AgentRunRequest, schema_path: &Path) -> Vec<String> {
             format!("@{}", output_schema.to_string_lossy()),
         ]);
     }
-    if review || !matches!(req.permission, PermissionTier::Yolo) {
+    if review || req.is_read_only() || !matches!(req.permission, PermissionTier::Yolo) {
         args.push("--sandbox".into());
     }
     args
@@ -482,6 +490,7 @@ impl AgentProvider for QoderCliAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            permission_broker: false,
         }
     }
 
@@ -527,8 +536,7 @@ impl AgentProvider for QoderCliAdapter {
 }
 
 fn qoder_args(req: &AgentRunRequest) -> Vec<String> {
-    let read_only = req.role != RunRole::Developer
-        || matches!(req.permission, PermissionTier::ReadOnly);
+    let read_only = req.is_read_only();
     let mut args = vec![
         "-p".into(),
         agentflow_prompt(req),
@@ -576,6 +584,7 @@ impl AgentProvider for GrokCliAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            permission_broker: false,
         }
     }
 
@@ -621,8 +630,7 @@ impl AgentProvider for GrokCliAdapter {
 }
 
 fn grok_args(req: &AgentRunRequest) -> Vec<String> {
-    let read_only = req.role != RunRole::Developer
-        || matches!(req.permission, PermissionTier::ReadOnly);
+    let read_only = req.is_read_only();
     let mut args = vec![
         "-p".into(),
         agentflow_prompt(req),

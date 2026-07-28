@@ -520,6 +520,28 @@ impl Orchestrator {
             issues,
         }))
     }
+    /// One page of a run log addressed by absolute line number. `from_line: None` returns the
+    /// most recent page, which is what a viewer should show first: seeding from line 0 leaves a
+    /// hole between the file's opening lines and the live tail, and hides the final result event.
+    pub async fn run_log_page(
+        &self,
+        run_id: &str,
+        from_line: Option<usize>,
+        max_lines: usize,
+    ) -> Result<RunLogWindow, OrchestratorError> {
+        let take = max_lines.clamp(1, 1000);
+        let total = self.run_log_line_count(run_id).await?;
+        let start = from_line.unwrap_or_else(|| total.saturating_sub(take));
+        let (lines, next_from_line, eof) = self.run_log_tail(run_id, start, take).await?;
+        Ok(RunLogWindow {
+            lines,
+            from_line: start,
+            next_from_line,
+            eof,
+            total_lines: total,
+        })
+    }
+
     pub async fn run_log_tail(
         &self,
         run_id: &str,
@@ -530,24 +552,133 @@ impl Orchestrator {
             .bind(run_id)
             .fetch_one(self.store.pool())
             .await?;
+        let path = Path::new(&run_dir).join("agent-events.jsonl");
+        let take = max_lines.clamp(1, 1000);
+        // Following a live run is the hot path: the desktop polls every run several times a
+        // second. Resuming from a cached byte offset keeps that cost proportional to the new
+        // output instead of to the whole (unbounded) log.
+        if let Some(result) = self.tail_live_log(run_id, &path, from_line, take).await {
+            return Ok(result);
+        }
         let text = self
-            .read_run_file(&Path::new(&run_dir).join("agent-events.jsonl"))
+            .read_run_file(&path)
             .await
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .unwrap_or_default();
         let all = text.lines().collect::<Vec<_>>();
-        let take = max_lines.clamp(1, 1000);
         let end = from_line.saturating_add(take).min(all.len());
         let lines = all
             .iter()
             .skip(from_line)
             .take(take)
-            .filter_map(|line| serde_json::from_str(line).ok())
+            .map(|line| parse_log_line(line))
             .collect::<Vec<_>>();
         // Advance over malformed rows as well. Otherwise one bad JSONL line pins every live
         // subscriber to the same cursor forever and hides all later valid output.
         let next = end;
+        self.seed_log_cursor(run_id, &path, &text, next).await;
         Ok((lines, next, next >= all.len()))
+    }
+
+    /// Records where the full read stopped so the next sequential tail can resume incrementally.
+    /// Only meaningful while the log is still plaintext on disk; encrypted logs are left alone.
+    async fn seed_log_cursor(&self, run_id: &str, path: &Path, text: &str, next: usize) {
+        let Ok(metadata) = tokio::fs::metadata(path).await else {
+            return;
+        };
+        let byte = text
+            .split_inclusive('\n')
+            .take(next)
+            .map(|line| line.len() as u64)
+            .sum::<u64>();
+        // If the decrypted text is not the file's own bytes, offsets would be wrong.
+        if byte > metadata.len() {
+            return;
+        }
+        self.remember_log_cursor(
+            run_id,
+            LogCursor {
+                line: next,
+                byte,
+                len: metadata.len(),
+            },
+        );
+    }
+
+    /// Incremental tail for a plaintext (still-running) log. Returns `None` whenever the fast
+    /// path does not apply — an encrypted/finished log, a rewritten file, or a cursor that is
+    /// not the one we cached — so the caller falls back to the exact full-file behaviour.
+    async fn tail_live_log(
+        &self,
+        run_id: &str,
+        path: &Path,
+        from_line: usize,
+        take: usize,
+    ) -> Option<(Vec<AgentEvent>, usize, bool)> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let cached = self
+            .run_log_cursors
+            .read()
+            .ok()
+            .and_then(|cursors| cursors.get(run_id).copied())
+            .filter(|cursor| cursor.line == from_line)?;
+        let len = tokio::fs::metadata(path).await.ok()?.len();
+        // A shorter file means it was replaced (or protected in place); re-read from scratch.
+        if len < cached.len || cached.byte > len {
+            self.forget_log_cursor(run_id);
+            return None;
+        }
+        if len == cached.byte {
+            return Some((Vec::new(), from_line, true));
+        }
+        let mut file = tokio::fs::File::open(path).await.ok()?;
+        // Protected logs are a single encrypted blob; byte offsets are meaningless there.
+        let mut magic = [0_u8; 6];
+        if file.read_exact(&mut magic).await.is_ok() && &magic == b"AFENC1" {
+            self.forget_log_cursor(run_id);
+            return None;
+        }
+        file.seek(std::io::SeekFrom::Start(cached.byte)).await.ok()?;
+        let mut appended = Vec::new();
+        file.read_to_end(&mut appended).await.ok()?;
+        let text = String::from_utf8_lossy(&appended).into_owned();
+
+        let mut events = Vec::new();
+        let mut consumed_bytes = 0_u64;
+        let mut consumed_lines = 0_usize;
+        for line in text.split_inclusive('\n') {
+            // A partially written trailing line must not advance the cursor past it.
+            if !line.ends_with('\n') {
+                break;
+            }
+            if consumed_lines == take {
+                break;
+            }
+            consumed_bytes += line.len() as u64;
+            consumed_lines += 1;
+            events.push(parse_log_line(line.trim_end_matches(['\n', '\r'])));
+        }
+        let next = from_line + consumed_lines;
+        let byte = cached.byte + consumed_bytes;
+        self.remember_log_cursor(run_id, LogCursor { line: next, byte, len });
+        Some((events, next, byte >= len))
+    }
+
+    fn remember_log_cursor(&self, run_id: &str, cursor: LogCursor) {
+        if let Ok(mut cursors) = self.run_log_cursors.write() {
+            // Bounded so a long-lived daemon cannot accumulate an entry per historical run.
+            if cursors.len() > 256 && !cursors.contains_key(run_id) {
+                cursors.clear();
+            }
+            cursors.insert(run_id.to_owned(), cursor);
+        }
+    }
+
+    fn forget_log_cursor(&self, run_id: &str) {
+        if let Ok(mut cursors) = self.run_log_cursors.write() {
+            cursors.remove(run_id);
+        }
     }
     pub async fn run_log_line_count(&self, run_id: &str) -> Result<usize, OrchestratorError> {
         let run_dir: String = sqlx::query_scalar("SELECT run_dir FROM agent_runs WHERE id=?")
@@ -658,4 +789,18 @@ impl Orchestrator {
             .join("runs")
             .join(Uuid::now_v7().to_string())
     }
+}
+
+/// Turns one JSONL line into an event. A line that does not parse becomes a `Raw` event instead
+/// of disappearing: the viewer positions live batches by absolute line number, so silently
+/// dropping a line would shift every later line and make deduplication impossible — and a
+/// Provider's malformed output is itself worth showing during diagnosis.
+fn parse_log_line(line: &str) -> AgentEvent {
+    serde_json::from_str(line).unwrap_or_else(|_| AgentEvent {
+        ts: String::new(),
+        stream: EventStream::Stderr,
+        kind: AgentEventKind::Raw,
+        summary: "无法解析的 Provider 输出".into(),
+        text: Some(line.chars().take(2000).collect()),
+    })
 }

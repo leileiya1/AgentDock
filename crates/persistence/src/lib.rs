@@ -77,6 +77,7 @@ impl Store {
             .await?;
         let pre_migration = if existed {
             protection::integrity_check(&pool).await?;
+            repair_known_migration_checksums(&pool).await?;
             Some(protection::create_encrypted_backup(&pool, path, data_key.as_ref()).await?)
         } else {
             None
@@ -534,6 +535,41 @@ fn parse_opt<T: FromStr<Err = String>>(
     value: Option<String>,
 ) -> Result<Option<T>, PersistenceError> {
     value.map(parse).transpose()
+}
+
+/// Migration 0001 was reformatted (a trailing newline) after early databases had already
+/// applied it. sqlx verifies recorded checksums byte-for-byte, so without this one-time
+/// repair every such database fails to open with VersionMismatch on each start — forever.
+/// Only the single known historical checksum is rewritten; any other mismatch still fails.
+async fn repair_known_migration_checksums(pool: &SqlitePool) -> Result<(), PersistenceError> {
+    const LEGACY_0001: &str = "3f72f0c6a1318452306ae68aeff0944f1626f14f3228e0e052c9c2d44341ecd3ec30b402185f97bf54159837211f236e";
+    const PUBLISHED_0001: &str = "1ce8056baec57e9a5b18f35dd6ca5770be020abacf0131219c905a719c744a403d249173cc69f82ea9f09b47d3a6928f";
+    let migrations_table: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await
+    .ok();
+    if migrations_table.is_none() {
+        return Ok(());
+    }
+    sqlx::query("UPDATE _sqlx_migrations SET checksum=? WHERE version=1 AND checksum=?")
+        .bind(hex_to_bytes(PUBLISHED_0001))
+        .bind(hex_to_bytes(LEGACY_0001))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    hex.as_bytes()
+        .chunks(2)
+        .filter_map(|pair| {
+            std::str::from_utf8(pair)
+                .ok()
+                .and_then(|value| u8::from_str_radix(value, 16).ok())
+        })
+        .collect()
 }
 
 #[cfg(test)]

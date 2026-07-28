@@ -122,6 +122,9 @@ impl Orchestrator {
                     };
                     previous = Some(candidate);
                     previous_error = error.to_string();
+                    if self.enforce_budget(&self.task(&task.id).await?).await? {
+                        return Ok(());
+                    }
                     continue;
                 }
             };
