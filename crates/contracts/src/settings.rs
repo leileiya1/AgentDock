@@ -1,5 +1,6 @@
 pub const CLAUDE_CLI_KEYCHAIN_SERVICE: &str = "com.agentflow.claude-cli-api-key";
 pub const CODEX_CLI_KEYCHAIN_SERVICE: &str = "com.agentflow.codex-cli-api-key";
+pub const DEEPSEEK_API_KEYCHAIN_SERVICE: &str = "com.agentflow.deepseek-api";
 
 string_enum!(ProjectConfigChangeKind {
     Added => "added",
@@ -151,7 +152,7 @@ impl ApiProviderSettings {
             "https://api.deepseek.com",
             "deepseek-v4-flash",
             "DEEPSEEK_API_KEY",
-            "com.agentflow.deepseek-api",
+            DEEPSEEK_API_KEYCHAIN_SERVICE,
         )
     }
 

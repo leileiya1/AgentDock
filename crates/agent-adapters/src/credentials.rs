@@ -1,4 +1,6 @@
-use agentflow_contracts::{CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE};
+use agentflow_contracts::{
+    CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE, DEEPSEEK_API_KEYCHAIN_SERVICE,
+};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy)]
@@ -18,6 +20,13 @@ fn credential_spec(name: &str) -> Option<CliCredentialSpec> {
         "codex" => Some(CliCredentialSpec {
             env_key: "CODEX_API_KEY",
             keychain_service: CODEX_CLI_KEYCHAIN_SERVICE,
+        }),
+        // The supported Grok custom-model setup routes inference to DeepSeek. Keep the credential
+        // under its real provider name; the scoped launcher is responsible for any compatibility
+        // alias and must also pin that alias to the DeepSeek endpoint.
+        "grok" => Some(CliCredentialSpec {
+            env_key: "DEEPSEEK_API_KEY",
+            keychain_service: DEEPSEEK_API_KEYCHAIN_SERVICE,
         }),
         _ => None,
     }
@@ -50,4 +59,16 @@ fn keychain_key(service: &str) -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 fn keychain_key(_service: &str) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grok_reuses_the_deepseek_credential_without_masquerading_as_xai() {
+        let spec = credential_spec("grok").expect("Grok credential spec");
+        assert_eq!(spec.env_key, "DEEPSEEK_API_KEY");
+        assert_eq!(spec.keychain_service, DEEPSEEK_API_KEYCHAIN_SERVICE);
+    }
 }

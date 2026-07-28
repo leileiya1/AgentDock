@@ -1,6 +1,7 @@
 use super::Backend;
 use agentflow_contracts::{
-    AppError, CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE, EnvReport, ErrorCode,
+    AppError, CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE,
+    DEEPSEEK_API_KEYCHAIN_SERVICE, EnvReport, ErrorCode,
 };
 use serde::Deserialize;
 use specta::Type;
@@ -53,7 +54,7 @@ fn api_service(provider: &str) -> Option<&'static str> {
     match provider {
         "openai_api" => Some("com.agentflow.openai-api"),
         "anthropic_api" => Some("com.agentflow.anthropic-api"),
-        "deepseek_api" => Some("com.agentflow.deepseek-api"),
+        "deepseek_api" => Some(DEEPSEEK_API_KEYCHAIN_SERVICE),
         "grok_api" => Some("com.agentflow.grok-api"),
         "minimax_api" => Some("com.agentflow.minimax-api"),
         "kimi_api" => Some("com.agentflow.kimi-api"),
