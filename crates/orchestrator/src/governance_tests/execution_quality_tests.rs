@@ -12,6 +12,8 @@ async fn execution_nodes_are_checked_and_referenced_nodes_cannot_be_deleted()
             port: 1,
             username: "runner".into(),
             work_root: "/tmp/agentflow-node".into(),
+            identity_file: None,
+            deny_network: false,
             enabled: true,
             status: NodeStatus::Unknown,
             platform: None,
@@ -50,6 +52,8 @@ async fn execution_nodes_are_checked_and_referenced_nodes_cannot_be_deleted()
             port: 22,
             username: "runner".into(),
             work_root: "/tmp/agentflow".into(),
+            identity_file: None,
+            deny_network: true,
             enabled: false,
             status: NodeStatus::Unknown,
             platform: None,
@@ -59,6 +63,7 @@ async fn execution_nodes_are_checked_and_referenced_nodes_cannot_be_deleted()
             diagnostics: Vec::new(),
         })
         .await?;
+    assert!(disposable.deny_network);
     orchestrator.execution_node_delete(&disposable.id).await?;
     assert!(
         orchestrator

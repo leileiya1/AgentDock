@@ -34,6 +34,7 @@ string_enum!(NodeDiagnosticStep {
     Tcp => "tcp",
     SshAuthentication => "ssh_authentication",
     WorkRoot => "work_root",
+    NetworkIsolation => "network_isolation",
     Platform => "platform",
     Git => "git",
     ArchiveTool => "archive_tool",
@@ -403,6 +404,10 @@ pub struct ExecutionNode {
     pub port: u16,
     pub username: String,
     pub work_root: String,
+    #[serde(default)]
+    pub identity_file: Option<String>,
+    #[serde(default)]
+    pub deny_network: bool,
     pub enabled: bool,
     pub status: NodeStatus,
     pub platform: Option<String>,

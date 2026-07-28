@@ -10,11 +10,11 @@ async fn probe_execution_node(node: &ExecutionNode) -> ExecutionNodeProbe {
     let mut diagnostics = Vec::new();
     let addresses = probe_dns(node, &mut diagnostics).await;
     if addresses.is_empty() {
-        append_skipped_remote_steps(&mut diagnostics, "DNS 失败，未继续连接");
+        append_skipped_remote_steps(&mut diagnostics, "DNS 失败，未继续连接", node.deny_network);
         return finish_node_probe(diagnostics, None, None);
     }
     if !probe_tcp(&addresses, &mut diagnostics).await {
-        append_skipped_remote_steps(&mut diagnostics, "TCP 端口不可达，未继续 SSH");
+        append_skipped_remote_steps(&mut diagnostics, "TCP 端口不可达，未继续 SSH", node.deny_network);
         return finish_node_probe(diagnostics, None, None);
     }
 
@@ -32,8 +32,9 @@ async fn probe_execution_node(node: &ExecutionNode) -> ExecutionNodeProbe {
     if !authenticated {
         for (step, blocking) in [
             (NodeDiagnosticStep::WorkRoot, true),
+            (NodeDiagnosticStep::NetworkIsolation, node.deny_network),
             (NodeDiagnosticStep::Platform, false),
-            (NodeDiagnosticStep::Git, true),
+            (NodeDiagnosticStep::Git, false),
             (NodeDiagnosticStep::ArchiveTool, true),
             (NodeDiagnosticStep::Toolchain, false),
         ] {
@@ -68,6 +69,25 @@ async fn probe_execution_node(node: &ExecutionNode) -> ExecutionNodeProbe {
     .await;
     diagnostics.push(work_root.0);
 
+    if node.deny_network {
+        let isolation = remote_diagnostic(
+            node,
+            NodeDiagnosticStep::NetworkIsolation,
+            true,
+            "验证命令将以断网、不可提权身份运行",
+            "sudo -n /usr/local/sbin/agentflow-offline -- /bin/sh -eu -c 'command -v curl >/dev/null; test -z \"$(/usr/sbin/ip -4 route show default)\"; test -z \"$(/usr/sbin/ip -6 route show default)\"; ! curl -4 -fsS --connect-timeout 3 https://example.com >/dev/null 2>&1; ! curl -6 -fsS --connect-timeout 3 https://example.com >/dev/null 2>&1; ! sudo -n true >/dev/null 2>&1; printf AGENTFLOW_FAIL_CLOSED_OK'",
+            12,
+        )
+        .await;
+        diagnostics.push(isolation.0);
+    } else {
+        diagnostics.push(skipped_diagnostic(
+            NodeDiagnosticStep::NetworkIsolation,
+            false,
+            "节点未启用断网验证",
+        ));
+    }
+
     let platform = remote_diagnostic(
         node,
         NodeDiagnosticStep::Platform,
@@ -83,7 +103,7 @@ async fn probe_execution_node(node: &ExecutionNode) -> ExecutionNodeProbe {
     let git = remote_diagnostic(
         node,
         NodeDiagnosticStep::Git,
-        true,
+        false,
         "Git 可用",
         "git --version",
         8,
@@ -312,12 +332,17 @@ fn finish_node_probe(
     }
 }
 
-fn append_skipped_remote_steps(diagnostics: &mut Vec<ExecutionNodeDiagnostic>, reason: &str) {
+fn append_skipped_remote_steps(
+    diagnostics: &mut Vec<ExecutionNodeDiagnostic>,
+    reason: &str,
+    deny_network: bool,
+) {
     for (step, blocking) in [
         (NodeDiagnosticStep::SshAuthentication, true),
         (NodeDiagnosticStep::WorkRoot, true),
+        (NodeDiagnosticStep::NetworkIsolation, deny_network),
         (NodeDiagnosticStep::Platform, false),
-        (NodeDiagnosticStep::Git, true),
+        (NodeDiagnosticStep::Git, false),
         (NodeDiagnosticStep::ArchiveTool, true),
         (NodeDiagnosticStep::Toolchain, false),
     ] {
@@ -381,6 +406,8 @@ mod execution_node_diagnostic_tests {
                 .parse()?,
             username: std::env::var("AGENTFLOW_TEST_SSH_USER")?,
             work_root: std::env::var("AGENTFLOW_TEST_SSH_ROOT")?,
+            identity_file: std::env::var("AGENTFLOW_TEST_SSH_IDENTITY").ok(),
+            deny_network: std::env::var("AGENTFLOW_TEST_SSH_DENY_NETWORK").as_deref() == Ok("1"),
             enabled: true,
             status: NodeStatus::Unknown,
             platform: None,

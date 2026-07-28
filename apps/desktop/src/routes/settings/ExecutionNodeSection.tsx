@@ -15,9 +15,9 @@ import { ExecutionNodeDiagnostics } from "@/components/governance/ExecutionNodeD
 import { nodeStatusCopy } from "@/lib/governance/executionNode";
 import { sectionCls, sectionH } from "@/routes/Settings";
 
-type Draft = Pick<ExecutionNode, "id" | "name" | "host" | "port" | "username" | "workRoot" | "enabled">;
+type Draft = Pick<ExecutionNode, "id" | "name" | "host" | "port" | "username" | "workRoot" | "identityFile" | "denyNetwork" | "enabled">;
 
-const EMPTY: Draft = { id: "", name: "", host: "", port: 22, username: "", workRoot: "", enabled: true };
+const EMPTY: Draft = { id: "", name: "", host: "", port: 22, username: "", workRoot: "", identityFile: null, denyNetwork: true, enabled: true };
 
 export function ExecutionNodeSection() {
   const nodes = useExecutionNodes();
@@ -65,7 +65,7 @@ export function ExecutionNodeSection() {
       <div className="mb-3 flex items-start justify-between gap-4">
         <div>
           <h2 className={sectionH + " !mb-0"}>远程执行节点</h2>
-          <p className="mt-0.5 text-[12px] text-t3">通过系统 SSH 配置连接；只发送固定 commit 的归档并运行项目验证，不存储密码或私钥。</p>
+          <p className="mt-0.5 text-[12px] text-t3">通过 SSH 连接；只保存私钥路径，不读取或存储私钥内容。仅发送固定 commit 的归档并运行项目验证。</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => setDraft({ ...EMPTY })}><Plus />添加节点</Button>
       </div>
@@ -115,11 +115,13 @@ function NodeDialog({ draft, setDraft, saving, onSave }: { draft: Draft | null; 
       <Field label="SSH 用户"><Input value={draft.username} onChange={(event) => update("username", event.target.value)} placeholder="username" /></Field>
       <Field label="SSH 端口"><Input type="number" min={1} max={65535} value={draft.port} onChange={(event) => update("port", Number(event.target.value))} /></Field>
       <div className="col-span-2"><Field label="远端工作根目录"><Input value={draft.workRoot} onChange={(event) => update("workRoot", event.target.value)} placeholder="/home/user/agentflow-runs" /></Field></div>
+      <div className="col-span-2"><Field label="SSH 私钥路径（可选，仅保存路径）"><Input value={draft.identityFile ?? ""} onChange={(event) => update("identityFile", event.target.value || null)} placeholder="/Users/name/.lima/_config/user" /></Field></div>
+      <label className="col-span-2 flex items-center gap-2 text-[13px] text-t2"><Switch checked={draft.denyNetwork} onCheckedChange={(value) => update("denyNetwork", value)} />在 Linux network namespace 中断网执行验证</label>
       <label className="col-span-2 flex items-center gap-2 text-[13px] text-t2"><Switch checked={draft.enabled} onCheckedChange={(value) => update("enabled", value)} />允许新任务使用此节点</label>
     </div>}
   </Dialog>;
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) { return <div className="flex flex-col gap-2"><Label>{label}</Label>{children}</div>; }
-function pickDraft(node: ExecutionNode): Draft { return { id: node.id, name: node.name, host: node.host, port: node.port, username: node.username, workRoot: node.workRoot, enabled: node.enabled }; }
+function pickDraft(node: ExecutionNode): Draft { return { id: node.id, name: node.name, host: node.host, port: node.port, username: node.username, workRoot: node.workRoot, identityFile: node.identityFile, denyNetwork: node.denyNetwork, enabled: node.enabled }; }
 function statusDot(status: ExecutionNode["status"]): string { return status === "online" ? "bg-ok" : status === "offline" ? "bg-bad" : "bg-t3"; }
