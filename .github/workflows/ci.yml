@@ -29,6 +29,25 @@ jobs:
       - run: cargo fmt --all --check
       - run: ${{ matrix.test }}
 
+  # The desktop backend is excluded from the Rust workspace, so `cargo test --workspace`
+  # never reaches it. Its security boundaries (installer allowlist, Keychain services) and
+  # its macOS-only security-framework code need a macOS runner to compile at all.
+  desktop-backend-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - run: bun install --frozen-lockfile
+        working-directory: apps/desktop
+      # Tauri's build script needs the host-target-suffixed sidecar to exist.
+      - run: bun run prepare:sidecar
+        working-directory: apps/desktop
+      - run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
   desktop-contract:
     runs-on: ubuntu-latest
     steps:
@@ -45,8 +64,19 @@ jobs:
       # launches the desktop binary to export TypeScript bindings.
       - run: bun run prepare:sidecar
         working-directory: apps/desktop
+      # Drift guard: regenerating must change nothing. Snapshotting the generated trees
+      # (paths + content hashes) also catches a NEW generated file, which the previous
+      # `git diff --exit-code` could never see because an untracked file is invisible to it.
+      - name: Snapshot generated contracts
+        run: |
+          find apps/desktop/src/generated packages/schemas/generated -type f 2>/dev/null \
+            | sort | xargs shasum > /tmp/contracts-before.txt
       - run: cargo run -p xtask
-      - run: git diff --exit-code
+      - name: Fail on generated contract drift
+        run: |
+          find apps/desktop/src/generated packages/schemas/generated -type f 2>/dev/null \
+            | sort | xargs shasum > /tmp/contracts-after.txt
+          diff /tmp/contracts-before.txt /tmp/contracts-after.txt
       - run: bun run typecheck
         working-directory: apps/desktop
       - run: bun test

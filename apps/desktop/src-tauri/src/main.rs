@@ -615,12 +615,13 @@ fn main() {
     if std::env::args().any(|arg| arg == "--export-bindings") {
         // Only the explicit xtask may update checked-in bindings. Otherwise launching an older
         // debug app can silently overwrite newer generated types in the shared source tree.
-        builder
-            .export(
-                Typescript::default(),
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../src/generated/bindings.ts"),
-            )
-            .expect("failed to export Tauri TypeScript bindings");
+        if let Err(error) = builder.export(
+            Typescript::default(),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../src/generated/bindings.ts"),
+        ) {
+            eprintln!("failed to export Tauri TypeScript bindings: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     tauri::Builder::default()
@@ -649,5 +650,8 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("AgentFlow desktop failed");
+        .unwrap_or_else(|error| {
+            eprintln!("AgentFlow desktop failed: {error}");
+            std::process::exit(1);
+        });
 }

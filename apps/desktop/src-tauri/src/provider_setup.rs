@@ -313,7 +313,8 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn keychain_roundtrip_uses_security_framework_without_a_shell() {
+    fn keychain_roundtrip_uses_security_framework_without_a_shell()
+    -> Result<(), Box<dyn std::error::Error>> {
         use security_framework::os::macos::keychain::CreateOptions;
 
         let service = format!("com.agentflow.provider-setup-test.{}", std::process::id());
@@ -325,17 +326,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let keychain = CreateOptions::new()
             .password("agentflow-test-only")
-            .create(&path)
-            .expect("create temporary keychain");
-        keychain
-            .set_generic_password(&service, "AgentFlow", secret)
-            .expect("write temporary keychain item");
-        let (stored, item) = keychain
-            .find_generic_password(&service, "AgentFlow")
-            .expect("read temporary keychain item");
+            .create(&path)?;
+        keychain.set_generic_password(&service, "AgentFlow", secret)?;
+        let (stored, item) = keychain.find_generic_password(&service, "AgentFlow")?;
         assert_eq!(&*stored, secret);
         item.delete();
         drop(keychain);
-        std::fs::remove_file(path).expect("remove temporary keychain");
+        std::fs::remove_file(path)?;
+        Ok(())
     }
 }

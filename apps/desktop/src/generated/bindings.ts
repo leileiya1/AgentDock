@@ -191,7 +191,7 @@ export type AuditExportResult = {
 
 export type AuditExportScope = "project" | "task";
 
-export type BlockedReason = "no_changes" | "needs_clarification" | "run_failed" | "validation_infra" | "review_block" | "review_failed" | "max_revisions" | "worktree_missing" | "commit_guard" | "budget_exceeded" | "remote_node_unavailable" | "ci_failed" | "quality_gate" | "permission_required" | "agent_unresponsive" | "auth_expired" | "convergence_stalled" | "quality_regressed";
+export type BlockedReason = "no_changes" | "needs_clarification" | "run_failed" | "validation_infra" | "review_block" | "review_failed" | "max_revisions" | "worktree_missing" | "commit_guard" | "budget_exceeded" | "remote_node_unavailable" | "ci_failed" | "quality_gate" | "permission_required" | "agent_unresponsive" | "auth_expired" | "convergence_stalled" | "quality_regressed" | "recovery_failed";
 
 export type BudgetEnforcement = "hard" | "soft" | "unavailable";
 
@@ -400,6 +400,8 @@ export type ExecutionNode = {
 	port: number,
 	username: string,
 	workRoot: string,
+	identityFile?: string | null,
+	denyNetwork?: boolean,
 	enabled: boolean,
 	status: NodeStatus,
 	platform: string | null,
@@ -487,7 +489,7 @@ export type GuidanceArgs = {
 
 export type NodeDiagnosticStatus = "passed" | "failed" | "skipped";
 
-export type NodeDiagnosticStep = "dns" | "tcp" | "ssh_authentication" | "work_root" | "platform" | "git" | "archive_tool" | "toolchain";
+export type NodeDiagnosticStep = "dns" | "tcp" | "ssh_authentication" | "work_root" | "network_isolation" | "platform" | "git" | "archive_tool" | "toolchain";
 
 export type NodeIdArgs = {
 	nodeId: string,
@@ -1050,14 +1052,24 @@ export type RollbackStrategy = "undo" | "revert";
 
 export type RunLogArgs = {
 	runId: string,
-	fromLine: number,
+	/**
+	 *  Absolute first line to return. `null` asks for the most recent page, which is what a
+	 *  viewer should open with.
+	 */
+	fromLine: number | null,
 	maxLines: number,
 };
 
 export type RunLogPage = {
 	lines: AgentEvent[],
+	/**
+	 *  Absolute file line number of `lines[0]`. The viewer merges pages and live batches by
+	 *  this number, so a re-seed or an overlapping stream can never duplicate or reorder output.
+	 */
+	fromLine: number,
 	nextFromLine: number,
 	eof: boolean,
+	totalLines: number,
 };
 
 export type RunRole = "planner" | "developer" | "reviewer" | "validator";

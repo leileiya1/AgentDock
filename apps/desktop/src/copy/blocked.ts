@@ -116,6 +116,13 @@ export const BLOCKED_COPY: Record<BlockedReason, BlockedCopy> = {
     detailIsQuestion: false,
     actions: ["guidance", "cancel"],
   },
+  recovery_failed: {
+    title: "重启恢复没能完成，任务已安全隔离",
+    explanation:
+      "后台服务重启时未能自动恢复这个任务（例如任务记录与工作树不一致，或工作树被外部修改）。残留改动已保存到安全快照，其他任务不受影响。可打开修复中心检查后从检查点继续，或取消任务。",
+    detailIsQuestion: false,
+    actions: ["repair", "cancel"],
+  },
   worktree_missing: {
     title: "任务的工作树丢失了",
     explanation:

@@ -549,8 +549,10 @@ const LOG_LINES: RunLogPage = {
     },
     { ts: iso(-27 * MIN), stream: "stdout", kind: "result", summary: '{"type":"turn.completed"}', text: null },
   ],
+  fromLine: 0,
   nextFromLine: 7,
   eof: true,
+  totalLines: 7,
 };
 
 const GOVERNANCE: TaskGovernance = {

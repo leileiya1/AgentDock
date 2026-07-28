@@ -57,7 +57,14 @@ pub async fn ensure_daemon(data_dir: &Path) -> Result<(), Box<dyn std::error::Er
         .and_then(|payload| payload.get("queueDepth"))
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
-    if queue_depth > 0 {
+    // A daemon whose scheduler loop has stopped never drains its queue, so deferring the
+    // upgrade on queue depth alone would deadlock. Older daemons omit the field; treat a
+    // missing value as alive so this never regresses a healthy but older service.
+    let scheduler_alive = running_payload
+        .and_then(|payload| payload.get("schedulerAlive"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    if queue_depth > 0 && scheduler_alive {
         return Err(format!(
             "后台服务需要升级，但当前还有 {queue_depth} 个任务正在运行或排队；任务结束后重启 AgentFlow 即可安全升级"
         )

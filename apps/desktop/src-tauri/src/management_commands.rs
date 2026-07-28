@@ -18,7 +18,9 @@ pub(super) struct QueuePriorityArgs {
 #[serde(rename_all = "camelCase")]
 pub(super) struct RunLogArgs {
     run_id: String,
-    from_line: u32,
+    /// Absolute first line to return. `null` asks for the most recent page, which is what a
+    /// viewer should open with.
+    from_line: Option<u32>,
     max_lines: u32,
 }
 
@@ -212,16 +214,18 @@ pub(super) async fn run_log_tail(
 ) -> Result<RunLogPage, AppError> {
     state
         .0
-        .run_log_tail(
+        .run_log_page(
             &args.run_id,
-            args.from_line as usize,
+            args.from_line.map(|value| value as usize),
             args.max_lines as usize,
         )
         .await
-        .map(|(lines, next_from_line, eof)| RunLogPage {
-            lines,
-            next_from_line: next_from_line as u32,
-            eof,
+        .map(|window| RunLogPage {
+            lines: window.lines,
+            from_line: window.from_line as u32,
+            next_from_line: window.next_from_line as u32,
+            eof: window.eof,
+            total_lines: window.total_lines as u32,
         })
         .map_err(app_error)
 }

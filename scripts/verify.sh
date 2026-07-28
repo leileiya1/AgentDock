@@ -56,22 +56,45 @@ step "cargo clippy --workspace --all-targets -- -D warnings" \
 step "cargo test --workspace --no-fail-fast" \
   cargo test --workspace --no-fail-fast
 
-# 4. Frontend type safety (exhaustive BLOCKED_COPY, generated bindings, etc.).
+# 4. The desktop backend is excluded from the workspace (Tauri owns its own build), so
+#    steps 2 and 3 never reach it. It holds real security boundaries — the installer
+#    allowlist and Keychain service allowlist — and must be linted and tested explicitly.
+step "cargo clippy (apps/desktop/src-tauri)" \
+  cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+step "cargo test (apps/desktop/src-tauri)" \
+  cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --no-fail-fast
+
+# 5. Frontend type safety (exhaustive BLOCKED_COPY, generated bindings, etc.).
 step "bun run typecheck (apps/desktop)" \
   bash -c 'cd apps/desktop && bun run typecheck'
 
-# 5. Frontend unit tests (bun:test + renderToStaticMarkup snapshots).
+# 6. Frontend unit tests (bun:test + renderToStaticMarkup snapshots).
 step "bun test (apps/desktop)" \
   bash -c 'cd apps/desktop && bun test'
 
-# 6. Contract/bindings drift — heavier (compiles the Tauri backend), opt-in.
+# 7. Contract/bindings drift — heavier (compiles the Tauri backend), opt-in.
 if [ "$FULL" -eq 1 ]; then
-  step "bun run prepare:sidecar (apps/desktop)" \
-    bash -c 'cd apps/desktop && bun run prepare:sidecar'
-  step "cargo run -p xtask (regenerate bindings + schemas)" \
-    cargo run -p xtask
-  step "git diff --exit-code (bindings/schema drift guard)" \
-    git diff --exit-code
+  # Drift means "regenerating changes something". Comparing against HEAD would instead flag
+  # every intentional uncommitted edit, so snapshot the generated trees, regenerate, and
+  # compare. Hashing the file list (not just contents) also catches a NEW generated file,
+  # which the old `git diff --exit-code` could never see because it was untracked.
+  step "bindings/schema drift guard (regenerate + compare)" \
+    bash -c '
+      set -euo pipefail
+      snapshot() {
+        find apps/desktop/src/generated packages/schemas/generated -type f 2>/dev/null \
+          | sort | xargs shasum 2>/dev/null || true
+      }
+      before="$(snapshot)"
+      bash -c "cd apps/desktop && bun run prepare:sidecar" >/dev/null
+      cargo run -p xtask
+      after="$(snapshot)"
+      if [ "$before" != "$after" ]; then
+        echo "generated contracts are stale — commit the regenerated files:" >&2
+        diff <(printf "%s\n" "$before") <(printf "%s\n" "$after") >&2 || true
+        exit 1
+      fi
+    '
 fi
 
 printf '\n\033[1;32m✓ all verification gates passed\033[0m\n'
