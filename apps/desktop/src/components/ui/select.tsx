@@ -2,8 +2,19 @@ import * as React from "react";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { Check, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { noteDialogChildClosed } from "@/lib/dialogChildOverlay";
 
-export const Select = SelectPrimitive.Root;
+export function Select({ onOpenChange, ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) {
+  return (
+    <SelectPrimitive.Root
+      {...props}
+      onOpenChange={(open) => {
+        if (!open) noteDialogChildClosed();
+        onOpenChange?.(open);
+      }}
+    />
+  );
+}
 export const SelectGroup = SelectPrimitive.Group;
 export const SelectValue = SelectPrimitive.Value;
 
@@ -35,6 +46,7 @@ export const SelectContent = React.forwardRef<
   <SelectPrimitive.Portal>
     <SelectPrimitive.Content
       ref={ref}
+      data-slot="select-content"
       position={position}
       className={cn(
         "relative z-50 max-h-72 min-w-[8rem] overflow-hidden rounded-[var(--radius-panel)] border border-line glass text-t1 shadow-[var(--shadow-float)]",

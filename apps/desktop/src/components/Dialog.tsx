@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
 import { trapTab } from "@/lib/focus";
+import { dialogChildClosedRecently } from "@/lib/dialogChildOverlay";
 
 interface Props {
   open: boolean;
@@ -15,7 +16,23 @@ interface Props {
   onConfirmKey?: () => void;
 }
 
-/** Glass modal with Motion enter/exit + spring; Escape / overlay dismiss. */
+const OPEN_DIALOG_CHILD_SELECTOR = '[data-slot="select-content"]';
+const DIALOG_CHILD_TRIGGER_SELECTOR = '[data-slot="select-trigger"]';
+
+type DialogEscapeRoot = {
+  querySelector: (selector: string) => unknown | null;
+  activeElement?: { closest?: (selector: string) => unknown | null } | null;
+};
+
+export function shouldDeferDialogEscape(root: DialogEscapeRoot): boolean {
+  if (root.querySelector(OPEN_DIALOG_CHILD_SELECTOR) !== null) return true;
+  // macOS can dismiss the native accessibility popup before this window-level
+  // listener runs. Radix restores focus to the trigger, which is the remaining
+  // signal that this Escape belongs to the child Select rather than the dialog.
+  return root.activeElement?.closest?.(DIALOG_CHILD_TRIGGER_SELECTOR) != null || dialogChildClosedRecently();
+}
+
+/** Glass modal with Motion enter/exit + spring; Escape / explicit controls dismiss. */
 export function Dialog({ open, onClose, title, children, footer, width = 480, onConfirmKey }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   // Keep the latest callbacks without restarting the focus-trap effect. Dialog
@@ -33,6 +50,10 @@ export function Dialog({ open, onClose, title, children, footer, width = 480, on
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // Radix Select renders its content in a portal. Let the child overlay
+        // consume Escape first; otherwise the same key also closes this parent
+        // dialog and discards the user's in-progress form.
+        if (shouldDeferDialogEscape(document)) return;
         e.preventDefault();
         onCloseRef.current();
         return;
@@ -46,10 +67,13 @@ export function Dialog({ open, onClose, title, children, footer, width = 480, on
       trapTab(e, panelRef.current);
     };
 
-    window.addEventListener("keydown", onKey);
+    // Capture before portaled Radix children synchronously unmount themselves.
+    // In the bubble phase the Select is already gone, so Escape is otherwise
+    // indistinguishable from a request to close the parent dialog.
+    window.addEventListener("keydown", onKey, true);
     panelRef.current?.focus();
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
       restoreTo?.focus?.();
     };
   }, [open]);
@@ -67,7 +91,6 @@ export function Dialog({ open, onClose, title, children, footer, width = 480, on
       {open && (
         <motion.div
           className="fixed inset-0 z-50 grid place-items-center p-5 bg-black/55 backdrop-blur-[3px]"
-          onMouseDown={onClose}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
