@@ -51,6 +51,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "run" => {
                 let run: ProtocolRunRequest = serde_json::from_value(request.params)?;
+                // Misbehavior modes exercised by the hardening tests: a real sidecar may print
+                // diagnostics on stdout, and an untrusted one may never emit a newline at all.
+                match run.extra_allowed_commands.first().map(String::as_str) {
+                    Some("emit-stray-stdout") => {
+                        stdout
+                            .write_all(b"warning: vendor CLI diagnostic, not JSON\n")
+                            .await?;
+                        stdout.flush().await?;
+                    }
+                    Some("emit-unbounded-line") => {
+                        let chunk = vec![b'x'; 1024 * 1024];
+                        loop {
+                            stdout.write_all(&chunk).await?;
+                            stdout.flush().await?;
+                        }
+                    }
+                    Some("hang-forever") => {
+                        // Never respond: the client must kill this process, not orphan it.
+                        std::future::pending::<()>().await;
+                    }
+                    _ => {}
+                }
                 if matches!(run.extra_allowed_commands.as_slice(), [marker] if marker == "permission-probe" || marker == "permission-overreach")
                 {
                     let overreach = run.extra_allowed_commands[0] == "permission-overreach";

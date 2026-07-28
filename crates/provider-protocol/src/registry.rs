@@ -34,6 +34,16 @@ pub struct ProviderRegistry {
 struct ProviderTrustStore {
     #[serde(default)]
     publishers: HashMap<String, String>,
+    /// Publishers explicitly allowed to ship a package under a built-in Provider id
+    /// (a compatibility shim), and exactly which ids each may claim.
+    ///
+    /// Trusting a publisher must not by itself grant the power to *become* Claude Code or Codex:
+    /// the orchestrator resolves external packages before built-ins, so an id takeover silently
+    /// redirects every task for that Provider — with worktree write access — while the UI still
+    /// shows the original vendor. Overriding a built-in therefore needs a second, id-specific
+    /// decision recorded here by the user.
+    #[serde(default)]
+    builtin_overrides: HashMap<String, Vec<String>>,
 }
 
 impl ProviderRegistry {
@@ -88,6 +98,25 @@ impl ProviderRegistry {
             }
             match verify_package(&resolved, &trust).await {
                 Ok(()) => {
+                    // Two packages claiming one id used to resolve by directory order, so which
+                    // executable ran was undefined. Quarantine both instead of picking silently.
+                    if let Some(previous) = registry.providers.remove(&manifest.id) {
+                        let problem = format!(
+                            "two installed packages both claim Provider id {}; both are disabled until one is removed",
+                            manifest.id
+                        );
+                        registry
+                            .problems
+                            .push(format!("{}: {problem}", path.display()));
+                        registry.quarantined.push(QuarantinedProvider {
+                            manifest: previous.manifest,
+                            problem: problem.clone(),
+                        });
+                        registry
+                            .quarantined
+                            .push(QuarantinedProvider { manifest, problem });
+                        continue;
+                    }
                     registry.providers.insert(manifest.id.clone(), resolved);
                 }
                 Err(problem) => {
@@ -174,6 +203,21 @@ async fn verify_package(
     let actual = format!("{:x}", Sha256::digest(bytes));
     if !actual.eq_ignore_ascii_case(&security.artifact_sha256) {
         return Err("Provider executable digest does not match manifest".into());
+    }
+    // Claiming a built-in id is a separate, stronger grant than being a trusted publisher.
+    if !matches!(resolved.manifest.id, AgentKind::External(_)) {
+        let id = resolved.manifest.id.to_string();
+        let permitted = trust
+            .builtin_overrides
+            .get(&security.publisher)
+            .is_some_and(|ids| ids.iter().any(|allowed| allowed == &id));
+        if !permitted {
+            return Err(format!(
+                "publisher {} is not authorized to replace the built-in Provider {id}; \
+                 add it to builtinOverrides in provider-trust.json to accept this shim",
+                security.publisher
+            ));
+        }
     }
     let pinned = trust
         .publishers

@@ -52,7 +52,17 @@
 - manifest/协议主版本不兼容时拒绝加载；次版本允许向后兼容扩展。
 - v1.1 外部包必须声明执行位置、数据外发级别和最小权限；未声明这些字段的 v1.0 包会显示为“已隔离”，不会执行。
 - `security.artifactSha256` 必须与 executable 内容一致；签名覆盖 Provider ID、协议版本、制品摘要和权限摘要。
-- `<app_data>/providers/provider-trust.json` 是本机信任根，只保存 publisher → Ed25519 公钥。公钥未固定、签名无效、制品被替换或权限变化时，Provider 都进入隔离状态，需要重新信任/安装，不能静默放行。
+- `<app_data>/providers/provider-trust.json` 是本机信任根，保存 publisher → Ed25519 公钥（`publishers`），以及可选的内置 ID 覆盖授权（`builtinOverrides`）。公钥未固定、签名无效、制品被替换或权限变化时，Provider 都进入隔离状态，需要重新信任/安装，不能静默放行。
+- **信任发布者 ≠ 允许其冒充内置 Provider。** 外部包默认只能使用 External 命名空间的 ID；若要以 compatibility shim 身份顶替 `claude_code`、`codex` 等内置 ID，必须由用户在 `builtinOverrides` 中按「发布者 → 具体 ID」再做一次显式授权，否则即使签名合法也会被隔离。原因：编排器解析 Provider 时外部包优先于内置，一次 ID 接管会让该 Provider 的全部任务改由外部包执行（并持有工作树写权限），而界面仍显示原厂商——这属于供应链接管，必须是一次独立的人工决定。
+
+  ```json
+  {
+    "publishers": { "acme": "<base64 ed25519 public key>" },
+    "builtinOverrides": { "acme": ["claude_code"] }
+  }
+  ```
+
+- 两个已安装包声明同一个 Provider ID 时，二者一并进入隔离状态并提示用户移除其一；绝不按目录读取顺序静默选择其中之一。
 
 ## 3. 进程与消息
 

@@ -9,7 +9,9 @@ use serde_json::Value;
 use std::{process::Stdio, time::Duration};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
+    io::{
+        AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter,
+    },
     process::{Child, ChildStdin, ChildStdout, Command},
     task::JoinHandle,
     time::Instant,
@@ -19,6 +21,10 @@ use tokio_util::sync::CancellationToken;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
+/// An external sidecar is untrusted code. A line longer than this is a protocol violation,
+/// not a large result: without a ceiling, a provider that never writes a newline grows the
+/// daemon's memory without bound.
+const MAX_STDOUT_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -36,6 +42,8 @@ pub enum ProtocolError {
     Timeout(&'static str),
     #[error("provider stderr task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
+    #[error("provider wrote a stdout line above the {0} byte protocol limit")]
+    LineTooLong(usize),
 }
 
 #[derive(Debug)]
@@ -104,28 +112,45 @@ impl ProtocolClient {
             let remaining = deadline.saturating_duration_since(now);
             let wait_for = idle_timeout.min(remaining);
             let mut line = String::new();
-            let read = session.stdout.read_line(&mut line);
-            tokio::select! {
+            let read = read_bounded_line(&mut session.stdout, &mut line);
+            let outcome = tokio::select! {
                 _ = cancel.cancelled() => {
                     cancelled = true;
                     break;
                 }
-                response = tokio::time::timeout(wait_for, read) => {
-                    match response {
-                        Err(_) => {
-                            timed_out = true;
-                            break;
-                        }
-                        Ok(Ok(0)) => return Err(ProtocolError::Closed),
-                        Ok(Ok(_)) => {
-                            match handle_run_message(&line, &event_tx).await? {
-                                RunMessage::Continue => {}
-                                RunMessage::Result(run_result) => { result = Some(run_result); break; }
-                                RunMessage::Permission(request) => { permission_request = Some(request); break; }
-                            }
-                        }
-                        Ok(Err(error)) => return Err(ProtocolError::Io(error)),
+                response = tokio::time::timeout(wait_for, read) => response,
+            };
+            // Every failure below still falls through to the kill/shutdown block: returning
+            // early here would drop the Session and leave an orphaned sidecar running.
+            match outcome {
+                Err(_) => {
+                    timed_out = true;
+                    break;
+                }
+                Ok(Ok(0)) => {
+                    session.kill().await?;
+                    return Err(ProtocolError::Closed);
+                }
+                Ok(Ok(_)) => match handle_run_message(&line, &event_tx).await {
+                    // A sidecar that prints diagnostics or a crash trace on stdout is common
+                    // in CLI ecosystems; skip the stray line rather than abandoning the run.
+                    Ok(RunMessage::Continue) | Err(ProtocolError::Json(_)) => {}
+                    Ok(RunMessage::Result(run_result)) => {
+                        result = Some(run_result);
+                        break;
                     }
+                    Ok(RunMessage::Permission(request)) => {
+                        permission_request = Some(request);
+                        break;
+                    }
+                    Err(error) => {
+                        session.kill().await?;
+                        return Err(error);
+                    }
+                },
+                Ok(Err(error)) => {
+                    session.kill().await?;
+                    return Err(error);
                 }
             }
         }
@@ -282,6 +307,9 @@ impl Session {
         for key in env_denylist {
             command.env_remove(key);
         }
+        // Any early return between spawn and the explicit kill/shutdown must still reap the
+        // sidecar: without this the dropped Session leaves an orphan holding CPU and API quota.
+        command.kill_on_drop(true);
         let mut child = command.spawn()?;
         let pid = child.id().unwrap_or(0);
         let stdin = child
@@ -344,7 +372,7 @@ impl Session {
     ) -> Result<T, ProtocolError> {
         self.send(&RpcRequest::new(id, method, params)?).await?;
         let mut line = String::new();
-        let read = tokio::time::timeout(timeout, self.stdout.read_line(&mut line))
+        let read = tokio::time::timeout(timeout, read_bounded_line(&mut self.stdout, &mut line))
             .await
             .map_err(|_| ProtocolError::Timeout("waiting for provider response"))??;
         if read == 0 {
@@ -397,6 +425,42 @@ impl Session {
         };
         Ok(task.await??)
     }
+}
+
+/// Reads one NDJSON line with a hard ceiling. `BufReader::read_line` grows its target string
+/// without limit, so an untrusted provider that never emits a newline could exhaust memory.
+/// Returns the byte count read, or `LineTooLong` once the limit is crossed.
+async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    line: &mut String,
+) -> Result<usize, ProtocolError> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = match reader.fill_buf().await {
+            Ok(buffer) => buffer,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(ProtocolError::Io(error)),
+        };
+        if available.is_empty() {
+            break;
+        }
+        let (consumed, done) = match available.iter().position(|byte| *byte == b'\n') {
+            Some(index) => (index + 1, true),
+            None => (available.len(), false),
+        };
+        if bytes.len().saturating_add(consumed) > MAX_STDOUT_LINE_BYTES {
+            reader.consume(consumed);
+            return Err(ProtocolError::LineTooLong(MAX_STDOUT_LINE_BYTES));
+        }
+        bytes.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+        if done {
+            break;
+        }
+    }
+    let read = bytes.len();
+    line.push_str(&String::from_utf8_lossy(&bytes));
+    Ok(read)
 }
 
 async fn capture_stderr<R: AsyncRead + Unpin>(

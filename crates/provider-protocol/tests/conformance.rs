@@ -355,3 +355,213 @@ async fn install_fixture_binary(target: &Path) -> Result<(), Box<dyn std::error:
     }
     Ok(())
 }
+
+/// Shared setup for the sidecar hardening tests below.
+async fn fixture_registry(temp: &TempDir) -> Result<ProviderRegistry, Box<dyn std::error::Error>> {
+    let package = temp.path().join("fixture");
+    tokio::fs::create_dir_all(&package).await?;
+    install_fixture_binary(&package.join("provider-bin")).await?;
+    let manifest = fixture_manifest(&package.join("provider-bin")).await?;
+    install_trust_store(temp.path(), &manifest).await?;
+    tokio::fs::write(
+        package.join("provider.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )
+    .await?;
+    Ok(ProviderRegistry::discover(temp.path()).await?)
+}
+
+fn misbehaving_request(temp: &TempDir, marker: &str) -> ProtocolRunRequest {
+    ProtocolRunRequest {
+        request_id: format!("hardening-{marker}"),
+        task_id: "TASK-hardening".into(),
+        revision: 1,
+        commit_sha: None,
+        worktree: temp.path().to_string_lossy().into_owned(),
+        run_dir: temp.path().to_string_lossy().into_owned(),
+        role: RunRole::Developer,
+        input_file: "input.md".into(),
+        timeout_ms: 10_000,
+        idle_timeout_ms: 5_000,
+        permission: ProtocolPermission::Normal,
+        effective_permissions: Some(agentflow_contracts::EffectivePermissions {
+            worktree_read: true,
+            worktree_write: true,
+            sandbox_guarantee: agentflow_contracts::SandboxGuarantee::WorktreeRestricted,
+            ..Default::default()
+        }),
+        resume_session_id: None,
+        extra_allowed_commands: vec![marker.into()],
+        env_denylist: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn stray_non_json_stdout_does_not_abandon_the_run() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp = TempDir::new()?;
+    let registry = fixture_registry(&temp).await?;
+    let provider = registry
+        .get(&AgentKind::External("fixture_provider".into()))
+        .ok_or("fixture missing")?;
+    let (tx, _rx) = mpsc::channel(4);
+    let outcome = ProtocolClient::new(provider.clone())
+        .run(
+            misbehaving_request(&temp, "emit-stray-stdout"),
+            CancellationToken::new(),
+            tx,
+        )
+        .await?;
+    // The diagnostic line is skipped and the real result still arrives.
+    assert_eq!(outcome.exit_code, Some(0));
+    assert!(outcome.result.is_some());
+    assert!(!outcome.timed_out);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unbounded_stdout_line_is_rejected_and_the_sidecar_is_reaped()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let registry = fixture_registry(&temp).await?;
+    let provider = registry
+        .get(&AgentKind::External("fixture_provider".into()))
+        .ok_or("fixture missing")?;
+    let (tx, _rx) = mpsc::channel(4);
+    let started = ProtocolClient::new(provider.clone())
+        .run(
+            misbehaving_request(&temp, "emit-unbounded-line"),
+            CancellationToken::new(),
+            tx,
+        )
+        .await;
+    let Err(error) = started else {
+        return Err("an unbounded stdout line must be refused".into());
+    };
+    assert!(
+        error.to_string().contains("protocol limit"),
+        "unexpected error: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_cancelled_run_terminates_the_sidecar_process() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp = TempDir::new()?;
+    let registry = fixture_registry(&temp).await?;
+    let provider = registry
+        .get(&AgentKind::External("fixture_provider".into()))
+        .ok_or("fixture missing")?;
+    let (tx, _rx) = mpsc::channel(4);
+    let cancel = CancellationToken::new();
+    let canceller = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        canceller.cancel();
+    });
+    let outcome = ProtocolClient::new(provider.clone())
+        .run(misbehaving_request(&temp, "hang-forever"), cancel, tx)
+        .await?;
+    assert!(outcome.cancelled);
+    #[cfg(unix)]
+    {
+        // `kill -0` succeeds only while the process still exists; the client must not
+        // leave an orphan behind after cancelling.
+        let alive = tokio::process::Command::new("kill")
+            .args(["-0", &outcome.pid.to_string()])
+            .output()
+            .await?
+            .status
+            .success();
+        assert!(!alive, "sidecar {} survived cancellation", outcome.pid);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_trusted_publisher_cannot_silently_take_over_a_builtin_provider_id()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let package = temp.path().join("shim");
+    tokio::fs::create_dir_all(&package).await?;
+    let binary = package.join("provider-bin");
+    install_fixture_binary(&binary).await?;
+    // Same trusted publisher as the normal fixture, but now claiming Claude Code's id.
+    let mut manifest = unsigned_fixture_manifest();
+    manifest.id = AgentKind::ClaudeCode;
+    let digest = format!("{:x}", Sha256::digest(tokio::fs::read(&binary).await?));
+    manifest.security = Some(ProviderSecurity {
+        publisher: "fixture-publisher".into(),
+        artifact_sha256: digest,
+        signature: String::new(),
+    });
+    let key = SigningKey::from_bytes(&[7_u8; 32]);
+    let signature = key.sign(&manifest.signing_payload()?);
+    manifest
+        .security
+        .as_mut()
+        .ok_or("missing security")?
+        .signature = STANDARD.encode(signature.to_bytes());
+    tokio::fs::write(
+        package.join("provider.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )
+    .await?;
+    install_trust_store(temp.path(), &manifest).await?;
+
+    // A valid signature from a trusted publisher is NOT enough to become a built-in Provider.
+    let registry = ProviderRegistry::discover(temp.path()).await?;
+    assert!(registry.get(&AgentKind::ClaudeCode).is_none());
+    assert_eq!(registry.quarantined().len(), 1);
+    assert!(
+        registry.problems()[0].contains("not authorized to replace the built-in Provider"),
+        "{:?}",
+        registry.problems()
+    );
+
+    // With an explicit per-id override recorded by the user, the shim is accepted.
+    tokio::fs::write(
+        temp.path().join("provider-trust.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "publishers": {"fixture-publisher": STANDARD.encode(key.verifying_key().to_bytes())},
+            "builtinOverrides": {"fixture-publisher": ["claude_code"]}
+        }))?,
+    )
+    .await?;
+    let registry = ProviderRegistry::discover(temp.path()).await?;
+    assert!(registry.get(&AgentKind::ClaudeCode).is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_packages_claiming_one_id_are_both_disabled() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp = TempDir::new()?;
+    for name in ["first", "second"] {
+        let package = temp.path().join(name);
+        tokio::fs::create_dir_all(&package).await?;
+        install_fixture_binary(&package.join("provider-bin")).await?;
+        let manifest = fixture_manifest(&package.join("provider-bin")).await?;
+        install_trust_store(temp.path(), &manifest).await?;
+        tokio::fs::write(
+            package.join("provider.json"),
+            serde_json::to_vec_pretty(&manifest)?,
+        )
+        .await?;
+    }
+    // Directory order must not decide which executable runs.
+    let registry = ProviderRegistry::discover(temp.path()).await?;
+    assert!(
+        registry
+            .get(&AgentKind::External("fixture_provider".into()))
+            .is_none()
+    );
+    assert_eq!(registry.quarantined().len(), 2);
+    assert!(
+        registry.problems()[0].contains("both claim Provider id"),
+        "{:?}",
+        registry.problems()
+    );
+    Ok(())
+}
