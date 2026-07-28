@@ -10,6 +10,8 @@
 
 新增 Qoder、Trae、Cursor、Grok 等 CLI 时，依次补齐：Provider 标识和目录描述、矩阵中的关键参数、非交互只读探针策略及其测试、对应 Adapter。并发调度器不需要随 CLI 数量修改；在安全探针尚未实现前将 `runtimeProbe` 保持为 `null`，不能用一个未经验证的通用命令猜测认证或额度状态。
 
+`requestPolicy` 声明 CLI 内部不可见请求所需的协议兼容策略。Grok 使用 DeepSeek V4 时采用 `deepseek_forced_tool_choice_non_thinking`：AgentFlow 为每次运行创建仅监听回环地址的短生命周期网关，用随机令牌替代真实凭据，并只在请求使用强制 `tool_choice` 时注入 `thinking: {"type":"disabled"}`。主 Agent 的普通推理请求保持 thinking；未知策略必须 fail closed，不能静默套用其他 Provider 的改写规则。
+
 升级固定版本时：先修改矩阵与 `provider-compatibility.yml` 中的精确 npm 版本，运行 `scripts/verify-provider-cli-contracts.sh` 和 Rust/桌面测试，再提交。每周的 latest advisory 只侦测上游参数漂移，不会自动把未经验证的新版本加入稳定矩阵，也不会改写用户电脑上的 CLI。
 
 ## Lima OS 隔离

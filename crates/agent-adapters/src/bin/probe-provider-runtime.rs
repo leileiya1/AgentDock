@@ -1,14 +1,16 @@
-use agentflow_agent_adapters::{probe_cli_runtime, tool_status};
+use agentflow_agent_adapters::{probe_cli_runtime, probe_cli_runtime_at, tool_status};
 use std::{path::PathBuf, process::ExitCode};
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let Some(name) = std::env::args().nth(1) else {
-        eprintln!("usage: probe-provider-runtime <claude|codex> [executable]");
+        eprintln!(
+            "usage: probe-provider-runtime <claude|codex|qodercli|grok> [executable] [authorized-cwd]"
+        );
         return ExitCode::from(2);
     };
-    if !matches!(name.as_str(), "claude" | "codex") {
-        eprintln!("only claude and codex currently have real runtime probes");
+    if !matches!(name.as_str(), "claude" | "codex" | "qodercli" | "grok") {
+        eprintln!("provider does not have a real runtime probe");
         return ExitCode::from(2);
     }
     let explicit_path = std::env::args().nth(2).map(PathBuf::from);
@@ -35,7 +37,11 @@ async fn main() -> ExitCode {
         eprintln!("provider path is unavailable");
         return ExitCode::FAILURE;
     };
-    let probe = probe_cli_runtime(&name, &path).await;
+    let authorized_cwd = std::env::args().nth(3).map(PathBuf::from);
+    let probe = match authorized_cwd {
+        Some(cwd) => probe_cli_runtime_at(&name, &path, &cwd).await,
+        None => probe_cli_runtime(&name, &path).await,
+    };
     if probe.passed {
         println!("runtime_probe=passed");
         ExitCode::SUCCESS

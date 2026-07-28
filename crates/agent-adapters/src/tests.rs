@@ -59,6 +59,10 @@ mod tests {
         assert!(!runtime_probe_supported("qwen"));
         assert!(runtime_probe_supported("qodercli"));
         assert!(runtime_probe_supported("grok"));
+        assert_eq!(
+            cli_request_policy("grok").as_deref(),
+            Some("deepseek_forced_tool_choice_non_thinking")
+        );
         let (qoder, qoder_versions) =
             support_level("qodercli", Some("1.1.3"), true, &matrix);
         assert_eq!(qoder, CliSupportLevel::Verified);

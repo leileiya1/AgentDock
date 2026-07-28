@@ -15,6 +15,7 @@ struct CliCompatibility {
     verified_versions: Vec<String>,
     required_flags: Vec<String>,
     runtime_probe: Option<String>,
+    request_policy: Option<String>,
 }
 
 fn compatibility_matrix() -> Result<CompatibilityMatrix, AdapterError> {
@@ -41,6 +42,14 @@ fn normalized_cli_version(output: &str) -> Option<String> {
             .is_some_and(u8::is_ascii_digit);
         (starts_with_digit && candidate.contains('.')).then(|| candidate.to_string())
     })
+}
+
+fn cli_request_policy(name: &str) -> Option<String> {
+    compatibility_matrix()
+        .ok()?
+        .providers
+        .remove(name)?
+        .request_policy
 }
 
 fn support_level(
@@ -74,12 +83,34 @@ fn support_level(
 
 fn provider_environment(provider_name: &str) -> HashMap<String, String> {
     let mut provider_env = cli_credential_env(provider_name);
+    provider_env.extend(provider_identity_environment());
+    provider_env
+}
+
+fn provider_identity_environment() -> HashMap<String, String> {
+    let mut provider_env = HashMap::new();
     for key in PROVIDER_ENV_KEYS {
         if let Ok(value) = std::env::var(key) {
-            provider_env.entry(key.into()).or_insert(value);
+            provider_env.insert(key.into(), value);
         }
     }
     provider_env
+}
+
+struct ProcessEnvironment {
+    additional: HashMap<String, String>,
+    suppress: Vec<String>,
+    load_provider_credential: bool,
+}
+
+impl Default for ProcessEnvironment {
+    fn default() -> Self {
+        Self {
+            additional: HashMap::new(),
+            suppress: Vec::new(),
+            load_provider_credential: true,
+        }
+    }
 }
 
 async fn start_process(
@@ -90,12 +121,41 @@ async fn start_process(
     cancel: CancellationToken,
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<RunningAgent, AdapterError> {
+    start_process_with_env(
+        provider_name,
+        program,
+        args,
+        req,
+        cancel,
+        tx,
+        ProcessEnvironment::default(),
+    )
+    .await
+}
+
+async fn start_process_with_env(
+    provider_name: &str,
+    program: PathBuf,
+    args: Vec<String>,
+    req: AgentRunRequest,
+    cancel: CancellationToken,
+    tx: mpsc::Sender<AgentEvent>,
+    environment: ProcessEnvironment,
+) -> Result<RunningAgent, AdapterError> {
     // Single choke point for every CLI Provider: an extra allowed command carrying list
     // separators would widen a CLI's own permission parsing beyond what was approved.
     // Fail before spawning rather than after the process already holds the wider grant.
     validate_extra_allowed_commands(&req.extra_allowed_commands)?;
     tokio::fs::create_dir_all(&req.run_dir).await?;
-    let mut provider_env = provider_environment(provider_name);
+    let mut provider_env = if environment.load_provider_credential {
+        provider_environment(provider_name)
+    } else {
+        provider_identity_environment()
+    };
+    provider_env.extend(environment.additional);
+    for key in environment.suppress {
+        provider_env.remove(&key);
+    }
     // A project-level deny rule remains authoritative even for AgentFlow-managed credentials.
     for key in &req.env_denylist {
         provider_env.remove(key);
@@ -824,6 +884,25 @@ fn classify_runtime_probe_failure(text: &str, exit_code: Option<i32>) -> String 
 /// disallows writes/tools, and returns only a categorized verdict so provider output is never
 /// surfaced to the desktop or persisted in the task database.
 pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
+    probe_cli_runtime_in(name, program, None).await
+}
+
+/// Same safe probe with an explicitly authorized working directory. The desktop uses the
+/// isolated default above; this entry point exists for production acceptance where the operator
+/// deliberately confines every external Provider call to a known fixture repository.
+pub async fn probe_cli_runtime_at(
+    name: &str,
+    program: &Path,
+    authorized_cwd: &Path,
+) -> CliRuntimeProbe {
+    probe_cli_runtime_in(name, program, Some(authorized_cwd)).await
+}
+
+async fn probe_cli_runtime_in(
+    name: &str,
+    program: &Path,
+    authorized_cwd: Option<&Path>,
+) -> CliRuntimeProbe {
     let strategy = compatibility_matrix()
         .ok()
         .and_then(|matrix| matrix.providers.get(name).cloned())
@@ -866,6 +945,13 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
         return CliRuntimeProbe {
             passed: false,
             problem: Some("无法初始化真实探针的临时 Git 仓库".into()),
+        };
+    }
+    let probe_cwd = authorized_cwd.unwrap_or_else(|| temp.path());
+    if !probe_cwd.is_dir() {
+        return CliRuntimeProbe {
+            passed: false,
+            problem: Some(format!("真实探针目录不存在：{}", probe_cwd.display())),
         };
     }
 
@@ -916,7 +1002,7 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
             "--disable".into(),
             "memories".into(),
             "--cd".into(),
-            temp.path().to_string_lossy().into_owned(),
+            probe_cwd.to_string_lossy().into_owned(),
             "--sandbox".into(),
             "read-only".into(),
             "--json".into(),
@@ -930,7 +1016,7 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
             "-p".into(),
             format!("只回复 {RUNTIME_PROBE_MARKER}，不要读取文件、不要调用工具"),
             "--cwd".into(),
-            temp.path().to_string_lossy().into_owned(),
+            probe_cwd.to_string_lossy().into_owned(),
             "--output-format".into(),
             "json".into(),
             "--permission-mode".into(),
@@ -945,7 +1031,7 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
             "-p".into(),
             format!("只回复 {RUNTIME_PROBE_MARKER}，不要读取文件、不要调用工具"),
             "--cwd".into(),
-            temp.path().to_string_lossy().into_owned(),
+            probe_cwd.to_string_lossy().into_owned(),
             "--output-format".into(),
             "json".into(),
             "--permission-mode".into(),
@@ -962,15 +1048,57 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
         ],
         _ => Vec::new(),
     };
+    let request_policy = cli_request_policy(name);
+    if name == "grok"
+        && request_policy.as_deref().is_some_and(|policy| {
+            policy != "deepseek_forced_tool_choice_non_thinking"
+        })
+    {
+        return CliRuntimeProbe {
+            passed: false,
+            problem: Some(format!(
+                "未知 Grok 请求兼容策略：{}，已拒绝运行",
+                request_policy.as_deref().unwrap_or_default()
+            )),
+        };
+    }
+    let compat = if name == "grok"
+        && request_policy.as_deref() == Some("deepseek_forced_tool_choice_non_thinking")
+    {
+        match deepseek_compat::prepare_grok_deepseek_compat(temp.path(), probe_cwd, &[]).await {
+            Ok(value) => value,
+            Err(error) => {
+                return CliRuntimeProbe {
+                    passed: false,
+                    problem: Some(format!("Grok 兼容网关探针失败：{error}")),
+                };
+            }
+        }
+    } else {
+        None
+    };
+    let mut environment = if compat.is_some() {
+        provider_identity_environment()
+    } else {
+        provider_environment(name)
+    };
+    if let Some(compat) = &compat {
+        environment.extend(compat.environment());
+        environment.remove("DEEPSEEK_API_KEY");
+    }
     let mut command = Command::new(program);
     command
         .args(args)
-        .current_dir(temp.path())
+        .current_dir(probe_cwd)
         .env_clear()
-        .envs(provider_environment(name))
+        .envs(environment)
         .stdin(Stdio::null())
         .kill_on_drop(true);
-    let output = match tokio::time::timeout(Duration::from_secs(45), command.output()).await {
+    let output = tokio::time::timeout(Duration::from_secs(45), command.output()).await;
+    if let Some(compat) = compat {
+        compat.shutdown().await;
+    }
+    let output = match output {
         Ok(Ok(output)) => output,
         Ok(Err(error)) => {
             return CliRuntimeProbe {
@@ -990,7 +1118,13 @@ pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
     if let Ok(last) = tokio::fs::read_to_string(&last_message).await {
         combined.push_str(&last);
     }
-    if output.status.success() && combined.contains(RUNTIME_PROBE_MARKER) {
+    let deepseek_aux_protocol_error = combined.contains("400")
+        && combined.to_ascii_lowercase().contains("thinking")
+        && combined.contains("tool_choice");
+    if output.status.success()
+        && combined.contains(RUNTIME_PROBE_MARKER)
+        && !deepseek_aux_protocol_error
+    {
         CliRuntimeProbe {
             passed: true,
             problem: None,

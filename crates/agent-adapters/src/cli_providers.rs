@@ -606,7 +606,41 @@ impl AgentProvider for GrokCliAdapter {
     ) -> Result<RunningAgent, AdapterError> {
         let args = grok_args(&req);
         let executable = resolve_cli("grok", &self.executable).await?;
-        start_process("grok", executable, args, req, cancel, tx).await
+        let compat = match cli_request_policy("grok").as_deref() {
+            Some("deepseek_forced_tool_choice_non_thinking") => {
+                deepseek_compat::prepare_grok_deepseek_compat(
+                    &req.run_dir,
+                    &req.worktree,
+                    &req.env_denylist,
+                )
+                .await?
+            }
+            None => None,
+            Some(policy) => {
+                return Err(AdapterError::Incompatible(format!(
+                    "unknown Grok request policy: {policy}"
+                )));
+            }
+        };
+        let Some(compat) = compat else {
+            return start_process("grok", executable, args, req, cancel, tx).await;
+        };
+        let result = start_process_with_env(
+            "grok",
+            executable,
+            args,
+            req,
+            cancel,
+            tx,
+            ProcessEnvironment {
+                additional: compat.environment(),
+                suppress: vec!["DEEPSEEK_API_KEY".into()],
+                load_provider_credential: false,
+            },
+        )
+        .await;
+        compat.shutdown().await;
+        result
     }
 
     async fn collect_result(

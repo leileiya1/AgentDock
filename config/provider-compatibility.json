@@ -41,7 +41,8 @@
       "package": "@xai-official/grok",
       "verifiedVersions": ["0.2.111"],
       "requiredFlags": ["--output-format", "--sandbox", "--permission-mode", "--cwd"],
-      "runtimeProbe": "grok_plan_json"
+      "runtimeProbe": "grok_plan_json",
+      "requestPolicy": "deepseek_forced_tool_choice_non_thinking"
     },
     "kimi": {
       "displayName": "Kimi CLI",

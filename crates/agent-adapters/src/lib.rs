@@ -50,6 +50,7 @@ pub struct RunBudget {
 }
 
 mod credentials;
+mod deepseek_compat;
 mod dynamic;
 use credentials::cli_credential_env;
 pub use dynamic::{ExternalProviderAdapter, UnavailableProviderAdapter};

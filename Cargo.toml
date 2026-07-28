@@ -33,6 +33,7 @@ agentflow-daemon = { path = "crates/daemon" }
 agentflow-orchestrator = { path = "crates/orchestrator" }
 anyhow = "1.0"
 async-trait = "0.1"
+axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 chacha20poly1305 = "0.10"
@@ -45,7 +46,7 @@ hex = "0.4"
 jsonschema = "0.33"
 libc = "0.2"
 regex = "1.11"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 schemars = { version = "1.0", features = ["chrono04", "uuid1"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
