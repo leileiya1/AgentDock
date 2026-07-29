@@ -283,6 +283,95 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn qoder_result_event_unwraps_the_structured_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = json!({
+            "schema_version": 1,
+            "task_id": "task-qoder",
+            "plan_version": 1,
+            "summary": "只新增两个文件",
+            "steps": [{"title": "实现", "detail": "新增函数", "validation": "bun test"}],
+            "risks": [],
+            "allowed_paths": ["src/normalizeTag.ts", "src/normalizeTag.test.ts"]
+        })
+        .to_string();
+        let output = format!(
+            "{}\n{}\n",
+            json!({"type": "assistant", "message": {"content": "planning"}}),
+            json!({"type": "result", "subtype": "success", "result": format!("```json\n{plan}\n```")})
+        );
+        let extracted = provider_output_text("qoder", &output).ok_or("missing Qoder result")?;
+        assert_eq!(parse_plan(&extracted)?.task_id, "task-qoder");
+        Ok(())
+    }
+
+    #[test]
+    fn grok_text_events_reassemble_the_structured_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = json!({
+            "schema_version": 1,
+            "task_id": "task-grok",
+            "plan_version": 1,
+            "summary": "只读规划",
+            "steps": [{"title": "验证", "detail": "运行测试", "validation": "bun test"}],
+            "risks": [],
+            "allowed_paths": ["src/**"]
+        })
+        .to_string();
+        let output = std::iter::once(json!({"type": "thought", "data": "ignore me"}))
+            .chain(plan.chars().map(|chunk| json!({"type": "text", "data": chunk.to_string()})))
+            .chain(std::iter::once(json!({"type": "end", "stopReason": "end_turn"})))
+            .map(|event| event.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let extracted = provider_output_text("grok", &output).ok_or("missing Grok result")?;
+        assert_eq!(parse_plan(&extracted)?.task_id, "task-grok");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn qoder_and_grok_reviewers_use_their_stream_envelopes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let review = json!({
+            "schema_version": 1,
+            "task_id": "task-review",
+            "revision": 1,
+            "commit_sha": "1234567",
+            "decision": "pass",
+            "summary": "审查通过",
+            "issues": []
+        })
+        .to_string();
+
+        let qoder_dir = tempfile::tempdir()?;
+        tokio::fs::write(
+            qoder_dir.path().join("stdout.log"),
+            format!(
+                "{}\n",
+                json!({"type": "result", "subtype": "success", "result": review})
+            ),
+        )
+        .await?;
+        assert_eq!(
+            read_review_output(qoder_dir.path(), "qoder").await?.decision,
+            ReviewDecision::Pass
+        );
+
+        let grok_dir = tempfile::tempdir()?;
+        let grok_output = review
+            .chars()
+            .map(|chunk| json!({"type": "text", "data": chunk.to_string()}).to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        tokio::fs::write(grok_dir.path().join("stdout.log"), grok_output).await?;
+        assert_eq!(
+            read_review_output(grok_dir.path(), "grok").await?.decision,
+            ReviewDecision::Pass
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn claude_auth_problem_falls_back_when_doctor_cannot_run()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -592,6 +681,16 @@ mod tests {
         let resumed = qoder_args(&qoder_request);
         assert!(resumed.windows(2).any(|v| v == ["--resume", "qoder-session"]));
         assert!(!resumed.iter().any(|v| v == "--no-session-persistence"));
+
+        let qoder_development = qoder_args(&test_request(
+            RunRole::Developer,
+            PermissionTier::Normal,
+        ));
+        assert!(
+            qoder_development
+                .windows(2)
+                .any(|v| v == ["--permission-mode", "accept_edits"])
+        );
 
         let grok = grok_args(&test_request(RunRole::Reviewer, PermissionTier::ReadOnly));
         assert!(grok.windows(2).any(|v| v == ["--permission-mode", "plan"]));

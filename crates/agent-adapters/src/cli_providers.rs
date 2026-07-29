@@ -527,7 +527,7 @@ impl AgentProvider for QoderCliAdapter {
             RunRole::Developer => read_development_output(run_dir, "qoder")
                 .await
                 .map(CollectedResult::Development),
-            RunRole::Reviewer => read_review(&run_dir.join("stdout.log"))
+            RunRole::Reviewer => read_review_output(run_dir, "qoder")
                 .await
                 .map(CollectedResult::Review),
             _ => Err(AdapterError::UnsupportedRole(role)),
@@ -545,7 +545,7 @@ fn qoder_args(req: &AgentRunRequest) -> Vec<String> {
         "--output-format".into(),
         "stream-json".into(),
         "--permission-mode".into(),
-        if read_only { "plan" } else { "dont_ask" }.into(),
+        if read_only { "plan" } else { "accept_edits" }.into(),
         "--max-output-tokens".into(),
         req.budget
             .remaining_tokens
@@ -655,7 +655,7 @@ impl AgentProvider for GrokCliAdapter {
             RunRole::Developer => read_development_output(run_dir, "grok")
                 .await
                 .map(CollectedResult::Development),
-            RunRole::Reviewer => read_review(&run_dir.join("stdout.log"))
+            RunRole::Reviewer => read_review_output(run_dir, "grok")
                 .await
                 .map(CollectedResult::Review),
             _ => Err(AdapterError::UnsupportedRole(role)),

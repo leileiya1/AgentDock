@@ -1,7 +1,7 @@
 use agentflow_contracts::{
     CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE, DEEPSEEK_API_KEYCHAIN_SERVICE,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, process::Stdio};
 
 #[derive(Debug, Clone, Copy)]
 struct CliCredentialSpec {
@@ -53,6 +53,30 @@ fn keychain_key(service: &str) -> Option<String> {
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            // Locally built/ad-hoc desktop bundles get a different code identity after every
+            // reinstall. Existing login-keychain items may then reject the framework lookup even
+            // though the user's `security` client can still read the same item. Keep the secret
+            // out of argv and logs; capture it only in memory as a compatibility fallback.
+            let output = std::process::Command::new("/usr/bin/security")
+                .args([
+                    "find-generic-password",
+                    "-s",
+                    service,
+                    "-a",
+                    "AgentFlow",
+                    "-w",
+                ])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        })
         .filter(|value| !value.is_empty())
 }
 

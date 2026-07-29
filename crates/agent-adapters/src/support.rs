@@ -449,6 +449,23 @@ fn provider_output_text(provider: &str, text: &str) -> Option<String> {
             .ok()
             .and_then(|value| value.get("response").and_then(Value::as_str).map(str::to_owned));
     }
+    if provider == "qoder" {
+        return text.lines().rev().find_map(|line| {
+            serde_json::from_str::<Value>(line)
+                .ok()
+                .filter(|value| value.get("type").and_then(Value::as_str) == Some("result"))
+                .and_then(|value| value.get("result").and_then(Value::as_str).map(str::to_owned))
+        });
+    }
+    if provider == "grok" {
+        let output = text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|value| value.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|value| value.get("data").and_then(Value::as_str).map(str::to_owned))
+            .collect::<String>();
+        return (!output.is_empty()).then_some(output);
+    }
     None
 }
 
@@ -542,6 +559,22 @@ pub(crate) async fn read_review(path: &Path) -> Result<ReviewResult, AdapterErro
         .await
         .map_err(|e| AdapterError::InvalidResult(format!("{}: {e}", path.display())))?;
     parse_review(&text)
+}
+pub(crate) async fn read_review_output(
+    run_dir: &Path,
+    provider: &str,
+) -> Result<ReviewResult, AdapterError> {
+    let path = run_dir.join("stdout.log");
+    if log_file_recovery_is_unsafe(&path).await {
+        return Err(AdapterError::InvalidResult(
+            "provider logs were truncated at the size limit, so no review can be recovered from them".into(),
+        ));
+    }
+    let text = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|error| AdapterError::InvalidResult(format!("{}: {error}", path.display())))?;
+    let extracted = provider_output_text(provider, &text);
+    parse_review(extracted.as_deref().unwrap_or(&text))
 }
 async fn read_review_from_claude(path: &Path) -> Result<ReviewResult, AdapterError> {
     if log_file_recovery_is_unsafe(path).await {
