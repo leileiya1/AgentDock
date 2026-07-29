@@ -16,6 +16,7 @@ import { TaskHeader } from "@/components/TaskHeader";
 import { ExecutionTree } from "@/components/execution/ExecutionTree";
 import { LiveStatusBar } from "@/components/execution/LiveStatusBar";
 import { StopRunButton } from "@/components/execution/StopRunButton";
+import { AgentConsole } from "@/components/execution/AgentConsole";
 import { ErrorState } from "@/components/ErrorState";
 import { SkeletonRows } from "@/components/Skeleton";
 import { OverviewTab } from "@/routes/detail/OverviewTab";
@@ -26,7 +27,7 @@ import { GovernanceTab } from "@/routes/detail/GovernanceTab";
 import { isAgentRunning, isTaskExecuting } from "@/lib/taskStatus";
 
 const TABS: Array<{ id: DetailTab; label: string; key: string }> = [
-  { id: "overview", label: "概览", key: "1" },
+  { id: "overview", label: "结果与验收", key: "1" },
   { id: "logs", label: "日志", key: "2" },
   { id: "diff", label: "Diff", key: "3" },
   { id: "review", label: "审查", key: "4" },
@@ -155,6 +156,19 @@ export function TaskDetail() {
                 构建/合并阶段没有 Agent 进程，停止会与工作区清理竞争，故不显示。 */}
             {isAgentRunning(detail.status) && <StopRunButton taskId={detail.id} />}
           </div>
+          {execution.tree && (
+            <div className="shrink-0 px-4 pt-2">
+              <AgentConsole
+                task={detail}
+                tree={execution.tree}
+                onOpen={(phase, runId, revision) => {
+                  if (!taskId) return;
+                  selectTreeNode(taskId, { revision, phase, runId });
+                  if (runId) setActiveTab(taskId, "logs");
+                }}
+              />
+            </div>
+          )}
           <div
             className="flex shrink-0 gap-1 overflow-x-auto border-b border-line/70 px-4 pt-2"
             role="tablist"

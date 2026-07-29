@@ -18,6 +18,7 @@ import { AuditExportDialog } from "@/components/AuditExportDialog";
 import { PermissionProjectSummary } from "@/components/permission/PermissionProjectSummary";
 import { ProjectOverview } from "@/components/home/ProjectOverview";
 import { HomeEmpty } from "@/components/home/HomeEmpty";
+import { AttentionCenter } from "@/components/home/AttentionCenter";
 import { isTaskExecuting } from "@/lib/taskStatus";
 
 export function TaskList() {
@@ -75,7 +76,7 @@ export function TaskList() {
             <HomeEmpty onNew={newTask} />
           ) : (
             <div className="flex flex-col gap-6">
-              <Group group="attention" tasks={grouped.attention} onRow={onRow} alwaysShow />
+              <AttentionCenter tasks={grouped.attention} onOpen={onRow} />
               <Group group="active" tasks={grouped.active} onRow={onRow} />
               {grouped.done.length > 0 && (
                 <section>
@@ -127,14 +128,12 @@ function Group({
   group,
   tasks,
   onRow,
-  alwaysShow,
 }: {
   group: TaskGroup;
   tasks: TaskSummary[];
   onRow: (t: TaskSummary) => void;
-  alwaysShow?: boolean;
 }) {
-  if (tasks.length === 0 && !alwaysShow) return null;
+  if (tasks.length === 0) return null;
   const attention = group === "attention";
   return (
     <section>
