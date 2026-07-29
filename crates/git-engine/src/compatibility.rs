@@ -57,6 +57,15 @@ impl Git {
             .as_deref()
             == Some("true");
         let case_collisions = self.case_collisions(repo).await?;
+        let worktree_porcelain = self
+            .optional_text(repo, &["worktree", "list", "--porcelain"])
+            .await
+            .unwrap_or_default();
+        let prunable_worktrees = prunable_worktrees_from_porcelain(&worktree_porcelain);
+        let repo_readable = tokio::fs::read_dir(repo).await.is_ok();
+        let repo_writable = tokio::fs::metadata(repo)
+            .await
+            .is_ok_and(|metadata| !metadata.permissions().readonly());
         let mut warnings = Vec::new();
         let mut blockers = Vec::new();
         if shallow {
@@ -80,6 +89,12 @@ impl Git {
                 case_collisions.join("、")
             ));
         }
+        if !prunable_worktrees.is_empty() {
+            warnings.push(format!(
+                "检测到 {} 个失效 worktree 注册；可安全清理注册，不会删除项目源文件",
+                prunable_worktrees.len()
+            ));
+        }
         Ok(GitCompatibilityReport {
             repo_path: repo.to_string_lossy().into_owned(),
             repository_identity: identity,
@@ -94,6 +109,10 @@ impl Git {
             network_filesystem,
             case_insensitive,
             case_collisions,
+            prunable_worktrees,
+            repo_readable,
+            repo_writable,
+            worktree_root_writable: false,
             warnings,
             blockers,
         })
@@ -227,6 +246,17 @@ impl Git {
     }
 }
 
+fn prunable_worktrees_from_porcelain(text: &str) -> Vec<String> {
+    text.split("\n\n")
+        .filter_map(|record| {
+            let path = record
+                .lines()
+                .find_map(|line| line.strip_prefix("worktree "))?;
+            record.lines().any(|line| line.starts_with("prunable ")).then(|| path.to_string())
+        })
+        .collect()
+}
+
 fn case_collisions_from_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut grouped = BTreeMap::<String, Vec<String>>::new();
     for path in paths {
@@ -272,7 +302,7 @@ async fn filesystem_name(repo: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod compatibility_tests {
-    use super::case_collisions_from_paths;
+    use super::{case_collisions_from_paths, prunable_worktrees_from_porcelain};
 
     #[test]
     fn finds_case_collisions_deterministically() {
@@ -281,5 +311,11 @@ mod compatibility_tests {
             vec!["src/api.rs / src/API.rs"]
         );
         assert!(case_collisions_from_paths(["src/api.rs", "src/client.rs"]).is_empty());
+    }
+
+    #[test]
+    fn finds_only_explicitly_prunable_worktree_registrations() {
+        let text = "worktree /repo\nHEAD a\nbranch refs/heads/main\n\nworktree /missing/agentflow\nHEAD b\nprunable gitdir file points to non-existent location\n\n";
+        assert_eq!(prunable_worktrees_from_porcelain(text), vec!["/missing/agentflow"]);
     }
 }

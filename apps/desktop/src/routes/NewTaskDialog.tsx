@@ -1,22 +1,43 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle } from "lucide-react";
-import type { AgentKind, DeliveryMode, ProviderDescriptor } from "@/generated/bindings";
+import { AlertTriangle, Plus, Trash2 } from "lucide-react";
+import type {
+  AcceptanceCriterionInput,
+  AcceptanceCriterionKind,
+  AgentKind,
+  DeliveryMode,
+  ProviderDescriptor,
+  ProviderPreflightArgs,
+  TaskPreflightReport,
+} from "@/generated/bindings";
 import { AGENT_META, ALL_AGENTS, isApiAgent } from "@/copy/agents";
 import { useProjects } from "@/hooks/useProjects";
-import { useProjectSettings } from "@/hooks/useSettings";
+import { useProjectGitCompatibility, useProjectSettings } from "@/hooks/useSettings";
 import { useProviders } from "@/hooks/useProviders";
+import { useProviderPreflight } from "@/hooks/usePreflight";
 import { useCreateTask, useStartTask } from "@/hooks/useTasks";
 import { useExecutionNodes } from "@/hooks/useGovernance";
 import { useUiStore } from "@/stores/uiStore";
 import { errorLine } from "@/copy/errors";
+import { pendingPreflightRoles, preflightBlockLine, summarizePreflight } from "@/lib/preflight";
 import { toast } from "@/stores/toastStore";
 import { Dialog } from "@/components/Dialog";
+import { PreflightBlockedDialog, PreflightProgress } from "@/components/PreflightBlockedDialog";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { maxRevisionsError, parseMaxRevisions } from "@/lib/taskForm";
+
+type AcceptanceDraft = AcceptanceCriterionInput & { id: string };
+
+const ACCEPTANCE_KIND_LABEL: Record<AcceptanceCriterionKind, string> = {
+  build: "构建",
+  test: "测试",
+  behavior: "行为",
+  manual: "人工验收",
+};
 
 const FALLBACK_PROVIDERS: ProviderDescriptor[] = ALL_AGENTS.map((id) => ({
   id,
@@ -49,11 +70,14 @@ export function NewTaskDialog() {
   const close = useUiStore((s) => s.closeNewTask);
   const projects = useProjects();
   const projectSettings = useProjectSettings(projectId ?? undefined);
+  const gitCompatibility = useProjectGitCompatibility(projectId ?? undefined);
   const providers = useProviders();
   const nodes = useExecutionNodes();
   const create = useCreateTask();
   const start = useStartTask();
+  const preflight = useProviderPreflight();
   const navigate = useNavigate();
+  const preflightSession = useRef(0);
 
   const project = useMemo(() => projects.data?.find((p) => p.id === projectId), [projects.data, projectId]);
   const catalog = providers.data ?? FALLBACK_PROVIDERS;
@@ -62,10 +86,12 @@ export function NewTaskDialog() {
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState<AcceptanceDraft[]>([]);
   const [developerAgent, setDeveloperAgent] = useState<AgentKind>("claude_code");
   const [reviewerAgent, setReviewerAgent] = useState<AgentKind>("codex");
   const [targetBranch, setTargetBranch] = useState("");
-  const [maxRevisions, setMaxRevisions] = useState(3);
+  const [maxRevisions, setMaxRevisions] = useState("3");
+  const [maxRevisionsTouched, setMaxRevisionsTouched] = useState(false);
   const [allowApiEgress, setAllowApiEgress] = useState(false);
   const [requirePlanApproval, setRequirePlanApproval] = useState(true);
   const [tokenBudget, setTokenBudget] = useState(500_000);
@@ -75,6 +101,7 @@ export function NewTaskDialog() {
   const [priority, setPriority] = useState(0);
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("local_merge");
   const [executionNodeId, setExecutionNodeId] = useState("local");
+  const [preflightReport, setPreflightReport] = useState<TaskPreflightReport | null>(null);
 
   const open = !!projectId;
   const sameAgent = developerAgent === reviewerAgent;
@@ -92,15 +119,37 @@ export function NewTaskDialog() {
     ? projectSettings.data.reviewCouncil.reviewers?.some(requiresEgress) ?? false
     : false;
   const apiMayBeUsed = directEgress || fallbackMayUseApi || councilMayUseApi;
-  const canSubmit = !!title.trim() && !sameAgent && (!directEgress && !councilMayUseApi || allowApiEgress) && !create.isPending && !start.isPending;
+  const maxRevisionsProblem = maxRevisionsError(maxRevisions);
+  const criteriaValid = acceptanceCriteria.every((criterion) => criterion.text.trim().length > 0 && criterion.text.trim().length <= 500);
+  const canSubmit = !!title.trim()
+    && !sameAgent
+    && (!directEgress && !councilMayUseApi || allowApiEgress)
+    && !maxRevisionsProblem
+    && criteriaValid
+    && !create.isPending
+    && !start.isPending
+    && !preflight.isPending;
+  const pendingRoles = pendingPreflightRoles(
+    {
+      projectId: projectId ?? "",
+      developerAgent,
+      reviewerAgent,
+      allowApiEgress,
+      requirePlanApproval,
+    },
+    projectSettings.data,
+    catalog,
+  );
 
   const reset = () => {
     setTitle("");
     setDescription("");
+    setAcceptanceCriteria([]);
     setDeveloperAgent("claude_code");
     setReviewerAgent("codex");
     setTargetBranch("");
-    setMaxRevisions(3);
+    setMaxRevisions("3");
+    setMaxRevisionsTouched(false);
     setAllowApiEgress(false);
     setRequirePlanApproval(true);
     setTokenBudget(500_000);
@@ -110,44 +159,94 @@ export function NewTaskDialog() {
     setPriority(0);
     setDeliveryMode("local_merge");
     setExecutionNodeId("local");
+    setPreflightReport(null);
   };
   const onClose = () => {
+    // Tauri invokes cannot be cancelled in flight. Invalidating the session makes
+    // a late preflight response inert, so closing this dialog can never create a task.
+    preflightSession.current += 1;
     close();
     reset();
   };
 
+  const preflightArgs = (): ProviderPreflightArgs => ({
+    projectId: projectId!,
+    developerAgent,
+    reviewerAgent,
+    allowApiEgress,
+    requirePlanApproval,
+  });
+
+  // The happy path: create the task and, if requested, start it, then navigate to its detail.
+  const createThenStart = async (thenStart: boolean) => {
+    const detail = await create.mutateAsync({
+      projectId: projectId!,
+      title: title.trim(),
+      description: description.trim(),
+      acceptanceCriteria: acceptanceCriteria.map(({ kind, text }) => ({ kind, text: text.trim() })),
+      developerAgent,
+      reviewerAgent,
+      targetBranch: targetBranch.trim() || null,
+      maxRevisions: parseMaxRevisions(maxRevisions),
+      allowApiEgress,
+      policy: {
+        requirePlanApproval,
+        priority,
+        tokenBudget,
+        costBudgetUsd,
+        timeBudgetSecs,
+        minimumQualityScore,
+        deliveryMode,
+        executionNodeId: executionNodeId === "local" ? null : executionNodeId,
+      },
+    });
+    if (thenStart) {
+      try {
+        await start.mutateAsync(detail.id);
+      } catch (e) {
+        toast.error(errorLine(e));
+      }
+    }
+    onClose();
+    navigate(`/p/${projectId}/t/${detail.id}`);
+  };
+
   const submit = async (thenStart: boolean) => {
+    setMaxRevisionsTouched(true);
     if (!projectId || !canSubmit) return;
     try {
-      const detail = await create.mutateAsync({
-        projectId,
-        title: title.trim(),
-        description: description.trim(),
-        developerAgent,
-        reviewerAgent,
-        targetBranch: targetBranch.trim() || null,
-        maxRevisions,
-        allowApiEgress,
-        policy: {
-          requirePlanApproval,
-          priority,
-          tokenBudget,
-          costBudgetUsd,
-          timeBudgetSecs,
-          minimumQualityScore,
-          deliveryMode,
-          executionNodeId: executionNodeId === "local" ? null : executionNodeId,
-        },
-      });
+      // Before spawning a run, verify at least one developer and one reviewer Provider can really
+      // run. If not, list every reason instead of creating a task that would only fail (P0-01/02).
       if (thenStart) {
-        try {
-          await start.mutateAsync(detail.id);
-        } catch (e) {
-          toast.error(errorLine(e));
+        const session = ++preflightSession.current;
+        const report = await preflight.mutateAsync(preflightArgs());
+        if (session !== preflightSession.current) return;
+        if (!report.ready) {
+          setPreflightReport(report);
+          return;
         }
       }
-      onClose();
-      navigate(`/p/${projectId}/t/${detail.id}`);
+      await createThenStart(thenStart);
+    } catch (e) {
+      toast.error(errorLine(e));
+    }
+  };
+
+  // Re-run the live probe from the block dialog; if the environment is now fixed, continue straight
+  // into create-and-start so the user does not have to re-open anything.
+  const redetect = async () => {
+    if (!projectId) return;
+    try {
+      const session = ++preflightSession.current;
+      const report = await preflight.mutateAsync(preflightArgs());
+      if (session !== preflightSession.current) return;
+      if (report.ready) {
+        setPreflightReport(null);
+        await createThenStart(true);
+      } else {
+        setPreflightReport(report);
+        toast.info(preflightBlockLine(summarizePreflight(report)));
+      }
     } catch (e) {
       toast.error(errorLine(e));
     }
@@ -156,6 +255,7 @@ export function NewTaskDialog() {
   if (!open) return null;
 
   return (
+    <>
     <Dialog
       open={open}
       onClose={onClose}
@@ -165,17 +265,93 @@ export function NewTaskDialog() {
       footer={
         <>
           <Button variant="outline" onClick={onClose}>取消</Button>
-          <Button variant="subtle" disabled={!canSubmit} onClick={() => submit(true)}>创建并立即开始</Button>
+          <Button variant="subtle" disabled={!canSubmit} onClick={() => submit(true)}>
+            {preflight.isPending ? "检测环境…" : "创建并立即开始"}
+          </Button>
           <Button variant="primary" disabled={!canSubmit} onClick={() => submit(false)}>
             {create.isPending ? "创建中…" : "创建"}
           </Button>
         </>
       }
     >
-      <div className="flex flex-col gap-4">
+      <fieldset disabled={preflight.isPending} className="flex flex-col gap-4 disabled:opacity-90">
+        {preflight.isPending && <PreflightProgress roles={pendingRoles} />}
+        {(gitCompatibility.data?.prunableWorktrees.length ?? 0) > 0 && (
+          <div className="flex items-start gap-2 rounded-md border border-human/50 bg-human-bg px-3 py-2 text-[13px]">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-human" />
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-human">检测到 {gitCompatibility.data?.prunableWorktrees.length} 个失效 worktree 注册</div>
+              <p className="mt-0.5 text-t2">不阻断创建，但建议先安全清理，避免 Git 工作树状态持续积累。</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => { close(); navigate("/settings#project-settings"); }}>
+              查看并清理
+            </Button>
+          </div>
+        )}
         <div className="flex flex-col gap-2">
           <Label htmlFor="nt-title">标题</Label>
           <Input id="nt-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="一句话说清要做什么" autoFocus />
+        </div>
+
+        <div className="flex flex-col gap-2 rounded-md border border-line bg-app/50 p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <Label>结构化验收条件（可选）</Label>
+              <p className="mt-1 text-[12px] text-t3">构建、测试、行为和人工要求会独立保存，并在验证、审查和最终批准时逐条回显。</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={acceptanceCriteria.length >= 20}
+              onClick={() => setAcceptanceCriteria((current) => [
+                ...current,
+                { id: crypto.randomUUID(), kind: "behavior", text: "" },
+              ])}
+            >
+              <Plus className="size-3.5" /> 添加
+            </Button>
+          </div>
+          {acceptanceCriteria.length === 0 ? (
+            <div className="rounded-md border border-dashed border-line px-3 py-2 text-[12px] text-t3">还没有独立验收条件；描述仍会原样交给 Agent。</div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {acceptanceCriteria.map((criterion, index) => (
+                <div key={criterion.id} className="grid grid-cols-[7.5rem_minmax(0,1fr)_auto] items-center gap-2">
+                  <Select
+                    value={criterion.kind}
+                    onValueChange={(value) => setAcceptanceCriteria((current) => current.map((item) => (
+                      item.id === criterion.id ? { ...item, kind: value as AcceptanceCriterionKind } : item
+                    )))}
+                  >
+                    <SelectTrigger aria-label={`验收条件 ${index + 1} 类型`}><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {(Object.entries(ACCEPTANCE_KIND_LABEL) as Array<[AcceptanceCriterionKind, string]>).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    aria-label={`验收条件 ${index + 1}`}
+                    value={criterion.text}
+                    maxLength={500}
+                    onChange={(event) => setAcceptanceCriteria((current) => current.map((item) => (
+                      item.id === criterion.id ? { ...item, text: event.target.value } : item
+                    )))}
+                    placeholder="写清可判断的完成标准"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`删除验收条件 ${index + 1}`}
+                    onClick={() => setAcceptanceCriteria((current) => current.filter((item) => item.id !== criterion.id))}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+              ))}
+              {!criteriaValid && <p className="text-[12px] text-bad">每条验收条件必须填写 1–500 个字符。</p>}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-2">
@@ -259,7 +435,19 @@ export function NewTaskDialog() {
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="nt-max">最大返工轮数</Label>
-            <Input id="nt-max" type="number" min={1} max={20} value={maxRevisions} onChange={(e) => setMaxRevisions(Math.max(1, Number(e.target.value) || 1))} />
+            <Input
+              id="nt-max"
+              type="text"
+              inputMode="numeric"
+              value={maxRevisions}
+              aria-invalid={maxRevisionsTouched && !!maxRevisionsProblem}
+              aria-describedby="nt-max-help"
+              onChange={(event) => setMaxRevisions(event.target.value)}
+              onBlur={() => setMaxRevisionsTouched(true)}
+            />
+            <span id="nt-max-help" className={`text-[12px] ${maxRevisionsTouched && maxRevisionsProblem ? "text-bad" : "text-t3"}`}>
+              {maxRevisionsTouched && maxRevisionsProblem ? maxRevisionsProblem : "允许 1–20 轮；输入完成后校验，不会自动改写。"}
+            </span>
           </div>
         </div>
 
@@ -293,7 +481,9 @@ export function NewTaskDialog() {
                 <SelectContent>
                   <SelectItem value="local">本机</SelectItem>
                   {(nodes.data ?? []).filter((node) => node.enabled).map((node) => (
-                    <SelectItem key={node.id} value={node.id}>{node.name}{node.status === "online" ? " · 在线" : " · 待检查"}</SelectItem>
+                    <SelectItem key={node.id} value={node.id} disabled={node.status === "offline"}>
+                      {node.name}{node.status === "online" ? " · 在线" : node.status === "offline" ? " · 不可用" : " · 未检查"}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -317,8 +507,19 @@ export function NewTaskDialog() {
             <BudgetField label="最低质量" value={minimumQualityScore} onChange={setMinimumQualityScore} max={100} />
           </div>
         </div>
-      </div>
+      </fieldset>
     </Dialog>
+    <PreflightBlockedDialog
+      open={!!preflightReport}
+      report={preflightReport}
+      redetecting={preflight.isPending}
+      onRedetect={redetect}
+      onClose={() => {
+        preflightSession.current += 1;
+        setPreflightReport(null);
+      }}
+    />
+    </>
   );
 }
 

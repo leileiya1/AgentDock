@@ -26,6 +26,7 @@ impl agentflow_agent_adapters::AgentProvider for RepairOnlyAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: false,
+            permission_broker: false,
         }
     }
 
@@ -65,6 +66,7 @@ impl agentflow_agent_adapters::AgentProvider for RepairOnlyAdapter {
                 started_at: Utc::now().to_rfc3339(),
                 exit_code: Some(0),
                 timed_out: false,
+                idle_timed_out: false,
                 cancelled: false,
                 log_truncated: false,
             },

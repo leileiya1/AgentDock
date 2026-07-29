@@ -13,6 +13,7 @@ pub use manifest::{ProviderManifest, ProviderSecurity, ResolvedProviderManifest,
 pub use registry::{ProviderRegistry, QuarantinedProvider, RegistryError};
 pub use types::{
     HandshakeParams, HandshakeResult, HealthResult, HealthStatus, PROTOCOL_VERSION,
-    ProtocolPermission, ProtocolResult, ProtocolRunRequest, ProtocolRunResult, RpcError,
-    RpcNotification, RpcRequest, RpcResponse,
+    ProtocolPermission, ProtocolResult, ProtocolRunRequest, ProtocolRunResult,
+    ProviderPermissionRequest, RpcError, RpcNotification, RpcRequest, RpcResponse,
+    SUPPORTED_PROTOCOLS,
 };

@@ -13,7 +13,15 @@ export type BlockedAction =
   /** inspect checkpoints and run a bounded repair action */
   | "repair"
   /** increase or remove task budgets and resume from the saved scheduler checkpoint */
-  | "budget";
+  | "budget"
+  /** open Provider settings for authentication or installation */
+  | "providerSetup"
+  /** refresh installed/authenticated/protocol status without starting a run */
+  | "redetect"
+  /** requeue from the saved checkpoint; the backend chooses the first ready Provider */
+  | "retryAvailable"
+  /** open the project fallback-chain editor */
+  | "editFallback";
 
 export interface BlockedCopy {
   title: string;
@@ -26,6 +34,12 @@ export interface BlockedCopy {
 
 /** BlockedReason → 人话 + 合理动作组合 (02 §4.4). */
 export const BLOCKED_COPY: Record<BlockedReason, BlockedCopy> = {
+  permission_required: {
+    title: "等待你决定一项执行权限",
+    explanation: "AgentFlow 已先停止 Provider，实际操作尚未执行。请在权限请求中核对命令、路径或域名后决定。",
+    detailIsQuestion: false,
+    actions: ["cancel"],
+  },
   needs_clarification: {
     title: "开发 Agent 需要你澄清",
     explanation: "它在动手前有一个问题，回答后会带着你的说明继续。",
@@ -51,14 +65,42 @@ export const BLOCKED_COPY: Record<BlockedReason, BlockedCopy> = {
     explanation:
       "审查运行本身失败了（例如额度用尽或输出不合法）。恢复后可以补充指引重试，或取消任务。",
     detailIsQuestion: false,
-    actions: ["guidance", "cancel"],
+    actions: ["providerSetup", "redetect", "retryAvailable", "editFallback", "guidance", "cancel"],
   },
   run_failed: {
     title: "这一轮运行失败了",
     explanation:
-      "开发或验证运行没有正常结束。补充一点指引后可以再试一轮，或取消任务。",
+      "开发或验证没有正常结束。先看本次退出原因；环境恢复后可从检查点继续，也可以调整 Provider 顺序。",
     detailIsQuestion: false,
-    actions: ["guidance", "cancel"],
+    actions: ["providerSetup", "redetect", "retryAvailable", "editFallback", "guidance", "cancel"],
+  },
+  agent_unresponsive: {
+    title: "Agent 长时间无响应，已安全停止",
+    explanation:
+      "开发 Agent 在限定时间内没有产生任何输出，可能是卡死或网络中断。AgentFlow 已停止该进程，本轮改动已保存到安全快照，项目没有被修改。你可以补充指引从当前状态重试，或打开修复中心恢复任务前状态。",
+    detailIsQuestion: false,
+    actions: ["redetect", "retryAvailable", "editFallback", "repair", "cancel"],
+  },
+  auth_expired: {
+    title: "Agent 登录已失效，任务已安全暂停",
+    explanation:
+      "所选 Provider 的登录或密钥已失效。本轮运行已经停止，未提交的改动已保存。重新认证后先刷新状态，再用可用 Provider 继续。",
+    detailIsQuestion: false,
+    actions: ["providerSetup", "redetect", "retryAvailable", "editFallback", "cancel"],
+  },
+  convergence_stalled: {
+    title: "自动返工似乎没有进展，已暂停",
+    explanation:
+      "连续两轮审查后，阻断问题的数量没有下降，或同一个文件被反复重写了三轮——可能是开发 Agent 没有理解反馈、几个审查者标准不一致，或任务需求本身有冲突。为避免空跑到轮数上限，AgentFlow 先停下来等你决定：补充更明确的指引后重试、直接送去人工批准，或取消任务（也可以在设置里换开发 Agent 或调整验收条件后再来）。",
+    detailIsQuestion: false,
+    actions: ["guidance", "forceApprove", "cancel"],
+  },
+  quality_regressed: {
+    title: "这一轮质量不升反降，建议回退",
+    explanation:
+      "和上一轮相比，本轮的阻断问题变多了，或之前已经修好的问题又重新出现——继续往前很可能越改越糟。建议打开修复中心回退本轮、回到上一轮更好的状态，再补充指引重来；也可以直接送去人工批准或取消任务。",
+    detailIsQuestion: false,
+    actions: ["repair", "guidance", "cancel"],
   },
   no_changes: {
     title: "这一轮没有产生任何改动",
@@ -73,6 +115,13 @@ export const BLOCKED_COPY: Record<BlockedReason, BlockedCopy> = {
       "验证步骤没能正常运行（不是代码本身失败，而是运行验证的环境）。检查 .agentflow/project.toml 里的验证命令后重试。",
     detailIsQuestion: false,
     actions: ["guidance", "cancel"],
+  },
+  recovery_failed: {
+    title: "重启恢复没能完成，任务已安全隔离",
+    explanation:
+      "后台服务重启时未能自动恢复这个任务（例如任务记录与工作树不一致，或工作树被外部修改）。残留改动已保存到安全快照，其他任务不受影响。可打开修复中心检查后从检查点继续，或取消任务。",
+    detailIsQuestion: false,
+    actions: ["repair", "cancel"],
   },
   worktree_missing: {
     title: "任务的工作树丢失了",
@@ -115,10 +164,14 @@ export const BLOCKED_COPY: Record<BlockedReason, BlockedCopy> = {
 };
 
 export const BLOCKED_ACTION_LABEL: Record<BlockedAction, string> = {
-  guidance: "补充指引继续",
+  guidance: "补充说明并继续",
   answer: "回答并继续",
   forceApprove: "直接送去批准",
   cancel: "取消任务",
   repair: "打开修复中心",
   budget: "调整预算继续",
+  providerSetup: "打开 Provider 设置",
+  redetect: "刷新 Provider 状态",
+  retryAvailable: "用可用 Provider 继续",
+  editFallback: "调整 Provider 顺序",
 };

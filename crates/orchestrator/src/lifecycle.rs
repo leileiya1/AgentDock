@@ -51,166 +51,13 @@ impl Orchestrator {
             app_data,
             provider_registry: Arc::new(RwLock::new(provider_registry)),
             active_cancellations: Arc::new(RwLock::new(HashMap::new())),
+            runtime_probe_cache: Arc::new(RwLock::new(HashMap::new())),
+            run_log_cursors: Arc::new(RwLock::new(HashMap::new())),
         };
         if recover {
             orchestrator.recover_interrupted_runs().await?;
         }
         Ok(orchestrator)
-    }
-    async fn recover_interrupted_runs(&self) -> Result<(), OrchestratorError> {
-        self.recover_start_operations().await?;
-        let rows = sqlx::query(
-            "SELECT id,task_id,revision,role,run_dir FROM agent_runs WHERE status='RUNNING'",
-        )
-        .fetch_all(self.store.pool())
-        .await?;
-        for row in rows {
-            let run_id: String = row.get("id");
-            let task_id: String = row.get("task_id");
-            let revision: i64 = row.get("revision");
-            let role: String = row.get("role");
-            let run_dir: String = row.get("run_dir");
-            let lease_path = Path::new(&run_dir).join("process-lease.json");
-            let lease = agentflow_process_supervisor::read_process_lease(&lease_path)
-                .await
-                .ok();
-            let live_pid = lease.as_ref().and_then(|lease| {
-                (agentflow_process_supervisor::inspect_process_lease(lease)
-                    == agentflow_process_supervisor::LeaseState::Alive)
-                    .then_some(lease.pid)
-            });
-            let completed_cleanly = agentflow_process_supervisor::read_process_exit_code(
-                &Path::new(&run_dir).join("process-outcome.json"),
-            )
-            .await
-            .is_ok_and(|code| code == 0);
-            if live_pid.is_some() || completed_cleanly {
-                // A crash is different from an explicit cancellation: the Provider owns durable
-                // stdout/stderr descriptors and a child-side exit marker, so the new daemon can
-                // adopt it without discarding already-paid work.
-                let now = Utc::now().to_rfc3339();
-                sqlx::query("UPDATE agent_runs SET recovery_state='ADOPTING',adopted_at=? WHERE id=? AND status='RUNNING'")
-                    .bind(&now)
-                    .bind(&run_id)
-                    .execute(self.store.pool())
-                    .await?;
-                sqlx::query("INSERT INTO events(task_id,revision,actor,event_type,payload_json,created_at) VALUES(?,?,'system','recovery:run_adopted',?,?)")
-                    .bind(&task_id)
-                    .bind(revision)
-                    .bind(json!({"run_id":run_id,"pid":live_pid,"role":role,"already_exited":completed_cleanly && live_pid.is_none()}).to_string())
-                    .bind(&now)
-                    .execute(self.store.pool())
-                    .await?;
-                continue;
-            }
-            let process_recovery = match agentflow_process_supervisor::read_process_lease(&lease_path)
-                .await
-            {
-                Ok(lease) => match agentflow_process_supervisor::inspect_process_lease(&lease) {
-                    agentflow_process_supervisor::LeaseState::Alive => "live_process_race",
-                    agentflow_process_supervisor::LeaseState::Exited => {
-                        "orphan_process_already_exited"
-                    }
-                    agentflow_process_supervisor::LeaseState::PidReused => {
-                        // Never signal a recycled PID: it may now belong to an unrelated app.
-                        "pid_reused_not_signaled"
-                    }
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => "lease_missing",
-                Err(_) => "lease_invalid_not_signaled",
-            };
-            let _ = tokio::fs::remove_file(&lease_path).await;
-            sqlx::query("UPDATE agent_runs SET status='INTERRUPTED',finished_at=? WHERE id=?")
-                .bind(Utc::now().to_rfc3339())
-                .bind(&run_id)
-                .execute(self.store.pool())
-                .await?;
-            let current = self.task(&task_id).await?;
-            if matches!(current.status, TaskStatus::Cancelled | TaskStatus::Merged | TaskStatus::RolledBack) {
-                continue;
-            }
-            // Preserve any residual edits before rolling scheduler state back. Repair Center can
-            // later keep them or reset to the recorded commit without guessing what survived.
-            if current.worktree_path.as_ref().is_some_and(|path| path.is_dir()) {
-                let _ = self.create_checkpoint(&current, "interrupted-run").await;
-                let worktree = required_path(&current.worktree_path)?;
-                let reset_to = match role.as_str() {
-                    "developer" => sqlx::query_scalar::<_, Option<String>>(
-                        "SELECT commit_sha FROM task_revisions WHERE task_id=? AND revision<? ORDER BY revision DESC LIMIT 1",
-                    )
-                    .bind(&task_id)
-                    .bind(revision)
-                    .fetch_optional(self.store.pool())
-                    .await?
-                    .flatten()
-                    .or_else(|| current.base_commit.clone()),
-                    "reviewer" => Some(self.revision_commit_sha(&task_id, current.revision).await?),
-                    _ => self.git.resolve(&worktree, "HEAD").await.ok(),
-                };
-                if let Some(commit) = reset_to {
-                    self.git.reset_owned_worktree(&worktree, &commit).await?;
-                }
-            }
-            let (to, new_revision) = match role.as_str() {
-                "planner" => (TaskStatus::Planning, current.revision),
-                "developer" => (
-                    if revision <= 1 {
-                        TaskStatus::ReadyForDevelopment
-                    } else {
-                        TaskStatus::ReadyForRevision
-                    },
-                    revision.saturating_sub(1),
-                ),
-                "validator" => (TaskStatus::Validating, current.revision),
-                _ => (TaskStatus::ReadyForReview, current.revision),
-            };
-            sqlx::query("UPDATE tasks SET current_revision=? WHERE id=?")
-                .bind(new_revision)
-                .bind(&task_id)
-                .execute(self.store.pool())
-                .await?;
-            self.store
-                .transition(
-                    &task_id,
-                    &[current.status],
-                    to,
-                    None,
-                    Actor::System,
-                    "recovery:interrupted",
-                    &json!({"run_id":run_id,"process_recovery":process_recovery}),
-                )
-                .await?;
-        }
-        // Covers the crash window after a durable state transition but before an agent_runs row
-        // or final transition was written. Run this before the missing-worktree check because a
-        // completed merge may have intentionally removed its worktree just before a crash.
-        self.recover_orphaned_stages().await?;
-        self.recover_provider_dispatches().await?;
-        let active=sqlx::query("SELECT id,status,worktree_path FROM tasks WHERE status NOT IN ('DRAFT','MERGED','ROLLED_BACK','CANCELLED')").fetch_all(self.store.pool()).await?;
-        for row in active {
-            let path: Option<String> = row.get("worktree_path");
-            if path.as_deref().is_none_or(|p| !Path::new(p).exists()) {
-                let id: String = row.get("id");
-                let status: TaskStatus = parse(row.get("status"))?;
-                sqlx::query("UPDATE tasks SET repair_resume_status=? WHERE id=?")
-                    .bind(status.to_string())
-                    .bind(&id)
-                    .execute(self.store.pool())
-                    .await?;
-                self.store
-                    .transition(
-                        &id,
-                        &[status],
-                        TaskStatus::Blocked,
-                        Some(BlockedReason::WorktreeMissing),
-                        Actor::System,
-                        "recovery:worktree_missing",
-                        &json!({}),
-                    )
-                    .await?;
-            }
-        }
-        Ok(())
     }
     pub fn app_data(&self) -> &Path {
         &self.app_data
@@ -269,70 +116,60 @@ impl Orchestrator {
         Ok(())
     }
     pub async fn env_check(&self) -> EnvReport {
-        let git =
-            agentflow_agent_adapters::tool_status("git", self.cli_override("git").await, &[]).await;
-        let claude_code = agentflow_agent_adapters::tool_status(
-            "claude",
-            self.cli_override("claude_code").await,
-            &["--output-format", "--permission-mode"],
-        )
-        .await;
-        let codex = agentflow_agent_adapters::tool_status(
-            "codex",
-            self.cli_override("codex").await,
-            &["--json", "--sandbox"],
-        )
-        .await;
-        let gemini_cli = agentflow_agent_adapters::tool_status(
-            "gemini",
-            self.cli_override("gemini_cli").await,
-            &["--output-format", "--approval-mode", "--sandbox"],
-        )
-        .await;
-        let qwen_code = agentflow_agent_adapters::tool_status(
-            "qwen",
-            self.cli_override("qwen_code").await,
-            &[
-                "--output-format",
-                "--approval-mode",
-                "--sandbox",
-                "--max-wall-time",
-            ],
-        )
-        .await;
-        let grok_cli = agentflow_agent_adapters::tool_status(
-            "grok",
-            self.cli_override("grok_cli").await,
-            &["--output-format", "--sandbox", "--permission-mode"],
-        )
-        .await;
-        let kimi_cli = agentflow_agent_adapters::tool_status(
-            "kimi",
-            self.cli_override("kimi_cli").await,
-            &["--prompt", "--output-format"],
-        )
-        .await;
-        let minimax_cli = agentflow_agent_adapters::tool_status(
-            "mmx",
-            self.cli_override("minimax_cli").await,
-            &[],
-        )
-        .await;
+        let openai_settings = ApiProviderSettings::openai_default();
+        let anthropic_settings = ApiProviderSettings::anthropic_default();
+        let deepseek_settings = ApiProviderSettings::deepseek_default();
+        let grok_settings = ApiProviderSettings::grok_default();
+        let minimax_settings = ApiProviderSettings::minimax_default();
+        let kimi_settings = ApiProviderSettings::kimi_default();
+        let (git_path, claude_path, codex_path, gemini_path, qwen_path, qoder_path, grok_path, kimi_path, minimax_path) = tokio::join!(
+            self.cli_override("git"), self.cli_override("claude_code"),
+            self.cli_override("codex"), self.cli_override("gemini_cli"),
+            self.cli_override("qwen_code"), self.cli_override("qoder_cli"),
+            self.cli_override("grok_cli"),
+            self.cli_override("kimi_cli"), self.cli_override("minimax_cli"),
+        );
+        // All side-effect-free tool checks are independent. Run them concurrently so adding more
+        // installed CLIs does not make the settings screen progressively slower.
+        let (system, git, node, bun, claude_code, codex, gemini_cli, qwen_code, qoder_cli, grok_cli, kimi_cli, minimax_cli, openai_api, anthropic_api, deepseek_api, grok_api, minimax_api, kimi_api) = tokio::join!(
+            system_environment(&self.app_data),
+            bounded_tool_status("git", git_path, &[]),
+            bounded_tool_status("node", None, &[]),
+            bounded_tool_status("bun", None, &[]),
+            bounded_tool_status("claude", claude_path, &["--output-format", "--permission-mode"]),
+            bounded_tool_status("codex", codex_path, &["--json", "--sandbox"]),
+            bounded_tool_status("gemini", gemini_path, &["--output-format", "--approval-mode", "--sandbox"]),
+            bounded_tool_status("qwen", qwen_path, &["--output-format", "--approval-mode", "--sandbox", "--max-wall-time"]),
+            bounded_tool_status("qodercli", qoder_path, &["--output-format", "--permission-mode", "--cwd", "--no-session-persistence"]),
+            bounded_tool_status("grok", grok_path, &["--output-format", "--sandbox", "--permission-mode"]),
+            bounded_tool_status("kimi", kimi_path, &["--prompt", "--output-format"]),
+            bounded_tool_status("mmx", minimax_path, &[]),
+            bounded_api_provider_status(&openai_settings),
+            bounded_api_provider_status(&anthropic_settings),
+            bounded_api_provider_status(&deepseek_settings),
+            bounded_api_provider_status(&grok_settings),
+            bounded_api_provider_status(&minimax_settings),
+            bounded_api_provider_status(&kimi_settings),
+        );
         EnvReport {
+            system,
             git,
+            node,
+            bun,
             claude_code,
             codex,
             gemini_cli,
             qwen_code,
+            qoder_cli,
             grok_cli,
             kimi_cli,
             minimax_cli,
-            openai_api: api_provider_status(&ApiProviderSettings::openai_default()),
-            anthropic_api: api_provider_status(&ApiProviderSettings::anthropic_default()),
-            deepseek_api: api_provider_status(&ApiProviderSettings::deepseek_default()),
-            grok_api: api_provider_status(&ApiProviderSettings::grok_default()),
-            minimax_api: api_provider_status(&ApiProviderSettings::minimax_default()),
-            kimi_api: api_provider_status(&ApiProviderSettings::kimi_default()),
+            openai_api,
+            anthropic_api,
+            deepseek_api,
+            grok_api,
+            minimax_api,
+            kimi_api,
         }
     }
 
@@ -346,6 +183,8 @@ impl Orchestrator {
             cli_descriptor(AgentKind::Codex, "Codex", &env.codex),
             cli_descriptor(AgentKind::GeminiCli, "Gemini CLI", &env.gemini_cli),
             cli_descriptor(AgentKind::QwenCode, "Qwen Code", &env.qwen_code),
+            cli_descriptor(AgentKind::QoderCli, "Qoder CLI", &env.qoder_cli),
+            cli_descriptor(AgentKind::GrokCli, "Grok CLI", &env.grok_cli),
             api_descriptor(AgentKind::OpenAiApi, "OpenAI API", &env.openai_api),
             api_descriptor(
                 AgentKind::AnthropicApi,
@@ -418,6 +257,8 @@ impl Orchestrator {
             (AgentKind::Codex, &env.codex),
             (AgentKind::GeminiCli, &env.gemini_cli),
             (AgentKind::QwenCode, &env.qwen_code),
+            (AgentKind::QoderCli, &env.qoder_cli),
+            (AgentKind::GrokCli, &env.grok_cli),
         ]
         .into_iter()
         .filter_map(|(kind, status)| {
@@ -426,10 +267,8 @@ impl Orchestrator {
         })
         .collect::<Vec<_>>();
         let recommended_developer = [
-            AgentKind::ClaudeCode,
-            AgentKind::Codex,
-            AgentKind::GeminiCli,
-            AgentKind::QwenCode,
+            AgentKind::QoderCli,
+            AgentKind::GrokCli,
         ]
         .into_iter()
         .find(|kind| available_cli.contains(kind));
@@ -503,6 +342,10 @@ impl Orchestrator {
         Ok(OnboardingReport {
             first_run: completed.is_none(),
             daemon_running,
+            app_ready: env.git.compatible && env.system.disk_available_bytes > 100 * 1024 * 1024,
+            workflow_ready: env.git.compatible
+                && recommended_developer.is_some()
+                && recommended_reviewer.is_some(),
             ready: env.git.compatible
                 && recommended_developer.is_some()
                 && recommended_reviewer.is_some(),
@@ -542,6 +385,7 @@ impl Orchestrator {
                 | "codex"
                 | "gemini_cli"
                 | "qwen_code"
+                | "qoder_cli"
                 | "grok_cli"
                 | "kimi_cli"
                 | "minimax_cli"
@@ -565,6 +409,10 @@ impl Orchestrator {
                     "--max-wall-time",
                 ],
             ),
+            "qoder_cli" => (
+                "qodercli",
+                &["--output-format", "--permission-mode", "--cwd", "--no-session-persistence"],
+            ),
             "grok_cli" => (
                 "grok",
                 &["--output-format", "--sandbox", "--permission-mode"],
@@ -573,8 +421,7 @@ impl Orchestrator {
             "minimax_cli" => ("mmx", &[]),
             _ => ("git", &[]),
         };
-        let status =
-            agentflow_agent_adapters::tool_status(name, Some(path.to_path_buf()), flags).await;
+        let status = bounded_tool_status(name, Some(path.to_path_buf()), flags).await;
         if !status.found || !status.compatible {
             return Err(OrchestratorError::InvalidState(
                 status.problem.unwrap_or_else(|| "CLI incompatible".into()),
@@ -583,5 +430,167 @@ impl Orchestrator {
         sqlx::query("INSERT INTO settings(key,value_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json")
             .bind(format!("cli:{tool}")).bind(serde_json::to_string(&path.to_string_lossy().as_ref()).map_err(|e|OrchestratorError::Config(e.to_string()))?).execute(self.store.pool()).await?;
         Ok(self.env_check().await)
+    }
+}
+
+async fn system_environment(app_data: &Path) -> SystemEnvironment {
+    let disk_available_bytes = {
+        let disks = sysinfo::Disks::new_with_refreshed_list();
+        disks
+            .iter()
+            .filter(|disk| app_data.starts_with(disk.mount_point()))
+            .max_by_key(|disk| disk.mount_point().as_os_str().len())
+            .map_or(0, sysinfo::Disk::available_space)
+    };
+    let network = match tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::net::lookup_host(("api.github.com", 443)),
+    )
+    .await
+    {
+        Ok(Ok(addresses)) => {
+            if addresses.count() > 0 {
+                EnvironmentCheck {
+                    available: true,
+                    detail: Some("DNS 可用（api.github.com）".into()),
+                    problem: None,
+                }
+            } else {
+                EnvironmentCheck {
+                    available: false,
+                    detail: None,
+                    problem: Some("DNS 未返回地址".into()),
+                }
+            }
+        }
+        Ok(Err(error)) => EnvironmentCheck {
+            available: false,
+            detail: None,
+            problem: Some(format!("网络解析失败：{error}")),
+        },
+        Err(_) => EnvironmentCheck {
+            available: false,
+            detail: None,
+            problem: Some("网络检测超时".into()),
+        },
+    };
+    #[cfg(target_os = "macos")]
+    let keychain = match Command::new("/usr/bin/security")
+        .args(["default-keychain", "-d", "user"])
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => EnvironmentCheck {
+            available: true,
+            detail: Some(String::from_utf8_lossy(&output.stdout).trim().trim_matches('"').into()),
+            problem: None,
+        },
+        Ok(output) => EnvironmentCheck {
+            available: false,
+            detail: None,
+            problem: Some(String::from_utf8_lossy(&output.stderr).trim().into()),
+        },
+        Err(error) => EnvironmentCheck {
+            available: false,
+            detail: None,
+            problem: Some(format!("无法调用系统钥匙串：{error}")),
+        },
+    };
+    #[cfg(not(target_os = "macos"))]
+    let keychain = EnvironmentCheck {
+        available: false,
+        detail: None,
+        problem: Some("当前平台没有 macOS 钥匙串".into()),
+    };
+    SystemEnvironment {
+        os: std::env::consts::OS.into(),
+        os_version: sysinfo::System::long_os_version(),
+        architecture: std::env::consts::ARCH.into(),
+        agentflow_version: env!("CARGO_PKG_VERSION").into(),
+        shell: std::env::var("SHELL").ok(),
+        disk_available_bytes,
+        network,
+        keychain,
+    }
+}
+
+async fn bounded_tool_status(name: &str, path: Option<PathBuf>, flags: &[&str]) -> ToolStatus {
+    match tokio::time::timeout(
+        Duration::from_secs(10),
+        agentflow_agent_adapters::tool_status(name, path.clone(), flags),
+    )
+    .await
+    {
+        Ok(status) => status,
+        Err(_) => ToolStatus {
+            // Reaching the timeout normally means the executable was found but its version/help or
+            // authentication command hung. Keep that distinct from "未安装" so recovery is honest.
+            found: true,
+            path: path.map(|value| value.to_string_lossy().into_owned()),
+            version: None,
+            compatible: false,
+            problem: Some(format!("{name} 环境检测超过 10 秒，已停止等待")),
+            authenticated: None,
+            auth_method: None,
+            auth_problem: None,
+            support_level: CliSupportLevel::Untracked,
+            verified_versions: Vec::new(),
+        },
+    }
+}
+
+async fn bounded_api_provider_status(settings: &ApiProviderSettings) -> ProviderStatus {
+    let configured = !settings.model.trim().is_empty()
+        && !settings.base_url.trim().is_empty()
+        && !settings.api_key_env.trim().is_empty();
+    let environment_key_available = std::env::var(&settings.api_key_env)
+        .is_ok_and(|value| !value.trim().is_empty());
+    #[cfg(target_os = "macos")]
+    let keychain_key_available = if environment_key_available {
+        false
+    } else {
+        // Environment status must never retrieve the secret or synchronously enter
+        // Security.framework. An ad-hoc/development signature can otherwise leave the settings
+        // screen waiting on a Keychain authorization mutex forever. The metadata-only lookup is
+        // independently bounded; actual Provider execution still resolves the secret securely.
+        matches!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                Command::new("/usr/bin/security")
+                    .args([
+                        "find-generic-password",
+                        "-s",
+                        &settings.keychain_service,
+                        "-a",
+                        "AgentFlow",
+                    ])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status(),
+            )
+            .await,
+            Ok(Ok(status)) if status.success()
+        )
+    };
+    #[cfg(not(target_os = "macos"))]
+    let keychain_key_available = false;
+    let key_available = environment_key_available || keychain_key_available;
+    ProviderStatus {
+        configured,
+        available: configured && key_available,
+        model: settings.model.clone(),
+        base_url: settings.base_url.clone(),
+        key_env: settings.api_key_env.clone(),
+        problem: if !configured {
+            Some("base URL, model, and key environment variable are required".into())
+        } else if !key_available {
+            Some(format!(
+                "{} is not set and Keychain service {} has no key",
+                settings.api_key_env, settings.keychain_service
+            ))
+        } else {
+            None
+        },
     }
 }

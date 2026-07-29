@@ -18,14 +18,15 @@ import { errorLine } from "@/copy/errors";
 import { toast } from "@/stores/toastStore";
 import { cn } from "@/lib/utils";
 
-type CliId = "claude_code" | "codex" | "gemini_cli" | "qwen_code" | "grok_cli" | "kimi_cli" | "minimax_cli";
+type CliId = "claude_code" | "codex" | "gemini_cli" | "qwen_code" | "qoder_cli" | "grok_cli" | "kimi_cli" | "minimax_cli";
 type ApiId = "openai_api" | "anthropic_api" | "deepseek_api" | "grok_api" | "minimax_api" | "kimi_api";
 
 interface CliDefinition {
   id: CliId;
   label: string;
-  field: "claudeCode" | "codex" | "geminiCli" | "qwenCode" | "grokCli" | "kimiCli" | "minimaxCli";
+  field: "claudeCode" | "codex" | "geminiCli" | "qwenCode" | "qoderCli" | "grokCli" | "kimiCli" | "minimaxCli";
   packageName: string;
+  installable?: boolean;
   apiKeyAuth?: boolean;
 }
 
@@ -43,21 +44,22 @@ const MAIN_CLIS: CliDefinition[] = [
 
 const EXTRA_CLIS: CliDefinition[] = [
   { id: "qwen_code", label: "Qwen Code", field: "qwenCode", packageName: "@qwen-code/qwen-code@latest" },
-  { id: "grok_cli", label: "Grok Build", field: "grokCli", packageName: "@xai-official/grok" },
+  { id: "qoder_cli", label: "Qoder CLI", field: "qoderCli", packageName: "qoder.com 官方安装器", installable: false },
+  { id: "grok_cli", label: "Grok Build CLI", field: "grokCli", packageName: "@xai-official/grok" },
   { id: "kimi_cli", label: "Kimi Code", field: "kimiCli", packageName: "@moonshot-ai/kimi-code" },
   { id: "minimax_cli", label: "MiniMax CLI", field: "minimaxCli", packageName: "mmx-cli" },
 ];
 
 const MAIN_APIS: ApiDefinition[] = [
-  { id: "openai_api", label: "OpenAI", field: "openaiApi" },
-  { id: "anthropic_api", label: "Anthropic", field: "anthropicApi" },
-  { id: "deepseek_api", label: "DeepSeek", field: "deepseekApi" },
+  { id: "openai_api", label: "OpenAI API", field: "openaiApi" },
+  { id: "anthropic_api", label: "Anthropic API", field: "anthropicApi" },
+  { id: "deepseek_api", label: "DeepSeek API", field: "deepseekApi" },
 ];
 
 const EXTRA_APIS: ApiDefinition[] = [
-  { id: "grok_api", label: "Grok", field: "grokApi" },
-  { id: "minimax_api", label: "MiniMax", field: "minimaxApi" },
-  { id: "kimi_api", label: "Kimi", field: "kimiApi" },
+  { id: "grok_api", label: "Grok API", field: "grokApi" },
+  { id: "minimax_api", label: "MiniMax API", field: "minimaxApi" },
+  { id: "kimi_api", label: "Kimi API", field: "kimiApi" },
 ];
 
 const BUILTIN_IDS = new Set<string>([...MAIN_CLIS, ...EXTRA_CLIS, ...MAIN_APIS, ...EXTRA_APIS].map((item) => item.id));
@@ -84,7 +86,7 @@ export function ProviderCatalog({ env, providers = [] }: Props) {
 
   return (
     <>
-      <ProviderGroup title="CLI">
+      <ProviderGroup title="本地 CLI">
         {MAIN_CLIS.map((item) => (
           overrides.has(item.id)
             ? <ExternalRow key={item.id} provider={overrides.get(item.id)!} />
@@ -92,7 +94,7 @@ export function ProviderCatalog({ env, providers = [] }: Props) {
         ))}
       </ProviderGroup>
 
-      <ProviderGroup title="API">
+      <ProviderGroup title="远程 API">
         {MAIN_APIS.map((item) => (
           overrides.has(item.id)
             ? <ExternalRow key={item.id} provider={overrides.get(item.id)!} />
@@ -105,7 +107,7 @@ export function ProviderCatalog({ env, providers = [] }: Props) {
           <Button variant="ghost" size="sm" className="px-1 text-t3" onClick={() => setShowMore((value) => !value)}>
             {showMore ? <ChevronUp /> : <ChevronDown />}
             更多 Provider
-            <span className="rounded-full bg-raised px-1.5 text-[10px]">{EXTRA_CLIS.length + EXTRA_APIS.length + external.length}</span>
+            <span className="rounded-full bg-raised px-1.5 text-[11px]">{EXTRA_CLIS.length + EXTRA_APIS.length + external.length}</span>
           </Button>
           {showMore && (
             <div className="mt-2 overflow-hidden rounded-[var(--radius-control)] border border-line bg-app">
@@ -171,6 +173,18 @@ function cliReady(status: ToolStatus) {
   return status.found && status.compatible && status.authenticated !== false;
 }
 
+export function cliStatusText(status: ToolStatus) {
+  const versionStatus = status.supportLevel === "verified" ? "已验证版本" : "兼容版本";
+  if (!status.found) return "未安装";
+  if (!status.compatible) return "需要处理";
+  if (status.authenticated === false) {
+    return status.authProblem?.includes("钥匙串") ? "钥匙串异常" : "需要登录";
+  }
+  return status.authenticated === true
+    ? `已登录 · ${versionStatus}`
+    : `已安装 · ${versionStatus} · 任务前实测`;
+}
+
 function authMethodLabel(method: string | null) {
   const labels: Record<string, string> = {
     account: "账号登录",
@@ -191,14 +205,7 @@ function CliRow({ item, status, onInstall, onConfigureCredential }: {
   const [path, setPath] = useState(status.path ?? "");
   const setCliPath = useSetCliPath();
   const ready = cliReady(status);
-  const keychainProblem = status.authProblem?.includes("钥匙串") ?? false;
-  const statusText = ready
-    ? "已连接"
-    : !status.found
-      ? "未安装"
-      : status.authenticated === false
-        ? keychainProblem ? "钥匙串异常" : "需要登录"
-        : "需要处理";
+  const statusText = cliStatusText(status);
 
   const savePath = async () => {
     try {
@@ -217,7 +224,7 @@ function CliRow({ item, status, onInstall, onConfigureCredential }: {
       statusText={statusText}
       actions={
         <>
-          {!status.found && <Button variant="primary" size="sm" onClick={onInstall}>安装</Button>}
+          {!status.found && item.installable !== false && <Button variant="primary" size="sm" onClick={onInstall}>安装</Button>}
           {status.found && onConfigureCredential && <Button variant="ghost" size="sm" onClick={onConfigureCredential}>认证</Button>}
           <Button variant="ghost" size="sm" onClick={() => setDetails((value) => !value)}>{details ? "收起" : "详情"}</Button>
         </>
@@ -225,6 +232,8 @@ function CliRow({ item, status, onInstall, onConfigureCredential }: {
       details={details && (
         <div className="ml-[52px] mt-2 rounded-md bg-panel/70 px-3 py-2 text-[12px] text-t3">
           {status.version && <div>版本 {status.version}</div>}
+          <div>支持状态 {status.supportLevel === "verified" ? "已通过固定版本回归" : status.supportLevel === "compatible_untested" ? "参数兼容，创建任务时运行真实探针" : status.supportLevel === "unsupported" ? "不兼容" : "未纳入支持矩阵"}</div>
+          {status.verifiedVersions.length > 0 && <div>已验证基线 {status.verifiedVersions.join("、")}</div>}
           {status.authMethod && <div>认证方式 {authMethodLabel(status.authMethod)}</div>}
           {status.problem && <div className="mb-2 text-bad">{status.problem}</div>}
           {status.authProblem && <div className="mb-2 text-bad">{status.authProblem}</div>}

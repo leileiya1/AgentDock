@@ -1,11 +1,14 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
+use tokio::sync::Mutex;
 
 use agentflow_contracts::{
-    Actor, AgentKind, BlockedReason, Project, TaskEvent, TaskPolicy, TaskStatus, TaskSummary,
+    AcceptanceCriterionInput, Actor, AgentKind, BlockedReason, Project, TaskEvent, TaskPolicy,
+    TaskStatus, TaskSummary,
 };
 use chrono::Utc;
 use serde_json::Value;
@@ -44,9 +47,11 @@ pub struct Store {
     pool: SqlitePool,
     path: Option<PathBuf>,
     data_key: Arc<[u8; 32]>,
+    ephemeral_resume_tokens: Arc<Mutex<HashMap<String, Vec<u8>>>>,
 }
 
 mod protection;
+mod resume_tokens;
 
 impl Store {
     pub async fn open(path: &Path) -> Result<Self, PersistenceError> {
@@ -72,6 +77,7 @@ impl Store {
             .await?;
         let pre_migration = if existed {
             protection::integrity_check(&pool).await?;
+            repair_known_migration_checksums(&pool).await?;
             Some(protection::create_encrypted_backup(&pool, path, data_key.as_ref()).await?)
         } else {
             None
@@ -95,6 +101,7 @@ impl Store {
             pool,
             path: Some(path.to_path_buf()),
             data_key,
+            ephemeral_resume_tokens: Arc::default(),
         })
     }
 
@@ -109,6 +116,7 @@ impl Store {
             pool,
             path: None,
             data_key: protection::new_data_key()?,
+            ephemeral_resume_tokens: Arc::default(),
         })
     }
 
@@ -134,6 +142,7 @@ impl Store {
             pool,
             path: Some(path.to_path_buf()),
             data_key,
+            ephemeral_resume_tokens: Arc::default(),
         })
     }
 
@@ -339,6 +348,35 @@ impl Store {
         allow_api_egress: bool,
         policy: &TaskPolicy,
     ) -> Result<TaskSummary, PersistenceError> {
+        self.create_governed_task_with_acceptance(
+            project_id,
+            title,
+            description,
+            developer,
+            reviewer,
+            target_branch,
+            max_revisions,
+            allow_api_egress,
+            &[],
+            policy,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_governed_task_with_acceptance(
+        &self,
+        project_id: &str,
+        title: &str,
+        description: &str,
+        developer: AgentKind,
+        reviewer: AgentKind,
+        target_branch: &str,
+        max_revisions: i64,
+        allow_api_egress: bool,
+        acceptance_criteria: &[AcceptanceCriterionInput],
+        policy: &TaskPolicy,
+    ) -> Result<TaskSummary, PersistenceError> {
         let now = Utc::now().to_rfc3339();
         let id = Uuid::now_v7().to_string();
         let seq: i64 =
@@ -349,6 +387,20 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         sqlx::query("INSERT INTO tasks(id,project_id,seq,title,description,status,developer_agent,reviewer_agent,target_branch,max_revisions,api_egress_approved_at,created_at,updated_at) VALUES(?,?,?,?,?,'DRAFT',?,?,?,?,?,?,?)")
             .bind(&id).bind(project_id).bind(seq).bind(title).bind(description).bind(developer.to_string()).bind(reviewer.to_string()).bind(target_branch).bind(max_revisions).bind(allow_api_egress.then_some(&now)).bind(&now).bind(&now).execute(&mut *tx).await?;
+        for (position, criterion) in acceptance_criteria.iter().enumerate() {
+            let position = i64::try_from(position).map_err(|_| {
+                PersistenceError::InvalidValue("too many acceptance criteria".into())
+            })?;
+            sqlx::query("INSERT INTO task_acceptance_criteria(id,task_id,position,kind,text,created_at) VALUES(?,?,?,?,?,?)")
+                .bind(Uuid::now_v7().to_string())
+                .bind(&id)
+                .bind(position)
+                .bind(criterion.kind.to_string())
+                .bind(criterion.text.trim())
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+        }
         sqlx::query("INSERT INTO task_policies(task_id,require_plan_approval,priority,token_budget,cost_budget_usd,time_budget_secs,minimum_quality_score,delivery_mode,execution_node_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&id)
             .bind(i64::from(policy.require_plan_approval))
@@ -483,6 +535,41 @@ fn parse_opt<T: FromStr<Err = String>>(
     value: Option<String>,
 ) -> Result<Option<T>, PersistenceError> {
     value.map(parse).transpose()
+}
+
+/// Migration 0001 was reformatted (a trailing newline) after early databases had already
+/// applied it. sqlx verifies recorded checksums byte-for-byte, so without this one-time
+/// repair every such database fails to open with VersionMismatch on each start — forever.
+/// Only the single known historical checksum is rewritten; any other mismatch still fails.
+async fn repair_known_migration_checksums(pool: &SqlitePool) -> Result<(), PersistenceError> {
+    const LEGACY_0001: &str = "3f72f0c6a1318452306ae68aeff0944f1626f14f3228e0e052c9c2d44341ecd3ec30b402185f97bf54159837211f236e";
+    const PUBLISHED_0001: &str = "1ce8056baec57e9a5b18f35dd6ca5770be020abacf0131219c905a719c744a403d249173cc69f82ea9f09b47d3a6928f";
+    let migrations_table: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await
+    .ok();
+    if migrations_table.is_none() {
+        return Ok(());
+    }
+    sqlx::query("UPDATE _sqlx_migrations SET checksum=? WHERE version=1 AND checksum=?")
+        .bind(hex_to_bytes(PUBLISHED_0001))
+        .bind(hex_to_bytes(LEGACY_0001))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    hex.as_bytes()
+        .chunks(2)
+        .filter_map(|pair| {
+            std::str::from_utf8(pair)
+                .ok()
+                .and_then(|value| u8::from_str_radix(value, 16).ok())
+        })
+        .collect()
 }
 
 #[cfg(test)]

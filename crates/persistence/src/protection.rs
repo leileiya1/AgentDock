@@ -26,35 +26,87 @@ pub(crate) fn new_data_key() -> Result<Arc<[u8; 32]>, PersistenceError> {
 }
 
 pub(crate) async fn load_data_key(data_dir: &Path) -> Result<Arc<[u8; 32]>, PersistenceError> {
+    let path = data_dir.join("local-data.key");
+    // A previously cached key is authoritative. Besides avoiding repeated Keychain
+    // prompts for locally rebuilt/ad-hoc signed apps, this also keeps the documented
+    // file fallback stable across restarts.
+    if path.exists() {
+        return read_data_key_file(&path).await;
+    }
+
+    // Temporary databases are intentionally self-contained. They are used by
+    // tests, previews and disposable runs, and must never depend on an unlocked
+    // login Keychain (otherwise CI can block inside Security.framework).
+    if data_dir.starts_with(std::env::temp_dir()) {
+        let key = new_data_key()?;
+        cache_data_key(&path, key.as_ref()).await?;
+        return Ok(key);
+    }
+
     // Release builds use Keychain. Debug/test builds deliberately use an app-data
     // key file so ephemeral test databases never trigger a macOS Keychain prompt.
     #[cfg(all(target_os = "macos", not(test), not(debug_assertions)))]
     {
         const SERVICE: &str = "com.agentflow.local-data";
         const ACCOUNT: &str = "AgentFlow";
-        if let Ok(bytes) = security_framework::passwords::get_generic_password(SERVICE, ACCOUNT)
-            && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
-        {
+        const KEYCHAIN_TIMEOUT_SECS: u64 = 5;
+
+        // Security.framework is synchronous and can wait indefinitely while macOS is
+        // locked or an ad-hoc signature is awaiting approval. Keep it off the async
+        // runtime and fail with an actionable startup message instead of freezing the UI.
+        let lookup = tokio::task::spawn_blocking(|| {
+            security_framework::passwords::get_generic_password(SERVICE, ACCOUNT)
+        });
+        let lookup = tokio::time::timeout(
+            std::time::Duration::from_secs(KEYCHAIN_TIMEOUT_SECS),
+            lookup,
+        )
+        .await
+        .map_err(|_| {
+            PersistenceError::Crypto(
+                "macOS 密钥链在 5 秒内没有响应。请先解锁 Mac，并允许 AgentFlow 访问本地数据密钥后重新打开。"
+                    .into(),
+            )
+        })?
+        .map_err(|error| PersistenceError::Crypto(format!("Keychain task failed: {error}")))?;
+
+        if let Ok(bytes) = lookup {
+            let key = <[u8; 32]>::try_from(bytes.as_slice())
+                .map_err(|_| PersistenceError::Crypto("invalid Keychain data key length".into()))?;
+            cache_data_key(&path, &key).await?;
             return Ok(Arc::new(key));
         }
+
         let key = new_data_key()?;
-        if security_framework::passwords::set_generic_password(SERVICE, ACCOUNT, key.as_ref())
-            .is_ok()
-        {
+        let key_for_keychain = *key;
+        let store = tokio::task::spawn_blocking(move || {
+            security_framework::passwords::set_generic_password(SERVICE, ACCOUNT, &key_for_keychain)
+        });
+        if matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(KEYCHAIN_TIMEOUT_SECS), store,)
+                .await,
+            Ok(Ok(Ok(())))
+        ) {
+            cache_data_key(&path, key.as_ref()).await?;
             return Ok(key);
         }
     }
-    let path = data_dir.join("local-data.key");
-    if path.exists() {
-        let bytes = tokio::fs::read(&path).await?;
-        let key = <[u8; 32]>::try_from(bytes.as_slice())
-            .map_err(|_| PersistenceError::Crypto("invalid local data key length".into()))?;
-        return Ok(Arc::new(key));
-    }
+
     let key = new_data_key()?;
-    tokio::fs::write(&path, key.as_ref()).await?;
-    restrict_file(&path).await?;
+    cache_data_key(&path, key.as_ref()).await?;
     Ok(key)
+}
+
+async fn read_data_key_file(path: &Path) -> Result<Arc<[u8; 32]>, PersistenceError> {
+    let bytes = tokio::fs::read(path).await?;
+    let key = <[u8; 32]>::try_from(bytes.as_slice())
+        .map_err(|_| PersistenceError::Crypto("invalid local data key length".into()))?;
+    Ok(Arc::new(key))
+}
+
+async fn cache_data_key(path: &Path, key: &[u8; 32]) -> Result<(), PersistenceError> {
+    tokio::fs::write(path, key).await?;
+    restrict_file(path).await
 }
 
 pub(crate) fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, PersistenceError> {

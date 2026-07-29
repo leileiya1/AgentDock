@@ -2,6 +2,8 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
+import { trapTab } from "@/lib/focus";
+import { dialogChildClosedRecently } from "@/lib/dialogChildOverlay";
 
 interface Props {
   open: boolean;
@@ -14,25 +16,73 @@ interface Props {
   onConfirmKey?: () => void;
 }
 
-/** Glass modal with Motion enter/exit + spring; Escape / overlay dismiss. */
+const OPEN_DIALOG_CHILD_SELECTOR = '[data-slot="select-content"]';
+const DIALOG_CHILD_TRIGGER_SELECTOR = '[data-slot="select-trigger"]';
+
+type DialogEscapeRoot = {
+  querySelector: (selector: string) => unknown | null;
+  activeElement?: { closest?: (selector: string) => unknown | null } | null;
+};
+
+export function shouldDeferDialogEscape(root: DialogEscapeRoot): boolean {
+  if (root.querySelector(OPEN_DIALOG_CHILD_SELECTOR) !== null) return true;
+  // macOS can dismiss the native accessibility popup before this window-level
+  // listener runs. Radix restores focus to the trigger, which is the remaining
+  // signal that this Escape belongs to the child Select rather than the dialog.
+  return root.activeElement?.closest?.(DIALOG_CHILD_TRIGGER_SELECTOR) != null || dialogChildClosedRecently();
+}
+
+/** Glass modal with Motion enter/exit + spring; Escape / explicit controls dismiss. */
 export function Dialog({ open, onClose, title, children, footer, width = 480, onConfirmKey }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
+  // Keep the latest callbacks without restarting the focus-trap effect. Dialog
+  // callers commonly pass inline functions, so depending on those identities
+  // would focus the panel again after every controlled-input keystroke.
+  const onCloseRef = useRef(onClose);
+  const onConfirmKeyRef = useRef(onConfirmKey);
+  onCloseRef.current = onClose;
+  onConfirmKeyRef.current = onConfirmKey;
 
   useEffect(() => {
     if (!open) return;
+    // 关闭后焦点必须回到触发它的按钮，否则键盘用户会掉回文档开头 (05 §8)。
+    const restoreTo = document.activeElement as HTMLElement | null;
+
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // Radix Select renders its content in a portal. Let the child overlay
+        // consume Escape first; otherwise the same key also closes this parent
+        // dialog and discards the user's in-progress form.
+        if (shouldDeferDialogEscape(document)) return;
         e.preventDefault();
-        onClose();
-      } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && onConfirmKey) {
-        e.preventDefault();
-        onConfirmKey();
+        onCloseRef.current();
+        return;
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && onConfirmKeyRef.current) {
+        e.preventDefault();
+        onConfirmKeyRef.current();
+        return;
+      }
+      // 焦点陷阱：Tab 不能跑到弹窗背后那层看不见的页面上。
+      trapTab(e, panelRef.current);
     };
-    window.addEventListener("keydown", onKey);
+
+    // Capture before portaled Radix children synchronously unmount themselves.
+    // In the bubble phase the Select is already gone, so Escape is otherwise
+    // indistinguishable from a request to close the parent dialog.
+    window.addEventListener("keydown", onKey, true);
     panelRef.current?.focus();
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, onConfirmKey]);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      restoreTo?.focus?.();
+    };
+  }, [open]);
+
+  // SSR tests do not have a portal host. Render the semantic shell inline so
+  // feature dialogs can still be regression-tested without changing runtime UI.
+  if (typeof document === "undefined") {
+    return open ? <div role="dialog" aria-label={title}>{children}{footer}</div> : null;
+  }
 
   // Render outside animated parents: their CSS transform would otherwise make
   // position: fixed relative to the parent action bar instead of the viewport.
@@ -41,7 +91,6 @@ export function Dialog({ open, onClose, title, children, footer, width = 480, on
       {open && (
         <motion.div
           className="fixed inset-0 z-50 grid place-items-center p-5 bg-black/55 backdrop-blur-[3px]"
-          onMouseDown={onClose}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

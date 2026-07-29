@@ -1,5 +1,30 @@
 pub const CLAUDE_CLI_KEYCHAIN_SERVICE: &str = "com.agentflow.claude-cli-api-key";
 pub const CODEX_CLI_KEYCHAIN_SERVICE: &str = "com.agentflow.codex-cli-api-key";
+pub const DEEPSEEK_API_KEYCHAIN_SERVICE: &str = "com.agentflow.deepseek-api";
+
+string_enum!(ProjectConfigChangeKind {
+    Added => "added",
+    Removed => "removed",
+    Changed => "changed"
+});
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectConfigCommand {
+    pub name: String,
+    pub argv: Vec<String>,
+    pub timeout_secs: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectConfigChange {
+    pub path: String,
+    pub kind: ProjectConfigChangeKind,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub high_risk: bool,
+}
 
 /// Local trust decision for repository-owned AgentFlow configuration. The approved hash lives
 /// outside the repository, so an Agent cannot grant itself command execution permissions by
@@ -13,6 +38,15 @@ pub struct ProjectConfigTrust {
     pub trusted: bool,
     pub validation_steps: Vec<String>,
     pub extra_allowed_commands: Vec<String>,
+    pub validation_commands: Vec<ProjectConfigCommand>,
+    pub environment_allowlist: Vec<String>,
+    pub external_dependencies: Vec<String>,
+    pub container_images: Vec<String>,
+    pub lock_environment: bool,
+    pub hermetic: bool,
+    pub previous_approved_sha256: Option<String>,
+    pub changes: Vec<ProjectConfigChange>,
+    pub byte_only_change: bool,
     pub approved_at: Option<String>,
 }
 
@@ -24,6 +58,7 @@ pub struct ProjectSettings {
     pub codex_path: Option<String>,
     pub gemini_path: Option<String>,
     pub qwen_path: Option<String>,
+    pub qoder_path: Option<String>,
     pub grok_path: Option<String>,
     pub kimi_path: Option<String>,
     pub minimax_path: Option<String>,
@@ -117,7 +152,7 @@ impl ApiProviderSettings {
             "https://api.deepseek.com",
             "deepseek-v4-flash",
             "DEEPSEEK_API_KEY",
-            "com.agentflow.deepseek-api",
+            DEEPSEEK_API_KEYCHAIN_SERVICE,
         )
     }
 
@@ -162,6 +197,7 @@ impl Default for ProjectSettings {
             codex_path: None,
             gemini_path: None,
             qwen_path: None,
+            qoder_path: None,
             grok_path: None,
             kimi_path: None,
             minimax_path: None,
@@ -177,22 +213,12 @@ impl Default for ProjectSettings {
             kimi: ApiProviderSettings::kimi_default(),
             api_fallback_provider: Some(AgentKind::Codex),
             developer_fallbacks: vec![
-                AgentKind::ClaudeCode,
-                AgentKind::Codex,
-                AgentKind::GeminiCli,
-                AgentKind::QwenCode,
+                AgentKind::QoderCli,
+                AgentKind::GrokCli,
             ],
             reviewer_fallbacks: vec![
-                AgentKind::Codex,
-                AgentKind::ClaudeCode,
-                AgentKind::GeminiCli,
-                AgentKind::QwenCode,
-                AgentKind::OpenAiApi,
-                AgentKind::AnthropicApi,
-                AgentKind::DeepSeekApi,
-                AgentKind::GrokApi,
-                AgentKind::MiniMaxApi,
-                AgentKind::KimiApi,
+                AgentKind::QoderCli,
+                AgentKind::GrokCli,
             ],
             review_council: ReviewCouncilSettings::default(),
         }

@@ -1,6 +1,7 @@
 use super::Backend;
 use agentflow_contracts::{
-    AppError, CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE, EnvReport, ErrorCode,
+    AppError, CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE,
+    DEEPSEEK_API_KEYCHAIN_SERVICE, EnvReport, ErrorCode,
 };
 use serde::Deserialize;
 use specta::Type;
@@ -53,7 +54,7 @@ fn api_service(provider: &str) -> Option<&'static str> {
     match provider {
         "openai_api" => Some("com.agentflow.openai-api"),
         "anthropic_api" => Some("com.agentflow.anthropic-api"),
-        "deepseek_api" => Some("com.agentflow.deepseek-api"),
+        "deepseek_api" => Some(DEEPSEEK_API_KEYCHAIN_SERVICE),
         "grok_api" => Some("com.agentflow.grok-api"),
         "minimax_api" => Some("com.agentflow.minimax-api"),
         "kimi_api" => Some("com.agentflow.kimi-api"),
@@ -313,7 +314,8 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn keychain_roundtrip_uses_security_framework_without_a_shell() {
+    fn keychain_roundtrip_uses_security_framework_without_a_shell()
+    -> Result<(), Box<dyn std::error::Error>> {
         use security_framework::os::macos::keychain::CreateOptions;
 
         let service = format!("com.agentflow.provider-setup-test.{}", std::process::id());
@@ -325,17 +327,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let keychain = CreateOptions::new()
             .password("agentflow-test-only")
-            .create(&path)
-            .expect("create temporary keychain");
-        keychain
-            .set_generic_password(&service, "AgentFlow", secret)
-            .expect("write temporary keychain item");
-        let (stored, item) = keychain
-            .find_generic_password(&service, "AgentFlow")
-            .expect("read temporary keychain item");
+            .create(&path)?;
+        keychain.set_generic_password(&service, "AgentFlow", secret)?;
+        let (stored, item) = keychain.find_generic_password(&service, "AgentFlow")?;
         assert_eq!(&*stored, secret);
         item.delete();
         drop(keychain);
-        std::fs::remove_file(path).expect("remove temporary keychain");
+        std::fs::remove_file(path)?;
+        Ok(())
     }
 }

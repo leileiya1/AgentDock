@@ -68,10 +68,15 @@ impl Orchestrator {
                 ))
             }
         })?;
-        let required_checks = match task.policy.delivery_mode {
-            DeliveryMode::GitHubPr => Some(github_required_checks(branch, &project.repo).await?),
-            _ => None,
-        };
+        let (required_checks, ci_checks) = collect_ci_checks(
+            task.policy.delivery_mode,
+            branch,
+            &view_output,
+            &project.repo,
+        )
+        .await?;
+        let ci_checks_json = serde_json::to_string(&ci_checks)
+            .map_err(|error| OrchestratorError::InvalidState(error.to_string()))?;
         let snapshot = parse_delivery_snapshot(
             task.policy.delivery_mode,
             &view_output,
@@ -79,9 +84,9 @@ impl Orchestrator {
         );
         validate_delivery_binding(task, &seal, &snapshot)?;
         let now = Utc::now().to_rfc3339();
-        sqlx::query("UPDATE delivery_records SET state=?,remote_url=?,request_number=?,ci_status=?,merge_commit=COALESCE(?,merge_commit),approved_commit_sha=?,observed_head_sha=?,head_branch=?,base_branch=?,required_checks_json=?,updated_at=? WHERE task_id=?")
+        sqlx::query("UPDATE delivery_records SET state=?,remote_url=?,request_number=?,ci_status=?,ci_checks_json=?,merge_commit=COALESCE(?,merge_commit),approved_commit_sha=?,observed_head_sha=?,head_branch=?,base_branch=?,required_checks_json=?,updated_at=? WHERE task_id=?")
             .bind(snapshot.state.to_string()).bind(&snapshot.url).bind(snapshot.number)
-            .bind(snapshot.ci_status.to_string()).bind(&snapshot.merge_commit)
+            .bind(snapshot.ci_status.to_string()).bind(ci_checks_json).bind(&snapshot.merge_commit)
             .bind(&seal.commit_sha).bind(&snapshot.head_sha).bind(&snapshot.head_branch)
             .bind(&snapshot.base_branch).bind(required_checks).bind(&now).bind(&task.id)
             .execute(self.store.pool()).await?;
@@ -114,10 +119,15 @@ impl Orchestrator {
             DeliveryMode::LocalMerge => unreachable!(),
         };
         let view_output = run_scm(program, &args, &project.repo).await?;
-        let required_checks = match task.policy.delivery_mode {
-            DeliveryMode::GitHubPr => Some(github_required_checks(branch, &project.repo).await?),
-            _ => None,
-        };
+        let (required_checks, ci_checks) = collect_ci_checks(
+            task.policy.delivery_mode,
+            branch,
+            &view_output,
+            &project.repo,
+        )
+        .await?;
+        let ci_checks_json = serde_json::to_string(&ci_checks)
+            .map_err(|error| OrchestratorError::InvalidState(error.to_string()))?;
         let snapshot = parse_delivery_snapshot(
             task.policy.delivery_mode,
             &view_output,
@@ -125,7 +135,8 @@ impl Orchestrator {
         );
         if let Err(error) = validate_delivery_binding(&task, &seal, &snapshot) {
             let now = Utc::now().to_rfc3339();
-            sqlx::query("UPDATE delivery_records SET state='failed',ci_status='unknown',approved_commit_sha=?,observed_head_sha=?,head_branch=?,base_branch=?,required_checks_json=?,updated_at=? WHERE task_id=?")
+            sqlx::query("UPDATE delivery_records SET state='failed',ci_status='unknown',ci_checks_json=?,approved_commit_sha=?,observed_head_sha=?,head_branch=?,base_branch=?,required_checks_json=?,updated_at=? WHERE task_id=?")
+                .bind(&ci_checks_json)
                 .bind(&seal.commit_sha).bind(&snapshot.head_sha).bind(&snapshot.head_branch)
                 .bind(&snapshot.base_branch).bind(required_checks).bind(&now).bind(task_id)
                 .execute(self.store.pool()).await?;
@@ -136,9 +147,9 @@ impl Orchestrator {
             return Err(error);
         }
         let now = Utc::now().to_rfc3339();
-        sqlx::query("UPDATE delivery_records SET state=?,remote_url=?,request_number=?,ci_status=?,merge_commit=COALESCE(?,merge_commit),approved_commit_sha=?,observed_head_sha=?,head_branch=?,base_branch=?,required_checks_json=?,updated_at=? WHERE task_id=?")
+        sqlx::query("UPDATE delivery_records SET state=?,remote_url=?,request_number=?,ci_status=?,ci_checks_json=?,merge_commit=COALESCE(?,merge_commit),approved_commit_sha=?,observed_head_sha=?,head_branch=?,base_branch=?,required_checks_json=?,updated_at=? WHERE task_id=?")
             .bind(snapshot.state.to_string()).bind(&snapshot.url).bind(snapshot.number)
-            .bind(snapshot.ci_status.to_string()).bind(&snapshot.merge_commit)
+            .bind(snapshot.ci_status.to_string()).bind(&ci_checks_json).bind(&snapshot.merge_commit)
             .bind(&seal.commit_sha).bind(&snapshot.head_sha).bind(&snapshot.head_branch)
             .bind(&snapshot.base_branch).bind(required_checks).bind(&now).bind(task_id)
             .execute(self.store.pool()).await?;
@@ -161,57 +172,6 @@ impl Orchestrator {
         self.store.task_summary(task_id).await.map_err(Into::into)
     }
 
-    pub async fn task_rollback(
-        &self,
-        task_id: &str,
-        strategy: RollbackStrategy,
-    ) -> Result<TaskSummary, OrchestratorError> {
-        let task = self.task(task_id).await?;
-        if task.status != TaskStatus::Merged {
-            return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
-        }
-        let project = self.project(&task.project_id).await?;
-        if self.git.default_branch(&project.repo).await? != task.target_branch
-            || !self.git.is_clean(&project.repo).await?
-        {
-            return Err(OrchestratorError::RollbackUnsafe(
-                "target checkout must be clean and on the target branch".into(),
-            ));
-        }
-        let delivery = self.delivery_record(task_id).await?
-            .ok_or_else(|| OrchestratorError::RollbackUnsafe("delivery record missing".into()))?;
-        let merge = delivery.merge_commit.as_deref()
-            .ok_or_else(|| OrchestratorError::RollbackUnsafe("merge commit missing".into()))?;
-        let rollback_commit = match strategy {
-            RollbackStrategy::Undo => {
-                let before = delivery.pre_merge_commit.as_deref().ok_or_else(|| {
-                    OrchestratorError::RollbackUnsafe("pre-merge commit missing".into())
-                })?;
-                if self.git.resolve(&project.repo, "HEAD").await? != merge {
-                    return Err(OrchestratorError::RollbackUnsafe(
-                        "later commits exist; use revert instead".into(),
-                    ));
-                }
-                self.git.reset_branch_head(&project.repo, before).await?;
-                before.to_string()
-            }
-            RollbackStrategy::Revert => {
-                self.git.revert_merge(
-                    &project.repo,
-                    merge,
-                    &format!("[agentflow] rollback TASK-{}: {}", task.seq, task.title),
-                ).await?
-            }
-        };
-        let now = Utc::now().to_rfc3339();
-        sqlx::query("UPDATE delivery_records SET state='rolled_back',rollback_commit=?,updated_at=? WHERE task_id=?")
-            .bind(&rollback_commit).bind(&now).bind(task_id).execute(self.store.pool()).await?;
-        self.store.transition(
-            task_id, &[TaskStatus::Merged], TaskStatus::RolledBack, None, Actor::Human,
-            "human:rollback", &json!({"strategy":strategy,"merge_commit":merge,"rollback_commit":rollback_commit}),
-        ).await?;
-        self.store.task_summary(task_id).await.map_err(Into::into)
-    }
 }
 
 struct DeliverySnapshot {
@@ -342,17 +302,41 @@ fn validate_delivery_binding(
     Ok(())
 }
 
-async fn github_required_checks(branch: &str, cwd: &Path) -> Result<String, OrchestratorError> {
+async fn collect_ci_checks(
+    mode: DeliveryMode,
+    branch: &str,
+    view_output: &str,
+    cwd: &Path,
+) -> Result<(Option<String>, Vec<CiCheck>), OrchestratorError> {
+    match mode {
+        DeliveryMode::GitHubPr => {
+            let required = github_checks_json(branch, cwd, true).await?;
+            let all = github_checks_json(branch, cwd, false).await?;
+            let mut checks = parse_github_ci_checks(&all, &required);
+            enrich_github_failure_summaries(&mut checks, cwd).await;
+            Ok((Some(required), checks))
+        }
+        DeliveryMode::GitLabMr => Ok((None, gitlab_ci_checks(view_output, cwd).await)),
+        DeliveryMode::LocalMerge => Ok((None, Vec::new())),
+    }
+}
+
+async fn github_checks_json(
+    branch: &str,
+    cwd: &Path,
+    required_only: bool,
+) -> Result<String, OrchestratorError> {
+    let mut args = vec!["pr", "checks", branch];
+    if required_only {
+        args.push("--required");
+    }
+    args.extend([
+        "--json",
+        "name,state,bucket,link,workflow,description,startedAt,completedAt",
+    ]);
     let output = run_scm_allow_failure(
         "gh",
-        &[
-            "pr",
-            "checks",
-            branch,
-            "--required",
-            "--json",
-            "name,state,bucket,link",
-        ],
+        &args,
         cwd,
     )
     .await?;
@@ -374,6 +358,207 @@ async fn github_required_checks(branch: &str, cwd: &Path) -> Result<String, Orch
             format!("gh pr checks: {stderr}").chars().take(1600).collect(),
         ),
     ))
+}
+
+fn parse_github_ci_checks(all_json: &str, required_json: &str) -> Vec<CiCheck> {
+    let required: HashSet<(String, Option<String>)> = serde_json::from_str::<Vec<Value>>(required_json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|check| {
+            Some((
+                check.get("name")?.as_str()?.to_string(),
+                check.get("workflow").and_then(Value::as_str).map(str::to_string),
+            ))
+        })
+        .collect();
+    serde_json::from_str::<Vec<Value>>(all_json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|check| {
+            let name = check.get("name")?.as_str()?.to_string();
+            let workflow = check
+                .get("workflow")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let status = ci_check_status(
+                check.get("bucket").and_then(Value::as_str),
+                check.get("state").and_then(Value::as_str),
+            );
+            let description = check
+                .get("description")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| value.trim().chars().take(500).collect());
+            let failure_summary = matches!(status, CiCheckStatus::Failed | CiCheckStatus::Cancelled)
+                .then(|| description.clone())
+                .flatten();
+            Some(CiCheck {
+                required: required.contains(&(name.clone(), workflow.clone()))
+                    || required.iter().any(|(required_name, _)| required_name == &name),
+                name,
+                status,
+                workflow,
+                description,
+                failure_summary,
+                details_url: check.get("link").and_then(Value::as_str).map(str::to_string),
+                started_at: check.get("startedAt").and_then(Value::as_str).map(str::to_string),
+                completed_at: check.get("completedAt").and_then(Value::as_str).map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+fn ci_check_status(bucket: Option<&str>, state: Option<&str>) -> CiCheckStatus {
+    match bucket.unwrap_or("").to_ascii_lowercase().as_str() {
+        "pass" => CiCheckStatus::Passed,
+        "fail" => CiCheckStatus::Failed,
+        "cancel" => CiCheckStatus::Cancelled,
+        "pending" => CiCheckStatus::Pending,
+        "skipping" => CiCheckStatus::Skipped,
+        _ => match state.unwrap_or("").to_ascii_lowercase().as_str() {
+            "success" | "passed" => CiCheckStatus::Passed,
+            "failure" | "failed" | "timed_out" => CiCheckStatus::Failed,
+            "cancelled" | "canceled" => CiCheckStatus::Cancelled,
+            "queued" | "waiting" | "pending" | "in_progress" | "running" => {
+                CiCheckStatus::Pending
+            }
+            "skipped" | "manual" => CiCheckStatus::Skipped,
+            _ => CiCheckStatus::Unknown,
+        },
+    }
+}
+
+async fn enrich_github_failure_summaries(checks: &mut [CiCheck], cwd: &Path) {
+    let mut summaries: HashMap<String, Option<String>> = HashMap::new();
+    for check in checks.iter_mut().filter(|check| {
+        matches!(check.status, CiCheckStatus::Failed | CiCheckStatus::Cancelled)
+            && check.failure_summary.is_none()
+    }) {
+        let Some(run_id) = check.details_url.as_deref().and_then(github_run_id) else {
+            continue;
+        };
+        let summary = if let Some(cached) = summaries.get(&run_id) {
+            cached.clone()
+        } else {
+            let output = run_scm_allow_failure("gh", &["run", "view", &run_id, "--log-failed"], cwd).await;
+            let summary = output.ok().and_then(|output| {
+                summarize_failed_log(&String::from_utf8_lossy(&output.stdout), &check.name)
+            });
+            summaries.insert(run_id.clone(), summary.clone());
+            summary
+        };
+        check.failure_summary = summary;
+    }
+}
+
+fn github_run_id(link: &str) -> Option<String> {
+    link.split("/actions/runs/")
+        .nth(1)?
+        .split('/')
+        .next()
+        .filter(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
+        .map(str::to_string)
+}
+
+fn summarize_failed_log(log: &str, check_name: &str) -> Option<String> {
+    let check_name = check_name.to_ascii_lowercase();
+    let meaningful = |line: &&str| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("error")
+            || lower.contains("failed")
+            || lower.contains("failure")
+            || lower.contains("panic")
+    };
+    let all: Vec<&str> = log.lines().filter(meaningful).collect();
+    let scoped: Vec<&str> = all
+        .iter()
+        .copied()
+        .filter(|line| line.to_ascii_lowercase().contains(&check_name))
+        .collect();
+    let source = if scoped.is_empty() { &all } else { &scoped };
+    let summary = source
+        .iter()
+        .rev()
+        .take(3)
+        .rev()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    (!summary.is_empty()).then(|| {
+        agentflow_process_supervisor::redact(summary.chars().take(700).collect())
+    })
+}
+
+async fn gitlab_ci_checks(view_output: &str, cwd: &Path) -> Vec<CiCheck> {
+    let value = serde_json::from_str::<Value>(view_output).unwrap_or(Value::Null);
+    let pipeline = value
+        .get("head_pipeline")
+        .or_else(|| value.get("headPipeline"))
+        .or_else(|| value.get("pipeline"));
+    let pipeline_id = pipeline.and_then(|value| value.get("id")).and_then(Value::as_i64);
+    let mut jobs = pipeline
+        .and_then(|value| value.get("jobs"))
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    if jobs.is_empty() && let Some(pipeline_id) = pipeline_id {
+        let endpoint = format!("projects/:fullpath/pipelines/{pipeline_id}/jobs");
+        if let Ok(output) = run_scm_allow_failure("glab", &["api", &endpoint], cwd).await
+            && output.status.success()
+        {
+            jobs = serde_json::from_slice::<Vec<Value>>(&output.stdout).unwrap_or_default();
+        }
+    }
+    let checks: Vec<CiCheck> = jobs.into_iter().filter_map(parse_gitlab_job).collect();
+    if !checks.is_empty() {
+        return checks;
+    }
+    pipeline.and_then(parse_gitlab_pipeline).into_iter().collect()
+}
+
+fn parse_gitlab_job(job: Value) -> Option<CiCheck> {
+    let name = job.get("name")?.as_str()?.to_string();
+    let status_text = job.get("status").and_then(Value::as_str);
+    let status = ci_check_status(None, status_text);
+    let failure_reason = job
+        .get("failure_reason")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.replace('_', " "));
+    Some(CiCheck {
+        name,
+        status,
+        required: !job.get("allow_failure").and_then(Value::as_bool).unwrap_or(false),
+        workflow: job.get("stage").and_then(Value::as_str).map(str::to_string),
+        description: failure_reason.clone(),
+        failure_summary: matches!(status, CiCheckStatus::Failed | CiCheckStatus::Cancelled)
+            .then_some(failure_reason)
+            .flatten(),
+        details_url: job.get("web_url").and_then(Value::as_str).map(str::to_string),
+        started_at: job.get("started_at").and_then(Value::as_str).map(str::to_string),
+        completed_at: job.get("finished_at").and_then(Value::as_str).map(str::to_string),
+    })
+}
+
+fn parse_gitlab_pipeline(pipeline: &Value) -> Option<CiCheck> {
+    let status_text = pipeline.get("status").and_then(Value::as_str)?;
+    let status = ci_check_status(None, Some(status_text));
+    Some(CiCheck {
+        name: "GitLab Pipeline".into(),
+        status,
+        required: true,
+        workflow: None,
+        description: None,
+        failure_summary: None,
+        details_url: pipeline
+            .get("web_url")
+            .or_else(|| pipeline.get("webUrl"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        started_at: pipeline.get("created_at").and_then(Value::as_str).map(str::to_string),
+        completed_at: pipeline.get("updated_at").and_then(Value::as_str).map(str::to_string),
+    })
 }
 
 async fn run_scm(program: &str, args: &[&str], cwd: &Path) -> Result<String, OrchestratorError> {
@@ -521,6 +706,54 @@ mod delivery_tests {
     }
 
     #[test]
+    fn github_check_details_mark_required_rows_and_keep_remote_logs() {
+        let required = r#"[{"name":"test","workflow":"CI","state":"FAILURE","bucket":"fail","link":"https://github.test/actions/runs/123/job/456"}]"#;
+        let all = r#"[{"name":"test","workflow":"CI","description":"unit tests failed","state":"FAILURE","bucket":"fail","link":"https://github.test/actions/runs/123/job/456","startedAt":"2026-07-20T10:00:00Z","completedAt":"2026-07-20T10:02:00Z"},{"name":"lint","workflow":"CI","state":"SUCCESS","bucket":"pass","link":"https://github.test/actions/runs/123/job/789"}]"#;
+        let checks = parse_github_ci_checks(all, required);
+        assert_eq!(checks.len(), 2);
+        assert!(checks[0].required);
+        assert_eq!(checks[0].status, CiCheckStatus::Failed);
+        assert_eq!(checks[0].failure_summary.as_deref(), Some("unit tests failed"));
+        assert_eq!(checks[0].details_url.as_deref(), Some("https://github.test/actions/runs/123/job/456"));
+        assert!(!checks[1].required);
+        assert_eq!(checks[1].status, CiCheckStatus::Passed);
+    }
+
+    #[test]
+    fn github_failed_log_summary_is_short_and_error_focused() {
+        let log = "test\tsetup\tstarting\ntest\trun\terror: expected 2, received 3\ntest\trun\tFAILURE: 1 test failed\nother\tstep\tpanic should not win scoped lines\n";
+        let Some(summary) = summarize_failed_log(log, "test") else {
+            panic!("expected a failed log summary")
+        };
+        assert!(summary.contains("expected 2"));
+        assert!(summary.contains("1 test failed"));
+        assert!(!summary.contains("starting"));
+        assert!(!summary.contains("other"));
+        assert_eq!(github_run_id("https://github.com/a/b/actions/runs/123/job/9").as_deref(), Some("123"));
+    }
+
+    #[test]
+    fn gitlab_jobs_expose_stage_failure_and_log_link() {
+        let Some(check) = parse_gitlab_job(serde_json::json!({
+            "name": "integration",
+            "stage": "test",
+            "status": "failed",
+            "allow_failure": false,
+            "failure_reason": "script_failure",
+            "web_url": "https://gitlab.test/jobs/42",
+            "started_at": "2026-07-20T10:00:00Z",
+            "finished_at": "2026-07-20T10:03:00Z"
+        })) else {
+            panic!("expected a parsed GitLab job")
+        };
+        assert_eq!(check.status, CiCheckStatus::Failed);
+        assert!(check.required);
+        assert_eq!(check.workflow.as_deref(), Some("test"));
+        assert_eq!(check.failure_summary.as_deref(), Some("script failure"));
+        assert_eq!(check.details_url.as_deref(), Some("https://gitlab.test/jobs/42"));
+    }
+
+    #[test]
     fn delivery_binding_rejects_old_head_wrong_branches_and_drafts() {
         let task = TaskRow {
             id: "task".into(), project_id: "project".into(), seq: 7,
@@ -567,7 +800,7 @@ mod delivery_tests {
             &["pr", "view", &branch, "--json", "number,url,state,mergeCommit,statusCheckRollup,headRefOid,headRefName,baseRefName,isDraft"],
             Path::new("."),
         ).await?;
-        let required = github_required_checks(&branch, Path::new(".")).await?;
+        let required = github_checks_json(&branch, Path::new("."), true).await?;
         let snapshot = parse_delivery_snapshot(DeliveryMode::GitHubPr, &view, Some(&required));
         assert_eq!(snapshot.head_sha.as_deref(), Some(approved_sha.as_str()));
         assert_eq!(snapshot.head_branch.as_deref(), Some(branch.as_str()));

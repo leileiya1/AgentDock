@@ -1,7 +1,12 @@
+/// The scheduler loop must survive transient failures (SQLITE_BUSY, disk I/O hiccups, a pool
+/// briefly closed by backup restore): a single `?` here would silently stop all task scheduling
+/// while Ping keeps answering. Every tick-side failure is therefore logged and retried on the
+/// next tick, and `heartbeat` lets the health endpoint report real scheduling liveness.
 async fn scheduler_loop(
     orchestrator: Arc<Orchestrator>,
     shutdown: CancellationToken,
-) -> Result<(), DaemonError> {
+    heartbeat: Arc<AtomicI64>,
+) {
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut running = JoinSet::new();
@@ -16,15 +21,20 @@ async fn scheduler_loop(
                         tracing::warn!(%error, "scheduler worker stopped during shutdown");
                     }
                 }
-                orchestrator.requeue_interrupted_tasks(&interrupted).await?;
-                for task_id in interrupted {
-                    sqlx::query("UPDATE daemon_queue SET state='QUEUED',updated_at=? WHERE task_id=?")
-                        .bind(Utc::now().to_rfc3339())
-                        .bind(task_id)
-                        .execute(orchestrator.store.pool())
-                        .await?;
+                if let Err(error) = orchestrator.requeue_interrupted_tasks(&interrupted).await {
+                    tracing::warn!(%error, "failed to requeue interrupted tasks during shutdown");
                 }
-                return Ok(());
+                for task_id in interrupted {
+                    if let Err(error) = sqlx::query("UPDATE daemon_queue SET state='QUEUED',updated_at=? WHERE task_id=?")
+                        .bind(Utc::now().to_rfc3339())
+                        .bind(&task_id)
+                        .execute(orchestrator.store.pool())
+                        .await
+                    {
+                        tracing::warn!(task_id, %error, "failed to requeue daemon queue item during shutdown");
+                    }
+                }
+                return;
             },
             joined = running.join_next(), if !running.is_empty() => {
                 if let Some(Err(error)) = joined {
@@ -32,13 +42,35 @@ async fn scheduler_loop(
                 }
             },
             _ = tick.tick() => {
-                let settings = orchestrator.settings_get().await?;
-                if settings.scheduler_paused || !inside_run_window(&settings) || global_budget_exhausted(&orchestrator, &settings).await? {
+                heartbeat.store(Utc::now().timestamp(), Ordering::Relaxed);
+                let settings = match orchestrator.settings_get().await {
+                    Ok(settings) => settings,
+                    Err(error) => {
+                        tracing::warn!(%error, "scheduler tick could not load settings; retrying next tick");
+                        continue;
+                    }
+                };
+                if settings.scheduler_paused || !inside_run_window(&settings) {
                     continue;
+                }
+                match global_budget_exhausted(&orchestrator, &settings).await {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, "scheduler tick could not evaluate global budget; retrying next tick");
+                        continue;
+                    }
                 }
                 let limit = scheduler_limit(&settings);
                 while running.len() < limit {
-                    let Some(task_id) = claim_next(&orchestrator).await? else { break };
+                    let task_id = match claim_next(&orchestrator).await {
+                        Ok(Some(task_id)) => task_id,
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::warn!(%error, "scheduler could not claim the next queued task; retrying next tick");
+                            break;
+                        }
+                    };
                     let worker = Arc::clone(&orchestrator);
                     running.spawn(async move {
                         let result = worker.drive_task(&task_id).await;

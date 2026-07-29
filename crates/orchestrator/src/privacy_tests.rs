@@ -23,11 +23,16 @@ async fn api_review_requires_explicit_task_scoped_egress_approval()
             None,
         )
         .await;
-    assert!(matches!(
-        denied,
-        Err(OrchestratorError::InvalidState(message))
-            if message == "API_EGRESS_APPROVAL_REQUIRED"
-    ));
+    // §65: the error must name which Provider would receive the code (here the DeepSeek API
+    // reviewer), not just an opaque code, so the user knows exactly what egress they're consenting to.
+    assert!(
+        matches!(
+            &denied,
+            Err(OrchestratorError::InvalidState(message))
+                if message.starts_with("API_EGRESS_APPROVAL_REQUIRED") && message.contains("deepseek_api")
+        ),
+        "egress error should name the provider, got: {denied:?}"
+    );
 
     let approved = orchestrator
         .task_create_with_api_egress(
@@ -78,6 +83,7 @@ async fn signed_external_remote_provider_uses_the_same_egress_gate()
         args: Vec::new(),
         transport: agentflow_provider_protocol::TransportKind::StdioJsonRpc,
         capabilities: ProviderCapabilities {
+            planning: false,
             development: false,
             review: true,
             streaming: true,
@@ -134,7 +140,7 @@ async fn signed_external_remote_provider_uses_the_same_egress_gate()
         )
         .await;
     assert!(
-        matches!(denied, Err(OrchestratorError::InvalidState(message)) if message == "API_EGRESS_APPROVAL_REQUIRED")
+        matches!(denied, Err(OrchestratorError::InvalidState(message)) if message.starts_with("API_EGRESS_APPROVAL_REQUIRED"))
     );
     let approved = orchestrator
         .task_create_with_api_egress(

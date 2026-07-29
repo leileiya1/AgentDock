@@ -12,17 +12,29 @@ async fn execution_nodes_are_checked_and_referenced_nodes_cannot_be_deleted()
             port: 1,
             username: "runner".into(),
             work_root: "/tmp/agentflow-node".into(),
+            identity_file: None,
+            deny_network: false,
             enabled: true,
             status: NodeStatus::Unknown,
             platform: None,
             git_version: None,
             problem: None,
             last_checked_at: None,
+            diagnostics: Vec::new(),
         })
         .await?;
-    assert_eq!(
-        orchestrator.execution_node_check(&node.id).await?.status,
-        NodeStatus::Offline
+    let offline = orchestrator.execution_node_check(&node.id).await?;
+    assert_eq!(offline.status, NodeStatus::Offline);
+    assert_eq!(offline.diagnostics[0].step, NodeDiagnosticStep::Dns);
+    assert_eq!(offline.diagnostics[0].status, NodeDiagnosticStatus::Passed);
+    assert_eq!(offline.diagnostics[1].step, NodeDiagnosticStep::Tcp);
+    assert_eq!(offline.diagnostics[1].status, NodeDiagnosticStatus::Failed);
+    assert!(
+        offline
+            .diagnostics
+            .iter()
+            .skip(2)
+            .all(|step| step.status == NodeDiagnosticStatus::Skipped)
     );
     let policy = TaskPolicy {
         require_plan_approval: false,
@@ -40,14 +52,18 @@ async fn execution_nodes_are_checked_and_referenced_nodes_cannot_be_deleted()
             port: 22,
             username: "runner".into(),
             work_root: "/tmp/agentflow".into(),
+            identity_file: None,
+            deny_network: true,
             enabled: false,
             status: NodeStatus::Unknown,
             platform: None,
             git_version: None,
             problem: None,
             last_checked_at: None,
+            diagnostics: Vec::new(),
         })
         .await?;
+    assert!(disposable.deny_network);
     orchestrator.execution_node_delete(&disposable.id).await?;
     assert!(
         orchestrator
@@ -83,7 +99,7 @@ async fn prepare_quality_revision(
     let now = Utc::now().to_rfc3339();
     sqlx::query("INSERT INTO task_revisions(id,task_id,revision,commit_sha,diff_stat_json,created_at) VALUES(?,?,1,?,?,?)")
         .bind(Uuid::now_v7().to_string()).bind(&task.id).bind(&sha)
-        .bind(serde_json::to_string(&DiffStat { files: 1, insertions: 1, deletions: 0, flagged: vec![] })?)
+        .bind(serde_json::to_string(&DiffStat { files: 1, insertions: 1, deletions: 0, flagged: vec![], deleted_files: 0 })?)
         .bind(&now).execute(orchestrator.store.pool()).await?;
     sqlx::query("UPDATE tasks SET current_revision=1,status='READY_FOR_REVIEW' WHERE id=?")
         .bind(&task.id)
@@ -141,7 +157,12 @@ async fn prepare_quality_revision(
     );
     assert!(!first.environment_sha256.is_empty());
     assert!(first.environment_variables.contains_key("LANG"));
-    let quality = orchestrator.task_quality_replay(&task.id, Some(1)).await?;
+    let replay = orchestrator.task_quality_replay(&task.id, Some(1)).await?;
+    assert_eq!(replay.status, QualityReplayStatus::Succeeded);
+    assert!(replay.environment_match);
+    let Some(quality) = replay.replay_quality else {
+        panic!("successful replay must include quality")
+    };
     assert!(quality.passed);
     assert!(quality.replay);
     assert_eq!(quality.score, 100);
@@ -152,11 +173,21 @@ async fn prepare_quality_revision(
         serde_json::from_slice(&tokio::fs::read(&repro_path).await?)?;
     repro["external_dependencies"]["fixture-db"] = json!("snapshot-2");
     tokio::fs::write(&repro_path, serde_json::to_vec(&repro)?).await?;
-    let drift = orchestrator.task_quality_replay(&task.id, Some(1)).await;
-    assert!(matches!(
-        drift,
-        Err(OrchestratorError::InvalidState(message)) if message.contains("REPRODUCIBILITY_DRIFT")
-    ));
+    let drift = orchestrator.task_quality_replay(&task.id, Some(1)).await?;
+    assert_eq!(drift.status, QualityReplayStatus::DriftBlocked);
+    assert_eq!(drift.error_code.as_deref(), Some("REPRODUCIBILITY_DRIFT"));
+    assert_eq!(drift.drift.len(), 1);
+    assert_eq!(
+        drift.drift[0].kind,
+        ReproducibilityDriftKind::ExternalDependencies
+    );
+    assert_eq!(drift.drift[0].changed_keys, vec!["fixture-db"]);
+    assert!(drift.replay_quality.is_none());
+    let governance = orchestrator.task_governance_get(&task.id, Some(1)).await?;
+    assert_eq!(
+        governance.latest_replay.map(|attempt| attempt.status),
+        Some(QualityReplayStatus::DriftBlocked)
+    );
     sqlx::query("UPDATE tasks SET status='APPROVED' WHERE id=?")
         .bind(&task.id)
         .execute(orchestrator.store.pool())
@@ -180,6 +211,31 @@ async fn reproducible_quality_gate_local_delivery_and_both_rollbacks_work()
             .status,
         TaskStatus::Merged
     );
+    tokio::fs::write(repo.join("dirty-preflight.txt"), "not committed\n").await?;
+    let dirty = orchestrator.task_rollback_preflight(&undo_task.id).await?;
+    assert!(!dirty.can_undo);
+    assert!(!dirty.can_revert);
+    assert!(
+        dirty
+            .undo_blockers
+            .contains(&RollbackBlocker::DirtyWorkingTree)
+    );
+    assert!(matches!(
+        orchestrator
+            .task_rollback(&undo_task.id, RollbackStrategy::Undo)
+            .await,
+        Err(OrchestratorError::RollbackUnsafe(_))
+    ));
+    tokio::fs::remove_file(repo.join("dirty-preflight.txt")).await?;
+    let undo_preview = orchestrator.task_rollback_preflight(&undo_task.id).await?;
+    assert!(undo_preview.can_undo);
+    assert!(undo_preview.can_revert);
+    assert_eq!(undo_preview.later_commit_count, 0);
+    assert_eq!(undo_preview.affected_file_count, 1);
+    assert_eq!(
+        undo_preview.recommended_strategy,
+        Some(RollbackStrategy::Undo)
+    );
     assert_eq!(
         orchestrator
             .task_rollback(&undo_task.id, RollbackStrategy::Undo)
@@ -201,6 +257,25 @@ async fn reproducible_quality_gate_local_delivery_and_both_rollbacks_work()
     tokio::fs::write(repo.join("later.txt"), "later work\n").await?;
     git(&repo, &["add", "later.txt"]).await?;
     git(&repo, &["commit", "-q", "-m", "later unrelated work"]).await?;
+    let revert_preview = orchestrator
+        .task_rollback_preflight(&revert_task.id)
+        .await?;
+    assert!(!revert_preview.can_undo);
+    assert!(revert_preview.can_revert);
+    assert_eq!(revert_preview.later_commit_count, 1);
+    assert!(
+        revert_preview
+            .undo_blockers
+            .contains(&RollbackBlocker::LaterCommitsExist)
+    );
+    assert_eq!(
+        revert_preview.recommended_strategy,
+        Some(RollbackStrategy::Revert)
+    );
+    assert_eq!(
+        revert_preview.later_commits[0].subject,
+        "later unrelated work"
+    );
     assert!(matches!(
         orchestrator
             .task_rollback(&revert_task.id, RollbackStrategy::Undo)

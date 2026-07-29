@@ -8,7 +8,10 @@ agentflow-contracts.workspace = true
 agentflow-provider-protocol.workspace = true
 agentflow-process-supervisor.workspace = true
 async-trait.workspace = true
+axum.workspace = true
 chrono.workspace = true
+getrandom.workspace = true
+hex.workspace = true
 jsonschema.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
@@ -17,13 +20,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+toml.workspace = true
 which.workspace = true
+tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true

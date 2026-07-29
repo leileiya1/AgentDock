@@ -1,5 +1,5 @@
 use agentflow_contracts::{
-    AgentEvent, AgentEventKind, AgentKind, ApiProviderSettings, DevelopmentResult,
+    AgentEvent, AgentEventKind, AgentKind, ApiProviderSettings, CliSupportLevel, DevelopmentResult,
     DevelopmentStatus, EventStream, PlanResult, ProviderStatus, ReviewDecision, ReviewResult,
     RunRole, ToolStatus, development_result_schema, plan_result_schema, review_result_schema,
 };
@@ -7,8 +7,10 @@ use agentflow_process_supervisor::{ProcessOutcome, ProcessSpec};
 use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::{Client, StatusCode};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -48,6 +50,7 @@ pub struct RunBudget {
 }
 
 mod credentials;
+mod deepseek_compat;
 mod dynamic;
 use credentials::cli_credential_env;
 pub use dynamic::{ExternalProviderAdapter, UnavailableProviderAdapter};
@@ -64,6 +67,11 @@ pub struct AgentCapabilities {
     pub read_only_mode: bool,
     pub supports_development: bool,
     pub supports_review: bool,
+    /// Whether this Provider can stop before a tool call and ask AgentFlow for a decision.
+    /// Providers without it run development work under their own auto-approval mode, bounded
+    /// only by the CLI's sandbox flag — a materially weaker guarantee that must be visible in
+    /// the audit trail rather than implied by the absence of permission requests.
+    pub permission_broker: bool,
 }
 #[derive(Debug, Clone)]
 pub struct AgentInstallation {
@@ -93,9 +101,13 @@ pub struct AgentRunRequest {
     pub timeout: Duration,
     pub idle_timeout: Duration,
     pub permission: PermissionTier,
+    pub effective_permissions: agentflow_contracts::EffectivePermissions,
     /// Optional opaque Provider session token. Artifact history remains authoritative;
     /// this is supplied only when the user explicitly enables session reuse.
     pub resume_session_id: Option<String>,
+    /// AgentFlow daemon executable used as Claude's structured PreToolUse permission hook.
+    /// Absent in library-only tests and non-daemon embeddings, which then fail closed.
+    pub permission_hook_program: Option<PathBuf>,
     pub extra_allowed_commands: Vec<String>,
     pub env_denylist: Vec<String>,
     pub budget: RunBudget,
@@ -105,6 +117,69 @@ pub struct RunningAgent {
     pub outcome: ProcessOutcome,
     pub run_dir: PathBuf,
     pub role: RunRole,
+}
+
+impl AgentRunRequest {
+    /// Whether this run must be confined to reading. Built-in CLI adapters used to derive this
+    /// from role and tier alone and ignore `effective_permissions` entirely, so a broker decision
+    /// that withheld write access never reached the Provider's command line. Every adapter now
+    /// answers the question here, and the broker's verdict is part of the answer.
+    pub fn is_read_only(&self) -> bool {
+        self.role != RunRole::Developer
+            || matches!(self.permission, PermissionTier::ReadOnly)
+            || !self.effective_permissions.worktree_write
+            || matches!(
+                self.effective_permissions.sandbox_guarantee,
+                agentflow_contracts::SandboxGuarantee::ReadOnly
+            )
+    }
+}
+
+/// Rejects any extra allowed command whose characters could change how a CLI parses its
+/// permission list. Claude joins these into one comma-separated `--allowedTools` value, so an
+/// entry containing `,` or `)` would silently declare *additional* tools (WebFetch, …) that the
+/// PreToolUse Bash hook never sees. The list is user-approved prose, not a shell fragment:
+/// letters, digits, spaces and a few path/flag characters are all a real command prefix needs.
+pub fn validate_extra_allowed_command(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("extra allowed command must not be empty".into());
+    }
+    if value.len() > 200 {
+        return Err(format!(
+            "extra allowed command is too long ({} > 200 characters)",
+            value.len()
+        ));
+    }
+    if let Some(bad) = value.chars().find(|character| {
+        !(character.is_ascii_alphanumeric()
+            || matches!(
+                character,
+                ' ' | '-' | '_' | '.' | '/' | '=' | ':' | '@' | '+'
+            ))
+    }) {
+        return Err(format!(
+            "extra allowed command contains the disallowed character {bad:?}; only letters, digits, spaces and - _ . / = : @ + are permitted"
+        ));
+    }
+    Ok(())
+}
+
+/// Fails closed for a whole request: one malformed entry rejects the run rather than silently
+/// dropping the entry, so a tampered project config can never quietly widen permissions.
+pub fn validate_extra_allowed_commands(values: &[String]) -> Result<(), AdapterError> {
+    for value in values {
+        validate_extra_allowed_command(value).map_err(AdapterError::Incompatible)?;
+    }
+    Ok(())
+}
+
+/// Result of a minimal, read-only request through the real upstream CLI. This deliberately lives
+/// outside the public desktop contract: the orchestrator caches it and exposes only an actionable
+/// availability verdict, never raw provider output or credentials.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliRuntimeProbe {
+    pub passed: bool,
+    pub problem: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub enum CollectedResult {
@@ -126,6 +201,8 @@ pub enum AdapterError {
     InvalidResult(String),
     #[error("unsupported role {0}")]
     UnsupportedRole(RunRole),
+    #[error("provider requested an AgentFlow permission decision")]
+    PermissionRequired(Box<agentflow_provider_protocol::ProviderPermissionRequest>),
     #[error("provider {provider} failed ({status:?}): {message}")]
     Provider {
         provider: AgentKind,
@@ -199,6 +276,32 @@ impl GeminiCliAdapter {
 pub struct QwenCodeAdapter {
     executable: PathBuf,
     schema_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct QoderCliAdapter {
+    executable: PathBuf,
+}
+
+impl QoderCliAdapter {
+    pub fn new(executable: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GrokCliAdapter {
+    executable: PathBuf,
+}
+
+impl GrokCliAdapter {
+    pub fn new(executable: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
 }
 
 impl QwenCodeAdapter {

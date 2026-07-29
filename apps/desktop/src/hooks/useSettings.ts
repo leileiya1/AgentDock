@@ -35,6 +35,14 @@ export function useProjectGitCompatibility(projectId: string | undefined) {
   });
 }
 
+export function usePruneStaleWorktrees(projectId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => unwrap(commands.projectPruneStaleWorktrees({ projectId })),
+    onSuccess: (report) => client.setQueryData(qk.projectGitCompatibility(projectId), report),
+  });
+}
+
 export function useUpdateProjectSettings(projectId: string) {
   const client = useQueryClient();
   return useMutation({
@@ -55,7 +63,8 @@ export function useProjectConfigTrust(projectId: string | undefined) {
 export function useApproveProjectConfig(projectId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: () => unwrap(commands.projectConfigTrustApprove({ projectId })),
+    mutationFn: (expectedSha256: string) =>
+      unwrap(commands.projectConfigTrustApprove({ projectId, expectedSha256 })),
     onSuccess: (trust) => client.setQueryData(qk.projectConfigTrust(projectId), trust),
   });
 }

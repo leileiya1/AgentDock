@@ -99,16 +99,52 @@ impl Orchestrator {
             .bind(reserved_cost)
             .execute(self.store.pool())
             .await?;
+        sqlx::query("INSERT INTO events(task_id,run_id,revision,actor,event_type,payload_json,created_at) VALUES(?,?,?,'orchestrator','provider:started',?,?)")
+            .bind(&task.id)
+            .bind(&run_id)
+            .bind(task.revision)
+            .bind(json!({"role": role, "agent": adapter.kind()}).to_string())
+            .bind(&now)
+            .execute(self.store.pool())
+            .await?;
+        // Providers that cannot defer a tool call run development work under their own
+        // auto-approval mode, bounded only by the CLI sandbox flag. The absence of permission
+        // requests would otherwise read as "nothing needed approval"; record the weaker
+        // guarantee explicitly so the audit trail cannot be misread.
+        if role == RunRole::Developer && !adapter.capabilities().permission_broker {
+            sqlx::query("INSERT INTO events(task_id,run_id,revision,actor,event_type,payload_json,created_at) VALUES(?,?,?,'system','permission:broker_unavailable',?,?)")
+                .bind(&task.id)
+                .bind(&run_id)
+                .bind(task.revision)
+                .bind(json!({
+                    "agent": adapter.kind(),
+                    "detail": "该 Provider 不支持逐次工具授权，本轮开发在其自带沙箱内自动批准执行",
+                }).to_string())
+                .bind(&now)
+                .execute(self.store.pool())
+                .await?;
+        }
         let cancellation = CancellationToken::new();
         let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);
         let events_path = run_dir.join("agent-events.jsonl");
         let live_cancel = cancellation.clone();
+        let permission_prompt_seen = Arc::new(AtomicBool::new(false));
+        let live_permission_prompt = Arc::clone(&permission_prompt_seen);
+        // Budget cancellation must stay distinguishable from a user cancel: callers treat a plain
+        // cancelled outcome as "the user stopped this task" and simply return.
+        let budget_cancel_seen = Arc::new(AtomicBool::new(false));
+        let live_budget_cancel = Arc::clone(&budget_cancel_seen);
         let live_provider = adapter.kind();
         let live_budget = budget.clone();
         let sink = tokio::spawn(async move {
             let mut file = tokio::fs::File::create(events_path).await?;
             while let Some(event) = rx.recv().await {
                 if live_budget_exceeded(&live_provider, &event, &live_budget) {
+                    live_budget_cancel.store(true, Ordering::SeqCst);
+                    live_cancel.cancel();
+                }
+                if event.text.as_deref().is_some_and(looks_like_permission_prompt) {
+                    live_permission_prompt.store(true, Ordering::SeqCst);
                     live_cancel.cancel();
                 }
                 let mut line = serde_json::to_vec(&event)?;
@@ -129,23 +165,43 @@ impl Orchestrator {
         } else {
             None
         };
-        let resume_session_id = if project.settings.resume_sessions
+        let resume_secret_ref = if project.settings.resume_sessions
             && adapter.capabilities().supports_resume
-            && task.revision > 1
         {
-            sqlx::query_scalar::<_, String>(
-                "SELECT session_id FROM agent_runs WHERE task_id=? AND revision<? AND role=? \
-                 AND agent=? AND status='SUCCEEDED' AND session_id IS NOT NULL \
-                 ORDER BY revision DESC,created_at DESC LIMIT 1",
+            let permission_ref = sqlx::query_scalar::<_, String>(
+                "SELECT provider_resume_secret_ref FROM permission_requests \
+                 WHERE task_id=? AND provider_id=? AND role=? AND status='approved' \
+                 AND provider_resume_secret_ref IS NOT NULL \
+                 ORDER BY decided_at DESC LIMIT 1",
             )
             .bind(&task.id)
-            .bind(task.revision)
-            .bind(role.to_string())
             .bind(adapter.kind().to_string())
+            .bind(role.to_string())
             .fetch_optional(self.store.pool())
-            .await?
+            .await?;
+            if permission_ref.is_some() {
+                permission_ref
+            } else if task.revision > 1 {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT session_secret_ref FROM agent_runs WHERE task_id=? AND revision<? AND role=? \
+                     AND agent=? AND status='SUCCEEDED' AND session_secret_ref IS NOT NULL \
+                     ORDER BY revision DESC,created_at DESC LIMIT 1",
+                )
+                .bind(&task.id)
+                .bind(task.revision)
+                .bind(role.to_string())
+                .bind(adapter.kind().to_string())
+                .fetch_optional(self.store.pool())
+                .await?
+            } else {
+                None
+            }
         } else {
             None
+        };
+        let resume_session_id = match resume_secret_ref {
+            Some(secret_ref) => self.store.get_resume_token(&secret_ref).await?,
+            None => None,
         };
         let request = AgentRunRequest {
             task_id: task.id.clone(),
@@ -157,12 +213,14 @@ impl Orchestrator {
             input_file: input.into(),
             timeout: Duration::from_secs(timeout_secs),
             idle_timeout: Duration::from_secs(idle_timeout_secs),
-            permission: permission_override.unwrap_or(if project.settings.full_access {
-                PermissionTier::Yolo
-            } else {
-                PermissionTier::Normal
-            }),
+            // A persisted project setting can never elevate a Provider. Emergency grants, if
+            // reintroduced, must arrive as a task-scoped, expiring broker decision.
+            permission: permission_override.unwrap_or(PermissionTier::Normal),
+            effective_permissions: self
+                .permission_effective_for_run(&task.id, &adapter.kind(), role)
+                .await?,
             resume_session_id,
+            permission_hook_program: self.claude_permission_hook_program(),
             extra_allowed_commands: config.agents.extra_allowed_commands.clone(),
             env_denylist: project.settings.env_denylist.clone(),
             budget,
@@ -176,6 +234,7 @@ impl Orchestrator {
                 .bind(&run_id)
                 .execute(self.store.pool())
                 .await?;
+            self.record_provider_end_event(task, &run_id, role, adapter.kind(), "provider:failed", json!({"detail": error.to_string()})).await?;
             return Err(error);
         }
         self.register_cancellation(&task.id, cancellation.clone());
@@ -225,6 +284,7 @@ impl Orchestrator {
                 let released = self.release_provider_dispatch(&run_id).await;
                 failed?;
                 released?;
+                self.record_provider_end_event(task, &run_id, role, adapter.kind(), "provider:failed", json!({"detail": error.to_string()})).await?;
                 self.protect_run_files(run_dir).await?;
                 return Err(error.into());
             }
@@ -233,6 +293,41 @@ impl Orchestrator {
         let released = self.release_provider_dispatch(&run_id).await;
         finished?;
         released?;
+        let succeeded = running.outcome.exit_code == Some(0)
+            && !running.outcome.cancelled
+            && !running.outcome.timed_out;
+        self.record_provider_end_event(
+            task,
+            &run_id,
+            role,
+            adapter.kind(),
+            if succeeded { "provider:succeeded" } else { "provider:failed" },
+            json!({
+                "exit_code": running.outcome.exit_code,
+                "timed_out": running.outcome.timed_out,
+                "idle_timed_out": running.outcome.idle_timed_out,
+                "cancelled": running.outcome.cancelled,
+            }),
+        )
+        .await?;
+        if permission_prompt_seen.load(Ordering::SeqCst) {
+            self.protect_run_files(&running.run_dir).await?;
+            return Err(OrchestratorError::InvalidState(
+                "PERMISSION_UNSTRUCTURED_PROMPT: Provider requested interactive approval without an exact operation; stopped safely".into(),
+            ));
+        }
+        if running.outcome.cancelled && budget_cancel_seen.load(Ordering::SeqCst) {
+            let task_status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?")
+                .bind(&task.id)
+                .fetch_one(self.store.pool())
+                .await?;
+            if task_status != TaskStatus::Cancelled.to_string() {
+                self.protect_run_files(&running.run_dir).await?;
+                return Err(OrchestratorError::InvalidState(
+                    "BUDGET_EXCEEDED: live usage crossed the remaining budget; provider stopped safely".into(),
+                ));
+            }
+        }
         if running.outcome.exit_code != Some(0)
             || running.outcome.cancelled
             || running.outcome.timed_out
@@ -240,6 +335,43 @@ impl Orchestrator {
             self.protect_run_files(&running.run_dir).await?;
         }
         Ok(running)
+    }
+
+    fn claude_permission_hook_program(&self) -> Option<PathBuf> {
+        let installed = self.app_data.join("bin/agentflowd");
+        if installed.is_file() {
+            return Some(installed);
+        }
+        std::env::current_exe().ok().filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("agentflowd"))
+        })
+    }
+
+    async fn record_provider_end_event(
+        &self,
+        task: &TaskRow,
+        run_id: &str,
+        role: RunRole,
+        agent: AgentKind,
+        event_type: &str,
+        mut payload: Value,
+    ) -> Result<(), OrchestratorError> {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("role".into(), json!(role));
+            object.insert("agent".into(), json!(agent));
+        }
+        sqlx::query("INSERT INTO events(task_id,run_id,revision,actor,event_type,payload_json,created_at) VALUES(?,?,?,'orchestrator',?,?,?)")
+            .bind(&task.id)
+            .bind(run_id)
+            .bind(task.revision)
+            .bind(event_type)
+            .bind(payload.to_string())
+            .bind(Utc::now().to_rfc3339())
+            .execute(self.store.pool())
+            .await?;
+        Ok(())
     }
 }
 
@@ -276,4 +408,21 @@ fn live_budget_exceeded(provider: &AgentKind, event: &AgentEvent, budget: &RunBu
             .cost_usd
             .zip(budget.remaining_cost_usd)
             .is_some_and(|(used, remaining)| used > remaining)
+}
+
+fn looks_like_permission_prompt(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "permission required",
+        "requires approval",
+        "waiting for approval",
+        "approve this action",
+        "do you want to proceed",
+        "allow this action",
+        "interactive approval",
+        "需要授权",
+        "等待批准",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }

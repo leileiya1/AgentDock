@@ -42,10 +42,16 @@ impl Orchestrator {
             &project.settings,
             task.api_egress_approved,
         );
+        let mut catalog = self.provider_list().await;
+        self.apply_runtime_probes(&mut catalog, &chain).await;
+        let assessment = Self::assess_chain(&chain, &catalog);
         let mut accepted = None;
         let mut previous = None;
-        let mut previous_error = String::new();
-        for candidate in chain {
+        let mut previous_error = assessment.skipped_reasons().join("；");
+        // Classify the last reviewer attempt (idle hang §15 / auth expiry §5 / normal) so the final
+        // block can surface the matching recovery instead of a generic review failure.
+        let mut last_attempt_class = RunFailureClass::Normal;
+        for candidate in assessment.ready {
             if let Some(from) = previous.clone() {
                 self.git.reset_owned_worktree(&wt, &sha).await?;
                 reset_input_dir(&wt).await?;
@@ -83,9 +89,23 @@ impl Orchestrator {
                 Ok(running) if running.outcome.cancelled => return Ok(()),
                 Ok(running) if running.outcome.exit_code == Some(0) => running,
                 Ok(running) => {
+                    last_attempt_class = if running.outcome.idle_timed_out {
+                        RunFailureClass::Unresponsive
+                    } else if run_output_indicates_auth_failure(&running.run_dir).await {
+                        RunFailureClass::AuthExpired
+                    } else {
+                        RunFailureClass::Normal
+                    };
                     previous = Some(candidate);
-                    previous_error =
-                        format!("provider exited with {:?}", running.outcome.exit_code);
+                    previous_error = format!(
+                        "provider exited with {:?}{}",
+                        running.outcome.exit_code,
+                        if running.outcome.idle_timed_out {
+                            " after going unresponsive (no output)"
+                        } else {
+                            ""
+                        }
+                    );
                     if self.enforce_budget(&self.task(&task.id).await?).await? {
                         return Ok(());
                     }
@@ -95,8 +115,16 @@ impl Orchestrator {
                     if self.task(&task.id).await?.status == TaskStatus::Cancelled {
                         return Ok(());
                     }
+                    last_attempt_class = if adapter_error_is_auth(&error) {
+                        RunFailureClass::AuthExpired
+                    } else {
+                        RunFailureClass::Normal
+                    };
                     previous = Some(candidate);
                     previous_error = error.to_string();
+                    if self.enforce_budget(&self.task(&task.id).await?).await? {
+                        return Ok(());
+                    }
                     continue;
                 }
             };
@@ -171,6 +199,7 @@ impl Orchestrator {
         let Some((review, run_dir, reviewer_agent)) = accepted else {
             self.block_review(
                 &task,
+                run_failure_reason(last_attempt_class, BlockedReason::ReviewFailed),
                 &format!("all reviewer providers failed: {previous_error}"),
             )
             .await?;
@@ -269,6 +298,12 @@ impl Orchestrator {
                 project.settings.qwen_path.as_deref().unwrap_or("qwen"),
                 self.app_data.join("schemas/review.schema.json"),
             )),
+            AgentKind::QoderCli => Box::new(QoderCliAdapter::new(
+                project.settings.qoder_path.as_deref().unwrap_or("qodercli"),
+            )),
+            AgentKind::GrokCli => Box::new(GrokCliAdapter::new(
+                project.settings.grok_path.as_deref().unwrap_or("grok"),
+            )),
             AgentKind::OpenAiApi => Box::new(ApiProviderAdapter::new(
                 AgentKind::OpenAiApi,
                 project.settings.openai.clone(),
@@ -293,7 +328,7 @@ impl Orchestrator {
                 AgentKind::KimiApi,
                 project.settings.kimi.clone(),
             )),
-            AgentKind::GrokCli | AgentKind::KimiCli | AgentKind::MiniMaxCli => {
+            AgentKind::KimiCli | AgentKind::MiniMaxCli => {
                 Box::new(UnavailableProviderAdapter::new(kind))
             }
             AgentKind::External(id) => Box::new(UnavailableProviderAdapter::new(
@@ -328,7 +363,15 @@ impl Orchestrator {
             .into_iter()
             .filter(|kind| excluded.as_ref() != Some(kind))
             .filter(|kind| !matches!(role, RunRole::Planner | RunRole::Developer) || !kind.is_api())
-            .filter(|kind| role != RunRole::Planner || !matches!(kind, AgentKind::External(_)))
+            .filter(|kind| {
+                role != RunRole::Planner
+                    || self
+                        .provider_registry
+                        .read()
+                        .ok()
+                        .and_then(|registry| registry.get(kind).cloned())
+                        .is_none_or(|provider| provider.manifest.capabilities.planning)
+            })
             .filter(|kind| allow_api_egress || !self.provider_requires_egress(kind))
             .filter(|kind| seen.insert(kind.clone()))
             .collect()
@@ -434,6 +477,11 @@ impl Orchestrator {
         let rules = load_rules(&project.repo).await?;
         let schema = serde_json::to_string_pretty(&development_result_schema())
             .map_err(|e| OrchestratorError::Config(e.to_string()))?;
+        let acceptance = self.acceptance_criteria_markdown(&task.id).await?;
+        let description = format!(
+            "{}\n\n## 结构化验收条件\n\n{}",
+            task.description, acceptance
+        );
         // Inline the bounded snapshot so a missing sidecar file can never erase cross-round state.
         let history = history_digest
             .map(|digest| {
@@ -457,7 +505,7 @@ impl Orchestrator {
             .replace("{{TASK_ID}}", &task.id)
             .replace("{{REVISION}}", &task.revision.to_string())
             .replace("{{TITLE}}", &task.title)
-            .replace("{{DESCRIPTION}}", &task.description)
+            .replace("{{DESCRIPTION}}", &description)
             .replace("{{GUIDANCE}}", task.blocked_detail.as_deref().unwrap_or(""))
             .replace("{{RULES}}", &rules)
             .replace("{{HISTORY}}", &history)
@@ -520,11 +568,16 @@ impl Orchestrator {
         .unwrap_or_else(|_| "{}".into());
         let schema = serde_json::to_string_pretty(&review_result_schema())
             .map_err(|e| OrchestratorError::Config(e.to_string()))?;
+        let acceptance = self.acceptance_criteria_markdown(&task.id).await?;
+        let description = format!(
+            "{}\n\n## 结构化验收条件\n\n{}",
+            task.description, acceptance
+        );
         Ok(include_str!("../templates/review-input.md")
             .replace("{{TITLE}}", &task.title)
             .replace("{{TASK_ID}}", &task.id)
             .replace("{{REVISION}}", &task.revision.to_string())
-            .replace("{{DESCRIPTION}}", &task.description)
+            .replace("{{DESCRIPTION}}", &description)
             .replace("{{GUIDANCE}}", task.blocked_detail.as_deref().unwrap_or(""))
             .replace("{{COMMIT_SHA}}", sha)
             .replace("{{BASE_COMMIT}}", base)
@@ -556,6 +609,9 @@ impl Orchestrator {
             .transition(
                 &task.id,
                 &[
+                    // Planning is included because plan() blocks (run failure / commit guard) while
+                    // the task is still in Planning; without it those blocks error with InvalidState.
+                    TaskStatus::Planning,
                     TaskStatus::Developing,
                     TaskStatus::Revising,
                     TaskStatus::Validating,
@@ -569,7 +625,12 @@ impl Orchestrator {
             .await?;
         Ok(())
     }
-    async fn block_review(&self, task: &TaskRow, detail: &str) -> Result<(), OrchestratorError> {
+    async fn block_review(
+        &self,
+        task: &TaskRow,
+        reason: BlockedReason,
+        detail: &str,
+    ) -> Result<(), OrchestratorError> {
         sqlx::query("UPDATE tasks SET blocked_detail=? WHERE id=?")
             .bind(detail)
             .bind(&task.id)
@@ -580,7 +641,7 @@ impl Orchestrator {
                 &task.id,
                 &[TaskStatus::Reviewing],
                 TaskStatus::Blocked,
-                Some(BlockedReason::ReviewFailed),
+                Some(reason),
                 Actor::Orchestrator,
                 "review:failed",
                 &json!({"detail":detail}),

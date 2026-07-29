@@ -1,0 +1,49 @@
+name: Provider compatibility
+
+on:
+  pull_request:
+    paths:
+      - "config/provider-compatibility.json"
+      - "crates/agent-adapters/**"
+      - "scripts/verify-provider-cli-contracts.sh"
+      - ".github/workflows/provider-compatibility.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned provider CLIs
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.217 @openai/codex@0.145.0-alpha.30 @xai-official/grok@0.2.111
+          curl -fsSL https://qoder.com/install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Verify pinned versions and required flags
+        run: scripts/verify-provider-cli-contracts.sh
+      - name: Run adapter compatibility tests
+        run: cargo test -p agentflow-agent-adapters support_matrix --locked
+
+  latest-advisory:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install latest upstream CLIs
+        run: |
+          npm install --global @anthropic-ai/claude-code@latest @openai/codex@latest @xai-official/grok@latest
+          curl -fsSL https://qoder.com/install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Detect upstream CLI contract drift
+        run: scripts/verify-provider-cli-contracts.sh --allow-unverified

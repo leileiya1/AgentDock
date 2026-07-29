@@ -17,7 +17,7 @@ export function ProviderSection() {
   };
 
   return (
-    <section className={sectionCls}>
+    <section id="providers" className={sectionCls}>
       <div className="mb-3 flex items-center justify-between">
         <div>
           <h2 className={sectionH + " !mb-0"}>AI Provider</h2>

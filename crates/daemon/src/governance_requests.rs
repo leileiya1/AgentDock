@@ -39,7 +39,7 @@ pub enum GovernanceRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ExecutionNodeRequest {
-    Upsert { node: ExecutionNode },
+    Upsert { node: Box<ExecutionNode> },
     Check { node_id: String },
     Delete { node_id: String },
 }
@@ -107,7 +107,7 @@ pub async fn dispatch_node(
 ) -> Result<Value, OrchestratorError> {
     match action {
         ExecutionNodeRequest::Upsert { node } => {
-            value(orchestrator.execution_node_upsert(node).await?)
+            value(orchestrator.execution_node_upsert(*node).await?)
                 .map_err(|error| OrchestratorError::InvalidState(error.to_string()))
         }
         ExecutionNodeRequest::Check { node_id } => {

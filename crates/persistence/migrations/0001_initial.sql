@@ -52,3 +52,4 @@ CREATE TABLE artifacts (
   path TEXT NOT NULL, sha256 TEXT, created_at TEXT NOT NULL
 );
 CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+

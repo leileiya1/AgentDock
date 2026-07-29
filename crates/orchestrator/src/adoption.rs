@@ -156,6 +156,7 @@ impl Orchestrator {
                 started_at: run.started_at.clone(),
                 exit_code: Some(exit_code),
                 timed_out: false,
+                idle_timed_out: false,
                 cancelled: false,
                 log_truncated: false,
             },

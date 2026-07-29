@@ -178,6 +178,7 @@ async fn crashed_daemon_adopts_live_planner_and_reuses_its_real_result()
             ],
             cwd: worktree,
             env,
+            clear_environment: false,
             env_denylist: Vec::new(),
             timeout: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(10),
@@ -440,6 +441,9 @@ async fn out_of_plan_files_are_reset_and_sent_back_for_human_reapproval()
             .iter()
             .any(|event| event.event_type == "plan:deviation")
     );
+    let review = orchestrator.task_plan_review_context(&task.id).await?;
+    assert_eq!(review.detected_deviations, vec!["escape.txt"]);
+    assert_eq!(review.deviation_plan_id.as_deref(), Some(plan_id.as_str()));
     Ok(())
 }
 

@@ -1,0 +1,79 @@
+minimumLimaVersion: 2.2.0
+
+# Keep exactly one image with an authoritative digest. Do not inherit Lima's template fallback
+# URLs: a checksum/network failure must stop creation instead of silently selecting an unpinned
+# moving image.
+images:
+  - location: https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img
+    arch: aarch64
+    digest: sha256:7e938df669e3b1923595eeda97aa28569350c5283e05a835cc912a2486a54934
+    variant: minimal
+vmType: vz
+arch: aarch64
+cpus: 4
+memory: 6GiB
+disk: 40GiB
+
+mounts: []
+mountType: virtiofs
+containerd:
+  system: false
+  user: false
+
+ssh:
+  localPort: 60022
+  loadDotSSHPubKeys: false
+  forwardAgent: false
+  forwardX11: false
+
+propagateProxyEnv: false
+hostResolver:
+  enabled: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      for tool in /usr/bin/curl /usr/bin/setpriv /usr/bin/unshare /usr/bin/env /usr/bin/getent /usr/sbin/ip; do
+        test -x "$tool"
+      done
+      cat >/usr/local/sbin/agentflow-offline <<'EOF'
+      #!/bin/sh
+      set -eu
+      test "${1:-}" = "--"
+      shift
+      test "$#" -gt 0
+      uid=${SUDO_UID:-}
+      gid=${SUDO_GID:-}
+      case "$uid:$gid" in
+        ''|*:|:*|0:*|*[!0-9:]* ) echo "agentflow-offline requires a non-root sudo caller" >&2; exit 77 ;;
+      esac
+      user=$(/usr/bin/getent passwd "$uid" | /usr/bin/cut -d: -f1)
+      home=$(/usr/bin/getent passwd "$uid" | /usr/bin/cut -d: -f6)
+      test -n "$user"
+      test -n "$home"
+
+      # Create the network namespace while privileged, then irrevocably drop back to the SSH
+      # user with no_new_privs before executing untrusted validation argv. This prevents sudo or
+      # another setuid binary inside the validation process from escaping the empty namespace.
+      exec /usr/bin/unshare --net --mount-proc -- \
+        /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- \
+        /usr/bin/env -i HOME="$home" USER="$user" LOGNAME="$user" \
+          PATH="$home/.local/bin:$home/.cargo/bin:$home/.bun/bin:/usr/local/bin:/usr/bin:/bin" \
+          CI=1 "$@"
+      EOF
+      chown root:root /usr/local/sbin/agentflow-offline
+      chmod 0755 /usr/local/sbin/agentflow-offline
+
+probes:
+  - description: verify AgentDock fail-closed validation wrapper
+    script: |
+      #!/bin/sh
+      set -eu
+      test -x /usr/local/sbin/agentflow-offline
+      test "$(stat -c '%U:%G:%a' /usr/local/sbin/agentflow-offline)" = "root:root:755"
+
+message: |
+  AgentDock isolated runner is ready. It has no host mounts, no forwarded SSH agent,
+  no inherited proxy, and each protected validation command runs in an empty network namespace.

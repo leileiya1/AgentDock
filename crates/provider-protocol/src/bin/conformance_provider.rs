@@ -1,6 +1,6 @@
 use agentflow_contracts::{
     AgentEvent, AgentEventKind, AgentKind, DevelopmentResult, DevelopmentStatus, EventStream,
-    ProviderCapabilities,
+    PlanResult, PlanStep, ProviderCapabilities, RunRole,
 };
 use agentflow_provider_protocol::{
     HandshakeResult, HealthResult, HealthStatus, ProtocolResult, ProtocolRunRequest,
@@ -25,11 +25,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &mut stdout,
                     request.id,
                     &HandshakeResult {
-                        protocol_version: "1.1".into(),
+                        protocol_version: "1.3".into(),
                         provider_id: AgentKind::External("fixture_provider".into()),
                         display_name: "Protocol Fixture".into(),
                         provider_version: "0.1.0".into(),
                         capabilities: capabilities(),
+                        permission_broker: true,
+                        resume_after_permission: false,
+                        sandbox_guarantee:
+                            agentflow_contracts::SandboxGuarantee::WorktreeRestricted,
                     },
                 )
                 .await?;
@@ -47,6 +51,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "run" => {
                 let run: ProtocolRunRequest = serde_json::from_value(request.params)?;
+                // Misbehavior modes exercised by the hardening tests: a real sidecar may print
+                // diagnostics on stdout, and an untrusted one may never emit a newline at all.
+                match run.extra_allowed_commands.first().map(String::as_str) {
+                    Some("emit-stray-stdout") => {
+                        stdout
+                            .write_all(b"warning: vendor CLI diagnostic, not JSON\n")
+                            .await?;
+                        stdout.flush().await?;
+                    }
+                    Some("emit-unbounded-line") => {
+                        let chunk = vec![b'x'; 1024 * 1024];
+                        loop {
+                            stdout.write_all(&chunk).await?;
+                            stdout.flush().await?;
+                        }
+                    }
+                    Some("hang-forever") => {
+                        // Never respond: the client must kill this process, not orphan it.
+                        std::future::pending::<()>().await;
+                    }
+                    _ => {}
+                }
+                if matches!(run.extra_allowed_commands.as_slice(), [marker] if marker == "permission-probe" || marker == "permission-overreach")
+                {
+                    let overreach = run.extra_allowed_commands[0] == "permission-overreach";
+                    notify(
+                        &mut stdout,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "method": "permission/requested",
+                            "params": {
+                                "actionType": if overreach { "external_path" } else { "network_access" },
+                                "reason": "download fixture",
+                                "operation": {
+                                    "argv": [],
+                                    "cwd": run.worktree,
+                                    "paths": if overreach { json!([{"path":"/etc/shadow","access":"read","outsideWorktree":true}]) } else { json!([]) },
+                                    "networkDomains": if overreach { json!([]) } else { json!(["fixtures.example:443"]) },
+                                    "environmentNames": [],
+                                    "attributes": {}
+                                },
+                                "resumeToken": "opaque-fixture"
+                            }
+                        }),
+                    )
+                    .await?;
+                    continue;
+                }
                 notify(
                     &mut stdout,
                     &RpcNotification {
@@ -62,22 +114,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                 )
                 .await?;
+                let result = if run.role == RunRole::Planner {
+                    ProtocolResult::Planning(PlanResult {
+                        schema_version: 1,
+                        task_id: run.task_id,
+                        plan_version: 1,
+                        summary: "fixture plan".into(),
+                        steps: vec![PlanStep {
+                            title: "inspect".into(),
+                            detail: "inspect the requested scope".into(),
+                            validation: Some("run conformance checks".into()),
+                        }],
+                        risks: Vec::new(),
+                        allowed_paths: vec!["src/**".into()],
+                    })
+                } else {
+                    ProtocolResult::Development(DevelopmentResult {
+                        schema_version: 1,
+                        task_id: run.task_id,
+                        revision: run.revision,
+                        status: DevelopmentStatus::Completed,
+                        summary: "fixture completed".into(),
+                        question: None,
+                        changed_files: Some(Vec::new()),
+                        notes: None,
+                        plan_sha256: None,
+                    })
+                };
                 respond(
                     &mut stdout,
                     request.id,
                     &ProtocolRunResult {
                         exit_code: 0,
-                        result: ProtocolResult::Development(DevelopmentResult {
-                            schema_version: 1,
-                            task_id: run.task_id,
-                            revision: run.revision,
-                            status: DevelopmentStatus::Completed,
-                            summary: "fixture completed".into(),
-                            question: None,
-                            changed_files: Some(Vec::new()),
-                            notes: None,
-                            plan_sha256: None,
-                        }),
+                        result,
                         session_id: Some("fixture-session".into()),
                         cost_usd: Some(0.01),
                         tokens_in: Some(10),
@@ -110,6 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn capabilities() -> ProviderCapabilities {
     ProviderCapabilities {
+        planning: true,
         development: true,
         review: false,
         streaming: true,

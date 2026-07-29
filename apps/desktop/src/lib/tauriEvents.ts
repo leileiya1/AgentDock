@@ -24,6 +24,8 @@ export interface TaskChangedPayload {
 
 export interface RunLogPayload {
   runId: string;
+  /** Absolute file line number of `batch[0]`; the log store merges by this. */
+  fromLine: number;
   batch: AgentEvent[];
 }
 

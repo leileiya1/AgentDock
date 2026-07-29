@@ -3,6 +3,84 @@ fn required_path(path: &Option<PathBuf>) -> Result<PathBuf, OrchestratorError> {
         .ok_or_else(|| OrchestratorError::InvalidState("WORKTREE_MISSING".into()))
 }
 
+/// How the last provider attempt failed, in priority order. Shared by the developer, planner, and
+/// reviewer loops so they classify failures identically and can never drift apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RunFailureClass {
+    /// An ordinary failure — keep the role's fallback reason.
+    Normal,
+    /// §15: killed by the idle timeout after producing no output.
+    Unresponsive,
+    /// §5: the provider's login/token was missing or expired.
+    AuthExpired,
+}
+
+/// Map the last attempt's classification to a blocked reason. Auth expiry and unresponsiveness get
+/// dedicated reasons so the desktop can offer login/unresponsive-specific recovery; anything else
+/// keeps the role-specific fallback (dev/plan → RunFailed, review → ReviewFailed).
+fn run_failure_reason(class: RunFailureClass, fallback: BlockedReason) -> BlockedReason {
+    match class {
+        RunFailureClass::AuthExpired => BlockedReason::AuthExpired,
+        RunFailureClass::Unresponsive => BlockedReason::AgentUnresponsive,
+        RunFailureClass::Normal => fallback,
+    }
+}
+
+/// §5: markers a CLI or API prints when its login/token is missing or expired. Kept specific enough
+/// to avoid matching ordinary code or test output (a false positive only costs an unnecessary
+/// re-login prompt; a false negative falls back to the generic run-failure path).
+fn output_indicates_auth_failure(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "unauthorized",
+        "not logged in",
+        "please log in",
+        "please login",
+        "authentication failed",
+        "authentication error",
+        "invalid api key",
+        "invalid_api_key",
+        "api key not valid",
+        "token has expired",
+        "token expired",
+        "session expired",
+        "login expired",
+        "oauth token expired",
+        "401 unauthorized",
+        "http 401",
+        "http 403",
+        "登录已过期",
+        "尚未登录",
+        "请登录",
+        "认证失败",
+        "认证已失效",
+        "凭据无效",
+        "令牌已过期",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+/// A CLI provider signals auth failure by exiting non-zero and printing an auth marker. Only stderr
+/// is inspected: an agent's normal stdout can legitimately mention "unauthorized" (e.g. reviewing
+/// auth code), so reading it would risk false positives.
+async fn run_output_indicates_auth_failure(run_dir: &Path) -> bool {
+    tokio::fs::read_to_string(run_dir.join("stderr.log"))
+        .await
+        .is_ok_and(|text| output_indicates_auth_failure(&text))
+}
+
+/// An API provider surfaces auth failure precisely, as a non-retryable 401/403.
+fn adapter_error_is_auth(error: &OrchestratorError) -> bool {
+    matches!(
+        error,
+        OrchestratorError::Adapter(agentflow_agent_adapters::AdapterError::Provider {
+            status: Some(401) | Some(403),
+            ..
+        })
+    )
+}
+
 fn isolated_worktree_path(project: &ProjectRow, task: &TaskRow) -> PathBuf {
     let project_suffix = project.id.chars().take(8).collect::<String>();
     let task_suffix = task.id.replace('-', "").chars().take(8).collect::<String>();
@@ -385,6 +463,11 @@ fn valid_clock(value: &str) -> bool {
 }
 
 fn validate_project_settings(settings: &ProjectSettings) -> Result<(), OrchestratorError> {
+    if settings.full_access {
+        return Err(OrchestratorError::Config(
+            "PERMISSION_PERMANENT_FULL_ACCESS_REMOVED: use an exact, expiring permission grant".into(),
+        ));
+    }
     for (label, api) in [
         ("OpenAI", &settings.openai),
         ("Anthropic", &settings.anthropic),
@@ -432,6 +515,27 @@ fn normalize_global_settings(mut settings: GlobalSettings) -> GlobalSettings {
 
 fn review_issue_key(issue: &ReviewIssueResult) -> String {
     review_issue_key_parts(issue.file.as_deref(), &issue.title)
+}
+
+/// Trimmed length of an optional text field, used to pick the most complete evidence on merge.
+fn text_len(value: Option<&str>) -> usize {
+    value.map(str::trim).map_or(0, str::len)
+}
+
+/// Combine two suggested fixes when council members proposed different actions (§23 不同建议).
+/// Identical, empty, or subsumed suggestions collapse to one; genuinely different ones are both
+/// kept so the developer sees every proposal rather than an arbitrary single winner.
+fn merge_suggestions(existing: Option<&str>, incoming: Option<&str>) -> Option<String> {
+    let existing = existing.map(str::trim).filter(|value| !value.is_empty());
+    let incoming = incoming.map(str::trim).filter(|value| !value.is_empty());
+    match (existing, incoming) {
+        (Some(a), Some(b)) if a == b || a.contains(b) => Some(a.to_string()),
+        (Some(a), Some(b)) if b.contains(a) => Some(b.to_string()),
+        (Some(a), Some(b)) => Some(format!("{a}\n— 或：{b}")),
+        (Some(a), None) => Some(a.to_string()),
+        (None, Some(b)) => Some(b.to_string()),
+        (None, None) => None,
+    }
 }
 
 fn review_issue_key_parts(file: Option<&str>, title: &str) -> String {

@@ -2,7 +2,7 @@ use super::{
     AdapterError, AgentCapabilities, AgentInstallation, AgentProvider, AgentRunRequest, CliEnv,
     CollectedResult, PermissionTier, RunningAgent, read_development, read_review,
 };
-use agentflow_contracts::{AgentEvent, AgentKind, RunRole};
+use agentflow_contracts::{AgentEvent, AgentKind, PlanResult, RunRole};
 use agentflow_process_supervisor::ProcessOutcome;
 use agentflow_provider_protocol::{
     ProtocolClient, ProtocolPermission, ProtocolResult, ProtocolRunRequest,
@@ -93,6 +93,10 @@ impl AgentProvider for ExternalProviderAdapter {
             read_only_mode: !capabilities.development,
             supports_development: capabilities.development,
             supports_review: capabilities.review,
+            // Protocol v1.1 defines permission/requested, and ProtocolClient enforces the
+            // signed manifest ceiling on anything a sidecar asks for, so external packages
+            // always go through AgentFlow's broker rather than self-approving.
+            permission_broker: true,
         }
     }
 
@@ -103,7 +107,7 @@ impl AgentProvider for ExternalProviderAdapter {
         tx: mpsc::Sender<AgentEvent>,
     ) -> Result<RunningAgent, AdapterError> {
         let capabilities = self.capabilities();
-        if req.role == RunRole::Planner
+        if (req.role == RunRole::Planner && !self.provider.manifest.capabilities.planning)
             || (req.role == RunRole::Developer && !capabilities.supports_development)
             || (req.role == RunRole::Reviewer && !capabilities.supports_review)
         {
@@ -124,9 +128,12 @@ impl AgentProvider for ExternalProviderAdapter {
             timeout_ms,
             idle_timeout_ms,
             permission: match req.permission {
-                PermissionTier::Normal | PermissionTier::ReadOnly => ProtocolPermission::Normal,
-                PermissionTier::Yolo => ProtocolPermission::FullAccess,
+                PermissionTier::Normal => ProtocolPermission::Restricted,
+                PermissionTier::ReadOnly => ProtocolPermission::ReadOnly,
+                // Temporary emergency grants are still narrowed at the outer boundary.
+                PermissionTier::Yolo => ProtocolPermission::Restricted,
             },
+            effective_permissions: Some(req.effective_permissions.clone()),
             resume_session_id: req.resume_session_id,
             extra_allowed_commands: req.extra_allowed_commands,
             env_denylist: req.env_denylist,
@@ -137,6 +144,9 @@ impl AgentProvider for ExternalProviderAdapter {
             .map_err(|error| self.provider_error(error))?;
 
         tokio::fs::write(req.run_dir.join("stderr.log"), &outcome.stderr).await?;
+        if let Some(permission) = outcome.permission_request {
+            return Err(AdapterError::PermissionRequired(Box::new(permission)));
+        }
         if let Some(protocol_result) = &outcome.result {
             tokio::fs::write(
                 req.run_dir.join("provider-telemetry.json"),
@@ -153,6 +163,14 @@ impl AgentProvider for ExternalProviderAdapter {
                 .map_err(|error| AdapterError::InvalidResult(error.to_string()))?;
             tokio::fs::write(req.run_dir.join("stdout.log"), &json).await?;
             match &protocol_result.result {
+                ProtocolResult::Planning(value) => {
+                    tokio::fs::write(
+                        req.run_dir.join("plan.json"),
+                        serde_json::to_vec_pretty(value)
+                            .map_err(|error| AdapterError::InvalidResult(error.to_string()))?,
+                    )
+                    .await?;
+                }
                 ProtocolResult::Development(value) => {
                     tokio::fs::write(
                         req.run_dir.join("result.json"),
@@ -180,6 +198,7 @@ impl AgentProvider for ExternalProviderAdapter {
                 started_at: outcome.started_at,
                 exit_code: outcome.exit_code,
                 timed_out: outcome.timed_out,
+                idle_timed_out: false,
                 cancelled: outcome.cancelled,
                 log_truncated: outcome.stderr_truncated,
             },
@@ -194,7 +213,9 @@ impl AgentProvider for ExternalProviderAdapter {
         role: RunRole,
     ) -> Result<CollectedResult, AdapterError> {
         match role {
-            RunRole::Planner => Err(AdapterError::UnsupportedRole(role)),
+            RunRole::Planner => read_protocol_plan(&run_dir.join("plan.json"))
+                .await
+                .map(CollectedResult::Plan),
             RunRole::Developer => read_development(&run_dir.join("result.json"))
                 .await
                 .map(CollectedResult::Development),
@@ -204,6 +225,11 @@ impl AgentProvider for ExternalProviderAdapter {
             RunRole::Validator => Err(AdapterError::UnsupportedRole(role)),
         }
     }
+}
+
+async fn read_protocol_plan(path: &Path) -> Result<PlanResult, AdapterError> {
+    let bytes = tokio::fs::read(path).await?;
+    serde_json::from_slice(&bytes).map_err(|error| AdapterError::InvalidResult(error.to_string()))
 }
 
 fn duration_millis(duration: Duration) -> u64 {
@@ -228,6 +254,7 @@ impl AgentProvider for UnavailableProviderAdapter {
             read_only_mode: true,
             supports_development: false,
             supports_review: false,
+            permission_broker: false,
         }
     }
 

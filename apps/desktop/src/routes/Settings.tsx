@@ -167,7 +167,7 @@ export function Settings() {
 
           <StorageSection />
 
-          <section className={sectionCls}>
+          <section id="project-settings" className={sectionCls}>
             <h2 className={sectionH}>项目设置</h2>
             {projects.data && projects.data.length > 0 ? (
               <SettingsProjectSection projects={projects.data} />

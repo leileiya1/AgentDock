@@ -1,10 +1,12 @@
 use agentflow_contracts::{
-    AgentEvent, AgentKind, DevelopmentResult, ProviderCapabilities, ReviewResult, RunRole,
+    AgentEvent, AgentKind, DevelopmentResult, EffectivePermissions, PermissionActionType,
+    PermissionOperation, PlanResult, ProviderCapabilities, ReviewResult, RunRole, SandboxGuarantee,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: &str = "1.1";
+pub const PROTOCOL_VERSION: &str = "1.3";
+pub const SUPPORTED_PROTOCOLS: &[&str] = &["1.3", "1.2"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,6 +23,12 @@ pub struct HandshakeResult {
     pub display_name: String,
     pub provider_version: String,
     pub capabilities: ProviderCapabilities,
+    #[serde(default)]
+    pub permission_broker: bool,
+    #[serde(default)]
+    pub resume_after_permission: bool,
+    #[serde(default)]
+    pub sandbox_guarantee: SandboxGuarantee,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,8 +49,22 @@ pub struct HealthResult {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProtocolPermission {
+    ReadOnly,
+    Restricted,
+    /// Kept only for decoding legacy 1.x sidecars. AgentFlow never chooses it from a
+    /// permanent project setting and conformance rejects Provider-side escalation.
     Normal,
     FullAccess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderPermissionRequest {
+    pub action_type: PermissionActionType,
+    pub reason: String,
+    pub operation: PermissionOperation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +83,8 @@ pub struct ProtocolRunRequest {
     pub timeout_ms: u64,
     pub idle_timeout_ms: u64,
     pub permission: ProtocolPermission,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_permissions: Option<EffectivePermissions>,
     /// Opaque token from a previous run of this same Provider and role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session_id: Option<String>,
@@ -71,6 +95,7 @@ pub struct ProtocolRunRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ProtocolResult {
+    Planning(PlanResult),
     Development(DevelopmentResult),
     Review(ReviewResult),
 }

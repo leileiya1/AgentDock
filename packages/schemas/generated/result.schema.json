@@ -16,10 +16,16 @@
       "items": {
         "type": "string"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "notes": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "plan_sha256": {
       "description": "Echo of the exact approved coding plan, or null for tasks without a plan gate.",
@@ -29,7 +35,10 @@
       ]
     },
     "question": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "revision": {
       "format": "int64",
@@ -37,7 +46,8 @@
       "type": "integer"
     },
     "schema_version": {
-      "const": 1
+      "const": 1,
+      "type": "integer"
     },
     "status": {
       "$ref": "#/$defs/DevelopmentStatus"
@@ -52,11 +62,15 @@
     }
   },
   "required": [
-    "schema_version",
-    "task_id",
+    "changed_files",
+    "notes",
+    "plan_sha256",
+    "question",
     "revision",
+    "schema_version",
     "status",
-    "summary"
+    "summary",
+    "task_id"
   ],
   "title": "DevelopmentResult",
   "type": "object"

@@ -41,6 +41,7 @@ impl Orchestrator {
                 created_at: r.get("created_at"),
             })
             .collect();
+        let acceptance_criteria = self.task_acceptance_criteria(task_id).await?;
         Ok(TaskDetail {
             summary,
             description: task.description,
@@ -48,6 +49,7 @@ impl Orchestrator {
             base_commit: task.base_commit,
             branch: task.branch,
             max_revisions: task.max_revisions,
+            acceptance_criteria,
             blocked_detail: task.blocked_detail,
             revisions,
             policy: task.policy.clone(),
@@ -55,6 +57,53 @@ impl Orchestrator {
             budget: self.budget_usage(task_id).await?,
             delivery: self.delivery_record(task_id).await?,
         })
+    }
+
+    async fn task_acceptance_criteria(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<AcceptanceCriterion>, OrchestratorError> {
+        let rows = sqlx::query(
+            "SELECT id,kind,text,position FROM task_acceptance_criteria WHERE task_id=? ORDER BY position",
+        )
+        .bind(task_id)
+        .fetch_all(self.store.pool())
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let kind = AcceptanceCriterionKind::from_str(&row.get::<String, _>("kind"))
+                    .map_err(OrchestratorError::Config)?;
+                Ok(AcceptanceCriterion {
+                    id: row.get("id"),
+                    kind,
+                    text: row.get("text"),
+                    position: row.get("position"),
+                })
+            })
+            .collect()
+    }
+
+    async fn acceptance_criteria_markdown(
+        &self,
+        task_id: &str,
+    ) -> Result<String, OrchestratorError> {
+        let criteria = self.task_acceptance_criteria(task_id).await?;
+        if criteria.is_empty() {
+            return Ok("（未单独设置结构化验收条件）".into());
+        }
+        Ok(criteria
+            .iter()
+            .map(|criterion| {
+                let kind = match criterion.kind {
+                    AcceptanceCriterionKind::Build => "构建",
+                    AcceptanceCriterionKind::Test => "测试",
+                    AcceptanceCriterionKind::Behavior => "行为",
+                    AcceptanceCriterionKind::Manual => "人工",
+                };
+                format!("- [{}] {}", kind, criterion.text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
     pub async fn events_list(
         &self,
@@ -90,7 +139,8 @@ impl Orchestrator {
                     .ok_or_else(|| OrchestratorError::InvalidState("base commit missing".into()))?,
                 &sha,
                 &config.review.exclude_globs,
-                config.review.max_patch_bytes,
+                // 桌面端查看用大预算，逐文件展示完整逐行内容；送审仍用 config 的小预算控制 token。
+                agentflow_git_engine::UI_DIFF_MAX_BYTES,
             )
             .await
             .map_err(Into::into)
@@ -160,13 +210,23 @@ impl Orchestrator {
         if task.status != TaskStatus::Blocked {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
         }
+        let blocked_reason = self.store.task_summary(task_id).await?.blocked_reason;
         sqlx::query("UPDATE tasks SET blocked_detail=?,blocked_reason=NULL WHERE id=?")
             .bind(guidance)
             .bind(task_id)
             .execute(self.store.pool())
             .await?;
-        let to = if task.revision == 0 {
+        let to = if task.revision == 0 && task.policy.require_plan_approval {
+            // A failed planner has not produced an approved plan. Resume the planning checkpoint;
+            // skipping straight to development would bypass the user's plan gate (P1-01).
+            TaskStatus::Planning
+        } else if task.revision == 0 {
             TaskStatus::ReadyForDevelopment
+        } else if blocked_reason == Some(BlockedReason::ReviewFailed) {
+            // The revision commit and validation evidence are already durable. A reviewer process
+            // or result-contract failure must retry that read-only checkpoint, not create a new
+            // development revision that can only end as a misleading "no changes" failure.
+            TaskStatus::ReadyForReview
         } else {
             TaskStatus::ReadyForRevision
         };
@@ -203,7 +263,10 @@ impl Orchestrator {
     }
     pub async fn cancel(&self, task_id: &str) -> Result<TaskSummary, OrchestratorError> {
         let task = self.task(task_id).await?;
-        if matches!(task.status, TaskStatus::Merged | TaskStatus::RolledBack | TaskStatus::Cancelled) {
+        if matches!(
+            task.status,
+            TaskStatus::Merged | TaskStatus::RolledBack | TaskStatus::Cancelled
+        ) {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
         }
         // Make cancellation authoritative before signalling the child. Development/review loops
@@ -398,7 +461,7 @@ impl Orchestrator {
             .bind(task_id).bind(revision).fetch_optional(self.store.pool()).await?;
         let Some(row) = row else { return Ok(None) };
         let review_id: String = row.get("id");
-        let issue_rows = sqlx::query("SELECT id,severity,file,line_start,line_end,title,description,suggested_action,resolved,reported_by_json,agreement_count FROM review_issues WHERE review_id=?")
+        let issue_rows = sqlx::query("SELECT id,severity,file,line_start,line_end,title,description,suggested_action,resolved,reported_by_json,agreement_count,severity_disagreement FROM review_issues WHERE review_id=?")
             .bind(&review_id).fetch_all(self.store.pool()).await?;
         let issues = issue_rows
             .into_iter()
@@ -413,32 +476,76 @@ impl Orchestrator {
                     description: issue.get("description"),
                     suggested_action: issue.get("suggested_action"),
                     resolved: issue.get::<i64, _>("resolved") != 0,
-                    reported_by: serde_json::from_str(
-                        &issue.get::<String, _>("reported_by_json"),
-                    )
-                    .unwrap_or_default(),
+                    reported_by: serde_json::from_str(&issue.get::<String, _>("reported_by_json"))
+                        .unwrap_or_default(),
                     agreement_count: issue.get("agreement_count"),
+                    severity_disagreement: issue.get::<i64, _>("severity_disagreement") != 0,
                 })
             })
             .collect::<Result<Vec<_>, OrchestratorError>>()?;
+        // 委员会每位成员的独立投票：聚合行记录了成员 review 行 id，逐一取回其 agent/decision/summary。
+        // 单一审查（无成员 id）时为空。让前端能展示「谁投了什么」及裁决依据，而无需新增数据库列。
+        let member_ids: Vec<String> = row
+            .get::<Option<String>, _>("member_review_ids_json")
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
+        let mut member_votes = Vec::new();
+        for member_id in member_ids {
+            if let Some(member) =
+                sqlx::query("SELECT reviewer_agent,decision,summary FROM reviews WHERE id=?")
+                    .bind(&member_id)
+                    .fetch_optional(self.store.pool())
+                    .await?
+                && let Some(agent) = member
+                    .get::<Option<String>, _>("reviewer_agent")
+                    .and_then(|value| value.parse().ok())
+            {
+                member_votes.push(CouncilMemberVote {
+                    agent,
+                    decision: parse(member.get("decision"))?,
+                    summary: member.get("summary"),
+                });
+            }
+        }
         Ok(Some(Review {
             id: review_id,
             revision: row.get("revision"),
             commit_sha: row.get("commit_sha"),
             decision: parse(row.get("decision"))?,
             summary: row.get("summary"),
-            reviewer_agents: serde_json::from_str(
-                &row.get::<String, _>("reviewer_agents_json"),
-            )
-            .unwrap_or_else(|_| {
-                row.get::<Option<String>, _>("reviewer_agent")
-                    .and_then(|value| value.parse().ok())
-                    .into_iter()
-                    .collect()
-            }),
+            reviewer_agents: serde_json::from_str(&row.get::<String, _>("reviewer_agents_json"))
+                .unwrap_or_else(|_| {
+                    row.get::<Option<String>, _>("reviewer_agent")
+                        .and_then(|value| value.parse().ok())
+                        .into_iter()
+                        .collect()
+                }),
+            member_votes,
             issues,
         }))
     }
+    /// One page of a run log addressed by absolute line number. `from_line: None` returns the
+    /// most recent page, which is what a viewer should show first: seeding from line 0 leaves a
+    /// hole between the file's opening lines and the live tail, and hides the final result event.
+    pub async fn run_log_page(
+        &self,
+        run_id: &str,
+        from_line: Option<usize>,
+        max_lines: usize,
+    ) -> Result<RunLogWindow, OrchestratorError> {
+        let take = max_lines.clamp(1, 1000);
+        let total = self.run_log_line_count(run_id).await?;
+        let start = from_line.unwrap_or_else(|| total.saturating_sub(take));
+        let (lines, next_from_line, eof) = self.run_log_tail(run_id, start, take).await?;
+        Ok(RunLogWindow {
+            lines,
+            from_line: start,
+            next_from_line,
+            eof,
+            total_lines: total,
+        })
+    }
+
     pub async fn run_log_tail(
         &self,
         run_id: &str,
@@ -449,24 +556,142 @@ impl Orchestrator {
             .bind(run_id)
             .fetch_one(self.store.pool())
             .await?;
+        let path = Path::new(&run_dir).join("agent-events.jsonl");
+        let take = max_lines.clamp(1, 1000);
+        // Following a live run is the hot path: the desktop polls every run several times a
+        // second. Resuming from a cached byte offset keeps that cost proportional to the new
+        // output instead of to the whole (unbounded) log.
+        if let Some(result) = self.tail_live_log(run_id, &path, from_line, take).await {
+            return Ok(result);
+        }
         let text = self
-            .read_run_file(&Path::new(&run_dir).join("agent-events.jsonl"))
+            .read_run_file(&path)
             .await
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .unwrap_or_default();
         let all = text.lines().collect::<Vec<_>>();
-        let take = max_lines.clamp(1, 1000);
         let end = from_line.saturating_add(take).min(all.len());
         let lines = all
             .iter()
             .skip(from_line)
             .take(take)
-            .filter_map(|line| serde_json::from_str(line).ok())
+            .map(|line| parse_log_line(line))
             .collect::<Vec<_>>();
         // Advance over malformed rows as well. Otherwise one bad JSONL line pins every live
         // subscriber to the same cursor forever and hides all later valid output.
         let next = end;
+        self.seed_log_cursor(run_id, &path, &text, next).await;
         Ok((lines, next, next >= all.len()))
+    }
+
+    /// Records where the full read stopped so the next sequential tail can resume incrementally.
+    /// Only meaningful while the log is still plaintext on disk; encrypted logs are left alone.
+    async fn seed_log_cursor(&self, run_id: &str, path: &Path, text: &str, next: usize) {
+        let Ok(metadata) = tokio::fs::metadata(path).await else {
+            return;
+        };
+        let byte = text
+            .split_inclusive('\n')
+            .take(next)
+            .map(|line| line.len() as u64)
+            .sum::<u64>();
+        // If the decrypted text is not the file's own bytes, offsets would be wrong.
+        if byte > metadata.len() {
+            return;
+        }
+        self.remember_log_cursor(
+            run_id,
+            LogCursor {
+                line: next,
+                byte,
+                len: metadata.len(),
+            },
+        );
+    }
+
+    /// Incremental tail for a plaintext (still-running) log. Returns `None` whenever the fast
+    /// path does not apply — an encrypted/finished log, a rewritten file, or a cursor that is
+    /// not the one we cached — so the caller falls back to the exact full-file behaviour.
+    async fn tail_live_log(
+        &self,
+        run_id: &str,
+        path: &Path,
+        from_line: usize,
+        take: usize,
+    ) -> Option<(Vec<AgentEvent>, usize, bool)> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let cached = self
+            .run_log_cursors
+            .read()
+            .ok()
+            .and_then(|cursors| cursors.get(run_id).copied())
+            .filter(|cursor| cursor.line == from_line)?;
+        let len = tokio::fs::metadata(path).await.ok()?.len();
+        // A shorter file means it was replaced (or protected in place); re-read from scratch.
+        if len < cached.len || cached.byte > len {
+            self.forget_log_cursor(run_id);
+            return None;
+        }
+        if len == cached.byte {
+            return Some((Vec::new(), from_line, true));
+        }
+        let mut file = tokio::fs::File::open(path).await.ok()?;
+        // Protected logs are a single encrypted blob; byte offsets are meaningless there.
+        let mut magic = [0_u8; 6];
+        if file.read_exact(&mut magic).await.is_ok() && &magic == b"AFENC1" {
+            self.forget_log_cursor(run_id);
+            return None;
+        }
+        file.seek(std::io::SeekFrom::Start(cached.byte))
+            .await
+            .ok()?;
+        let mut appended = Vec::new();
+        file.read_to_end(&mut appended).await.ok()?;
+        let text = String::from_utf8_lossy(&appended).into_owned();
+
+        let mut events = Vec::new();
+        let mut consumed_bytes = 0_u64;
+        let mut consumed_lines = 0_usize;
+        for line in text.split_inclusive('\n') {
+            // A partially written trailing line must not advance the cursor past it.
+            if !line.ends_with('\n') {
+                break;
+            }
+            if consumed_lines == take {
+                break;
+            }
+            consumed_bytes += line.len() as u64;
+            consumed_lines += 1;
+            events.push(parse_log_line(line.trim_end_matches(['\n', '\r'])));
+        }
+        let next = from_line + consumed_lines;
+        let byte = cached.byte + consumed_bytes;
+        self.remember_log_cursor(
+            run_id,
+            LogCursor {
+                line: next,
+                byte,
+                len,
+            },
+        );
+        Some((events, next, byte >= len))
+    }
+
+    fn remember_log_cursor(&self, run_id: &str, cursor: LogCursor) {
+        if let Ok(mut cursors) = self.run_log_cursors.write() {
+            // Bounded so a long-lived daemon cannot accumulate an entry per historical run.
+            if cursors.len() > 256 && !cursors.contains_key(run_id) {
+                cursors.clear();
+            }
+            cursors.insert(run_id.to_owned(), cursor);
+        }
+    }
+
+    fn forget_log_cursor(&self, run_id: &str) {
+        if let Ok(mut cursors) = self.run_log_cursors.write() {
+            cursors.remove(run_id);
+        }
     }
     pub async fn run_log_line_count(&self, run_id: &str) -> Result<usize, OrchestratorError> {
         let run_dir: String = sqlx::query_scalar("SELECT run_dir FROM agent_runs WHERE id=?")
@@ -577,4 +802,18 @@ impl Orchestrator {
             .join("runs")
             .join(Uuid::now_v7().to_string())
     }
+}
+
+/// Turns one JSONL line into an event. A line that does not parse becomes a `Raw` event instead
+/// of disappearing: the viewer positions live batches by absolute line number, so silently
+/// dropping a line would shift every later line and make deduplication impossible — and a
+/// Provider's malformed output is itself worth showing during diagnosis.
+fn parse_log_line(line: &str) -> AgentEvent {
+    serde_json::from_str(line).unwrap_or_else(|_| AgentEvent {
+        ts: String::new(),
+        stream: EventStream::Stderr,
+        kind: AgentEventKind::Raw,
+        summary: "无法解析的 Provider 输出".into(),
+        text: Some(line.chars().take(2000).collect()),
+    })
 }

@@ -3,6 +3,7 @@ use agentflow_contracts::{
     TaskSummary,
 };
 use agentflow_orchestrator::{Orchestrator, OrchestratorError};
+use chrono::{Duration as ChronoDuration, Utc};
 use serde::Serialize;
 use sqlx::Row;
 use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
@@ -29,6 +30,9 @@ struct TaskRemovedPayload {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RunLogPayload {
+    /// Absolute file line number of `batch[0]`, so the viewer can position live output against
+    /// the history pages it loaded and drop anything it already holds.
+    from_line: u32,
     run_id: String,
     batch: Vec<AgentEvent>,
 }
@@ -54,6 +58,7 @@ enum BridgeEvent {
     RunStarted(RunSummary),
     RunLog {
         run_id: String,
+        from_line: usize,
         batch: Vec<AgentEvent>,
     },
     RunFinished(RunSummary),
@@ -81,7 +86,18 @@ impl BridgeEvent {
                 },
             ),
             Self::RunStarted(run) => app.emit("run:started", run),
-            Self::RunLog { run_id, batch } => app.emit("run:log", RunLogPayload { run_id, batch }),
+            Self::RunLog {
+                run_id,
+                from_line,
+                batch,
+            } => app.emit(
+                "run:log",
+                RunLogPayload {
+                    run_id,
+                    from_line: from_line as u32,
+                    batch,
+                },
+            ),
             Self::RunFinished(run) => app.emit("run:finished", run),
         }
     }
@@ -91,12 +107,15 @@ struct BridgeState {
     tasks: HashMap<String, TaskSummary>,
     runs: HashMap<String, RunSummary>,
     log_cursors: HashMap<String, usize>,
+    /// Runs that both started and finished between two polls are never RUNNING when we look, so
+    /// they are picked up by this watermark instead of by a full table scan.
+    finished_since: String,
 }
 
 impl BridgeState {
     async fn initialize(orchestrator: &Orchestrator) -> Result<Self, OrchestratorError> {
         let tasks = load_tasks(orchestrator).await?;
-        let runs = load_runs(orchestrator).await?;
+        let runs = load_runs(orchestrator, &[], &Utc::now().to_rfc3339()).await?;
         let mut log_cursors = HashMap::new();
         for run in runs.values().filter(|run| run.status == RunStatus::Running) {
             // The UI loads historical lines itself. Start the live cursor at EOF so reopening the
@@ -107,6 +126,7 @@ impl BridgeState {
             tasks,
             runs,
             log_cursors,
+            finished_since: Utc::now().to_rfc3339(),
         })
     }
 
@@ -135,7 +155,9 @@ impl BridgeState {
         }
         self.tasks = current_tasks;
 
-        let current_runs = load_runs(orchestrator).await?;
+        let watched = self.runs.keys().cloned().collect::<Vec<_>>();
+        let poll_started = Utc::now();
+        let current_runs = load_runs(orchestrator, &watched, &self.finished_since).await?;
         for (id, run) in &current_runs {
             let previous_status = self.runs.get(id).map(|old| old.status);
             let is_new = previous_status.is_none();
@@ -157,7 +179,14 @@ impl BridgeState {
                 self.log_cursors.remove(id);
             }
         }
-        self.runs = current_runs;
+        // Keep tracking only what can still change. Retaining finished runs would make the
+        // watched-id list — and therefore every subsequent query — grow without bound.
+        self.runs = current_runs
+            .into_iter()
+            .filter(|(_, run)| run.status == RunStatus::Running)
+            .collect();
+        // Overlap the watermark by one interval so a run finishing during the query is not missed.
+        self.finished_since = (poll_started - ChronoDuration::seconds(2)).to_rfc3339();
         Ok(events)
     }
 
@@ -175,6 +204,7 @@ impl BridgeState {
         if !batch.is_empty() {
             events.push(BridgeEvent::RunLog {
                 run_id: run_id.to_owned(),
+                from_line: cursor,
                 batch,
             });
         }
@@ -227,15 +257,27 @@ async fn load_tasks(
         .collect()
 }
 
+/// Loads only the runs the bridge can still emit an event about: everything currently RUNNING,
+/// plus the runs it was already tracking so their transition to a terminal state is observed
+/// exactly once. Selecting the whole table instead would make every 300ms poll proportional to
+/// the project's entire history.
 async fn load_runs(
     orchestrator: &Orchestrator,
+    watched: &[String],
+    finished_since: &str,
 ) -> Result<HashMap<String, RunSummary>, OrchestratorError> {
-    let rows = sqlx::query(
+    let placeholders = std::iter::repeat_n("?", watched.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
         "SELECT id,task_id,revision,role,agent,status,exit_code,cost_usd,tokens_in,tokens_out,started_at,finished_at \
-         FROM agent_runs",
-    )
-    .fetch_all(orchestrator.store.pool())
-    .await?;
+         FROM agent_runs WHERE status='RUNNING' OR (finished_at IS NOT NULL AND finished_at>=?) OR id IN ({placeholders})"
+    );
+    let mut query = sqlx::query(&sql).bind(finished_since);
+    for id in watched {
+        query = query.bind(id);
+    }
+    let rows = query.fetch_all(orchestrator.store.pool()).await?;
     rows.into_iter()
         .map(|row| {
             let run = RunSummary {

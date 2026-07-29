@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#
+# Pre-push gate: refuses to push if the foundation isn't green.
+# Runs the fast tier of scripts/verify.sh (fmt + clippy + tests + FE typecheck).
+#
+# Enable once per clone:
+#   git config core.hooksPath scripts/hooks
+#
+# Skip intentionally (e.g. pushing a WIP branch):
+#   git push --no-verify
+#
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+exec "$ROOT/scripts/verify.sh"

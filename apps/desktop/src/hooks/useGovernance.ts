@@ -12,6 +12,14 @@ export function useGovernance(taskId: string | undefined, revision?: number) {
   });
 }
 
+export function usePlanReviewContext(taskId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: qk.planReview(taskId ?? "none"),
+    queryFn: () => unwrap(commands.taskPlanReviewContext({ taskId: taskId! })),
+    enabled: !!taskId && enabled,
+  });
+}
+
 function useTaskGovernanceMutation<A>(fn: (args: A) => Promise<TaskDetail>) {
   const client = useQueryClient();
   return useMutation({
@@ -43,8 +51,8 @@ export function useQualityReplay() {
   return useMutation({
     mutationFn: (args: { taskId: string; revision?: number }) =>
       unwrap(commands.taskQualityReplay({ taskId: args.taskId, revision: args.revision ?? null })),
-    onSuccess: (quality) => {
-      client.invalidateQueries({ queryKey: qk.governance(quality.taskId, quality.revision) });
+    onSuccess: (attempt) => {
+      client.invalidateQueries({ queryKey: qk.governance(attempt.taskId, attempt.revision) });
     },
   });
 }
@@ -55,10 +63,28 @@ export const useDeliveryStart = () =>
 export const useDeliveryRefresh = () =>
   useTaskGovernanceMutation((taskId: string) => unwrap(commands.taskDeliveryRefresh({ taskId })));
 
-export const useRollback = () =>
-  useTaskGovernanceMutation((args: { taskId: string; strategy: RollbackStrategy }) =>
-    unwrap(commands.taskRollback(args))
-  );
+export function useRollback() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { taskId: string; strategy: RollbackStrategy }) =>
+      unwrap(commands.taskRollback(args)),
+    onSuccess: (detail) => {
+      syncTaskCaches(client, detail);
+      client.invalidateQueries({ queryKey: qk.governance(detail.id, detail.currentRevision) });
+      client.removeQueries({ queryKey: qk.rollbackPreflight(detail.id) });
+    },
+  });
+}
+
+export function useRollbackPreflight(taskId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: qk.rollbackPreflight(taskId ?? "none"),
+    queryFn: () => unwrap(commands.taskRollbackPreflight({ taskId: taskId! })),
+    enabled: !!taskId && enabled,
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
+}
 
 export function useExecutionNodes() {
   return useQuery({ queryKey: qk.executionNodes, queryFn: () => unwrap(commands.executionNodeList()) });

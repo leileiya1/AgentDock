@@ -478,6 +478,7 @@ impl AgentProvider for ApiProviderAdapter {
             read_only_mode: true,
             supports_development: false,
             supports_review: true,
+            permission_broker: false,
         }
     }
 
@@ -556,6 +557,7 @@ impl AgentProvider for ApiProviderAdapter {
                 started_at,
                 exit_code: Some(0),
                 timed_out: false,
+                idle_timed_out: false,
                 cancelled: false,
                 log_truncated: false,
             },

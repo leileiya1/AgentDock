@@ -11,6 +11,9 @@ impl AgentProvider for ClaudeCodeAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            // Claude is the only built-in CLI that can defer a tool call to AgentFlow's
+            // structured PreToolUse hook; the rest run under their own auto-approval mode.
+            permission_broker: true,
         }
     }
     fn budget_capabilities(&self) -> BudgetCapabilities {
@@ -36,7 +39,17 @@ impl AgentProvider for ClaudeCodeAdapter {
         tx: mpsc::Sender<AgentEvent>,
     ) -> Result<RunningAgent, AdapterError> {
         let args = claude_args(&req);
-        start_process("claude", self.executable.clone(), args, req, cancel, tx).await
+        let executable = resolve_cli("claude", &self.executable).await?;
+        let permission_capture = req.run_dir.join("claude-permission-request.json");
+        let running = start_process("claude", executable, args, req, cancel, tx).await?;
+        if permission_capture.is_file() {
+            let bytes = tokio::fs::read(&permission_capture).await?;
+            let _ = tokio::fs::remove_file(&permission_capture).await;
+            let request = serde_json::from_slice(&bytes)
+                .map_err(|error| AdapterError::InvalidResult(error.to_string()))?;
+            return Err(AdapterError::PermissionRequired(Box::new(request)));
+        }
+        Ok(running)
     }
     async fn collect_result(
         &self,
@@ -94,7 +107,35 @@ fn claude_args(req: &AgentRunRequest) -> Vec<String> {
         "--max-turns".into(),
         "100".into(),
     ];
-    if req.role == RunRole::Reviewer || matches!(req.permission, PermissionTier::ReadOnly) {
+    if let Some(program) = &req.permission_hook_program {
+        let capture = req.run_dir.join("claude-permission-request.json");
+        let mut command = format!(
+            "{} claude-permission-hook --output {}",
+            shell_quote(program.to_string_lossy().as_ref()),
+            shell_quote(capture.to_string_lossy().as_ref())
+        );
+        for allowed in ["git status", "git diff", "git log"]
+            .into_iter()
+            .chain(req.extra_allowed_commands.iter().map(String::as_str))
+        {
+            command.push_str(" --allow ");
+            command.push_str(&shell_quote(allowed));
+        }
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [{
+                        "type": "command",
+                        "command": command,
+                        "timeout": 5
+                    }]
+                }]
+            }
+        });
+        args.extend(["--settings".into(), settings.to_string()]);
+    }
+    if req.is_read_only() {
         args.extend(["--disallowedTools".into(), "Write,Edit".into()]);
     }
     if matches!(req.permission, PermissionTier::Yolo) {
@@ -107,6 +148,10 @@ fn claude_args(req: &AgentRunRequest) -> Vec<String> {
         args.extend(["--max-budget-usd".into(), format!("{remaining:.6}")]);
     }
     args
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[async_trait]
@@ -122,14 +167,12 @@ impl AgentProvider for CodexAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            permission_broker: false,
         }
     }
     async fn detect(&self, env: &CliEnv) -> Result<AgentInstallation, AdapterError> {
-        let path = resolve_cli(
-            "codex",
-            env.explicit_path.as_ref().unwrap_or(&self.executable),
-        )
-        .await?;
+        let path =
+            resolve_codex_cli(env.explicit_path.as_ref().unwrap_or(&self.executable)).await?;
         let version = output_text(&path, &["--version"]).await?;
         let help = output_text(&path, &["exec", "--help"]).await?;
         if !["--json", "--sandbox", "--ignore-user-config", "--ephemeral"]
@@ -153,7 +196,8 @@ impl AgentProvider for CodexAdapter {
         tx: mpsc::Sender<AgentEvent>,
     ) -> Result<RunningAgent, AdapterError> {
         let args = codex_args(&req, &self.schema_path);
-        start_process("codex", self.executable.clone(), args, req, cancel, tx).await
+        let executable = resolve_codex_cli(&self.executable).await?;
+        start_process("codex", executable, args, req, cancel, tx).await
     }
     async fn collect_result(
         &self,
@@ -177,10 +221,12 @@ impl AgentProvider for CodexAdapter {
 
 fn codex_args(req: &AgentRunRequest, schema_path: &Path) -> Vec<String> {
     let review = req.role == RunRole::Reviewer;
-    let sandbox = if matches!(req.permission, PermissionTier::Yolo) {
-        "danger-full-access"
-    } else if review || matches!(req.permission, PermissionTier::ReadOnly) {
+    // A broker decision that withholds write access outranks the Yolo escape hatch: the
+    // ordering here is what makes the authorization result binding rather than advisory.
+    let sandbox = if req.is_read_only() {
         "read-only"
+    } else if matches!(req.permission, PermissionTier::Yolo) {
+        "danger-full-access"
     } else {
         "workspace-write"
     };
@@ -243,6 +289,7 @@ impl AgentProvider for GeminiCliAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            permission_broker: false,
         }
     }
 
@@ -301,6 +348,7 @@ impl AgentProvider for QwenCodeAdapter {
             read_only_mode: true,
             supports_development: true,
             supports_review: true,
+            permission_broker: false,
         }
     }
 
@@ -367,21 +415,21 @@ fn gemini_args(req: &AgentRunRequest) -> Vec<String> {
         "-p".into(),
         agentflow_prompt(req),
         "--output-format".into(),
-        if review || matches!(req.permission, PermissionTier::ReadOnly) {
+        if review || req.is_read_only() {
             "json"
         } else {
             "stream-json"
         }
         .into(),
         "--approval-mode".into(),
-        if review || matches!(req.permission, PermissionTier::ReadOnly) {
+        if review || req.is_read_only() {
             "plan"
         } else {
             "yolo"
         }
         .into(),
     ];
-    if review || !matches!(req.permission, PermissionTier::Yolo) {
+    if review || req.is_read_only() || !matches!(req.permission, PermissionTier::Yolo) {
         args.push("--sandbox".into());
     }
     args
@@ -393,14 +441,14 @@ fn qwen_args(req: &AgentRunRequest, schema_path: &Path) -> Vec<String> {
         "-p".into(),
         agentflow_prompt(req),
         "--output-format".into(),
-        if review || matches!(req.permission, PermissionTier::ReadOnly) {
+        if review || req.is_read_only() {
             "text"
         } else {
             "stream-json"
         }
         .into(),
         "--approval-mode".into(),
-        if review || matches!(req.permission, PermissionTier::ReadOnly) {
+        if review || req.is_read_only() {
             "plan"
         } else {
             "yolo"
@@ -422,8 +470,226 @@ fn qwen_args(req: &AgentRunRequest, schema_path: &Path) -> Vec<String> {
             format!("@{}", output_schema.to_string_lossy()),
         ]);
     }
-    if review || !matches!(req.permission, PermissionTier::Yolo) {
+    if review || req.is_read_only() || !matches!(req.permission, PermissionTier::Yolo) {
         args.push("--sandbox".into());
+    }
+    args
+}
+
+#[async_trait]
+impl AgentProvider for QoderCliAdapter {
+    fn kind(&self) -> AgentKind {
+        AgentKind::QoderCli
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streams_events: true,
+            native_output_schema: false,
+            supports_resume: true,
+            read_only_mode: true,
+            supports_development: true,
+            supports_review: true,
+            permission_broker: false,
+        }
+    }
+
+    async fn detect(&self, env: &CliEnv) -> Result<AgentInstallation, AdapterError> {
+        detect_cli(
+            "qodercli",
+            env.explicit_path.as_ref().unwrap_or(&self.executable),
+            &["--output-format", "--permission-mode", "--cwd", "--no-session-persistence"],
+            self.capabilities(),
+        )
+        .await
+    }
+
+    async fn start(
+        &self,
+        req: AgentRunRequest,
+        cancel: CancellationToken,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<RunningAgent, AdapterError> {
+        let args = qoder_args(&req);
+        let executable = resolve_cli("qodercli", &self.executable).await?;
+        start_process("qoder", executable, args, req, cancel, tx).await
+    }
+
+    async fn collect_result(
+        &self,
+        run_dir: &Path,
+        role: RunRole,
+    ) -> Result<CollectedResult, AdapterError> {
+        match role {
+            RunRole::Planner => read_plan_output(run_dir, "qoder")
+                .await
+                .map(CollectedResult::Plan),
+            RunRole::Developer => read_development_output(run_dir, "qoder")
+                .await
+                .map(CollectedResult::Development),
+            RunRole::Reviewer => read_review_output(run_dir, "qoder")
+                .await
+                .map(CollectedResult::Review),
+            _ => Err(AdapterError::UnsupportedRole(role)),
+        }
+    }
+}
+
+fn qoder_args(req: &AgentRunRequest) -> Vec<String> {
+    let read_only = req.is_read_only();
+    let mut args = vec![
+        "-p".into(),
+        agentflow_prompt(req),
+        "--cwd".into(),
+        req.worktree.to_string_lossy().into_owned(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--permission-mode".into(),
+        if read_only { "plan" } else { "accept_edits" }.into(),
+        "--max-output-tokens".into(),
+        req.budget
+            .remaining_tokens
+            .unwrap_or(8_000)
+            .min(8_000)
+            .to_string(),
+    ];
+    if read_only {
+        args.extend([
+            "--disallowed-tools".into(),
+            "Write,Edit,Bash".into(),
+        ]);
+    }
+    if matches!(req.permission, PermissionTier::Yolo) {
+        args.push("--dangerously-skip-permissions".into());
+    }
+    if let Some(session_id) = &req.resume_session_id {
+        args.extend(["--resume".into(), session_id.clone()]);
+    } else {
+        args.push("--no-session-persistence".into());
+    }
+    args
+}
+
+#[async_trait]
+impl AgentProvider for GrokCliAdapter {
+    fn kind(&self) -> AgentKind {
+        AgentKind::GrokCli
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streams_events: true,
+            native_output_schema: true,
+            supports_resume: true,
+            read_only_mode: true,
+            supports_development: true,
+            supports_review: true,
+            permission_broker: false,
+        }
+    }
+
+    async fn detect(&self, env: &CliEnv) -> Result<AgentInstallation, AdapterError> {
+        detect_cli(
+            "grok",
+            env.explicit_path.as_ref().unwrap_or(&self.executable),
+            &["--output-format", "--permission-mode", "--cwd", "--sandbox"],
+            self.capabilities(),
+        )
+        .await
+    }
+
+    async fn start(
+        &self,
+        req: AgentRunRequest,
+        cancel: CancellationToken,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<RunningAgent, AdapterError> {
+        let args = grok_args(&req);
+        let executable = resolve_cli("grok", &self.executable).await?;
+        let compat = match cli_request_policy("grok").as_deref() {
+            Some("deepseek_forced_tool_choice_non_thinking") => {
+                deepseek_compat::prepare_grok_deepseek_compat(
+                    &req.run_dir,
+                    &req.worktree,
+                    &req.env_denylist,
+                )
+                .await?
+            }
+            None => None,
+            Some(policy) => {
+                return Err(AdapterError::Incompatible(format!(
+                    "unknown Grok request policy: {policy}"
+                )));
+            }
+        };
+        let Some(compat) = compat else {
+            return start_process("grok", executable, args, req, cancel, tx).await;
+        };
+        let result = start_process_with_env(
+            "grok",
+            executable,
+            args,
+            req,
+            cancel,
+            tx,
+            ProcessEnvironment {
+                additional: compat.environment(),
+                suppress: vec!["DEEPSEEK_API_KEY".into()],
+                load_provider_credential: false,
+            },
+        )
+        .await;
+        compat.shutdown().await;
+        result
+    }
+
+    async fn collect_result(
+        &self,
+        run_dir: &Path,
+        role: RunRole,
+    ) -> Result<CollectedResult, AdapterError> {
+        match role {
+            RunRole::Planner => read_plan_output(run_dir, "grok")
+                .await
+                .map(CollectedResult::Plan),
+            RunRole::Developer => read_development_output(run_dir, "grok")
+                .await
+                .map(CollectedResult::Development),
+            RunRole::Reviewer => read_review_output(run_dir, "grok")
+                .await
+                .map(CollectedResult::Review),
+            _ => Err(AdapterError::UnsupportedRole(role)),
+        }
+    }
+}
+
+fn grok_args(req: &AgentRunRequest) -> Vec<String> {
+    let read_only = req.is_read_only();
+    let mut args = vec![
+        "-p".into(),
+        agentflow_prompt(req),
+        "--cwd".into(),
+        req.worktree.to_string_lossy().into_owned(),
+        "--output-format".into(),
+        "streaming-json".into(),
+        "--permission-mode".into(),
+        if read_only { "plan" } else { "dontAsk" }.into(),
+        "--sandbox".into(),
+        if read_only { "read-only" } else { "workspace-write" }.into(),
+        "--max-turns".into(),
+        "100".into(),
+        "--no-memory".into(),
+        "--no-subagents".into(),
+        "--disable-web-search".into(),
+    ];
+    if read_only {
+        args.extend(["--disallowed-tools".into(), "Write,Edit,Bash".into()]);
+    }
+    if matches!(req.permission, PermissionTier::Yolo) {
+        args.push("--always-approve".into());
+    }
+    if let Some(session_id) = &req.resume_session_id {
+        args.extend(["--resume".into(), session_id.clone()]);
     }
     args
 }

@@ -9,6 +9,11 @@ struct CouncilMemberReview {
 struct CouncilIssue {
     issue: ReviewIssueResult,
     reported_by: Vec<AgentKind>,
+    /// §24: reporters split across the serious↔minor severity boundary on this issue.
+    severity_disagreement: bool,
+    // Transient tracking used only while aggregating (whether a serious / a minor rating was seen).
+    saw_serious: bool,
+    saw_minor: bool,
 }
 
 #[derive(Debug)]
@@ -84,6 +89,7 @@ impl Orchestrator {
         if targets.len() < minimum {
             self.block_review(
                 &task,
+                BlockedReason::ReviewFailed,
                 "审查委员会至少需要两个与开发者独立、且已获外发同意的 Provider",
             )
             .await?;
@@ -121,6 +127,7 @@ impl Orchestrator {
         if members.len() < minimum {
             self.block_review(
                 &task,
+                BlockedReason::ReviewFailed,
                 &format!(
                     "审查委员会只有 {}/{} 个成员成功：{}",
                     members.len(),
@@ -353,7 +360,7 @@ impl Orchestrator {
             .execute(self.store.pool())
             .await?;
         for item in &aggregate.issues {
-            sqlx::query("INSERT INTO review_issues(id,review_id,severity,file,line_start,line_end,title,description,suggested_action,reported_by_json,agreement_count) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+            sqlx::query("INSERT INTO review_issues(id,review_id,severity,file,line_start,line_end,title,description,suggested_action,reported_by_json,agreement_count,severity_disagreement) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
                 .bind(Uuid::now_v7().to_string())
                 .bind(&id)
                 .bind(item.issue.severity.to_string())
@@ -365,6 +372,7 @@ impl Orchestrator {
                 .bind(&item.issue.suggested_action)
                 .bind(serde_json::to_string(&item.reported_by).map_err(|error| OrchestratorError::Config(error.to_string()))?)
                 .bind(item.reported_by.len() as i64)
+                .bind(item.severity_disagreement as i64)
                 .execute(self.store.pool())
                 .await?;
         }
@@ -380,16 +388,32 @@ impl Orchestrator {
         let quality = self
             .evaluate_quality(task, &self.stored_test_report(&task.id, task.revision).await?, false)
             .await?;
+        // Before spending another rework round, check whether the loop is actually converging
+        // (§32-34). A stalled or regressing loop pauses for a human decision instead of grinding
+        // to the max-revisions ceiling.
+        let health = if matches!(decision, ReviewDecision::RequestChanges)
+            && task.revision > 1
+            && task.revision < task.max_revisions
+        {
+            self.assess_convergence(task).await?
+        } else {
+            ConvergenceHealth::Ok
+        };
         let (to, reason, event) = match decision {
             ReviewDecision::Pass if !quality.passed => (TaskStatus::Blocked, Some(BlockedReason::QualityGate), "quality:gate_failed"),
             ReviewDecision::Pass => (TaskStatus::WaitingForHumanApproval, None, "review:council_pass"),
             ReviewDecision::RequestChanges if task.revision >= task.max_revisions => (TaskStatus::Blocked, Some(BlockedReason::MaxRevisions), "review:max_revisions"),
-            ReviewDecision::RequestChanges => (TaskStatus::ReadyForRevision, None, "review:council_request_changes"),
+            ReviewDecision::RequestChanges => match health {
+                ConvergenceHealth::Regressed => (TaskStatus::Blocked, Some(BlockedReason::QualityRegressed), "review:quality_regressed"),
+                ConvergenceHealth::Stalled => (TaskStatus::Blocked, Some(BlockedReason::ConvergenceStalled), "review:convergence_stalled"),
+                ConvergenceHealth::Ok => (TaskStatus::ReadyForRevision, None, "review:council_request_changes"),
+            },
             ReviewDecision::Block => (TaskStatus::Blocked, Some(BlockedReason::ReviewBlock), "review:council_block"),
         };
         self.store.transition(&task.id, &[TaskStatus::Reviewing], to, reason, Actor::Orchestrator, event, &json!({"review_id": review_id,"quality_score":quality.score,"quality_passed":quality.passed})).await?;
         Ok(())
     }
+
 }
 
 fn aggregate_council(members: &[CouncilMemberReview], require_unanimous: bool) -> CouncilAggregate {
@@ -400,14 +424,44 @@ fn aggregate_council(members: &[CouncilMemberReview], require_unanimous: bool) -
             let entry = issues.entry(key).or_insert_with(|| CouncilIssue {
                 issue: issue.clone(),
                 reported_by: Vec::new(),
+                severity_disagreement: false,
+                saw_serious: false,
+                saw_minor: false,
             });
-            if severity_rank(issue.severity) > severity_rank(entry.issue.severity) {
-                entry.issue = issue.clone();
+            // §24: note whether reporters land on either side of the serious↔minor boundary.
+            match issue.severity {
+                Severity::Critical | Severity::High => entry.saw_serious = true,
+                Severity::Medium | Severity::Low => entry.saw_minor = true,
             }
+            // Severity drives gating, so keep the most severe framing (severity + title + location)
+            // any member assigned. This does NOT change how the decision is computed below — it only
+            // decides which member's wording represents the merged issue.
+            if severity_rank(issue.severity) > severity_rank(entry.issue.severity) {
+                entry.issue.severity = issue.severity;
+                entry.issue.title = issue.title.clone();
+                if issue.line_start.is_some() {
+                    entry.issue.line_start = issue.line_start;
+                    entry.issue.line_end = issue.line_end;
+                }
+            }
+            // §23 最完整证据: a lower-severity duplicate may carry the fuller explanation, so keep the
+            // longest description rather than blindly taking the highest-severity member's.
+            if text_len(issue.description.as_deref()) > text_len(entry.issue.description.as_deref()) {
+                entry.issue.description = issue.description.clone();
+            }
+            // §23 不同建议: preserve every distinct suggested fix, not just one member's.
+            entry.issue.suggested_action = merge_suggestions(
+                entry.issue.suggested_action.as_deref(),
+                issue.suggested_action.as_deref(),
+            );
             if !entry.reported_by.contains(&member.agent) {
                 entry.reported_by.push(member.agent.clone());
             }
         }
+    }
+    // Finalize the §24 disagreement flag: reporters split across the serious↔minor boundary.
+    for entry in issues.values_mut() {
+        entry.severity_disagreement = entry.saw_serious && entry.saw_minor;
     }
     let block = members.iter().any(|member| member.review.decision == ReviewDecision::Block);
     let changes = members.iter().filter(|member| member.review.decision == ReviewDecision::RequestChanges).count();

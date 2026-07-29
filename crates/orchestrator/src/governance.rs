@@ -290,7 +290,7 @@ impl Orchestrator {
         &self,
         task_id: &str,
     ) -> Result<Option<DeliveryRecord>, OrchestratorError> {
-        let row = sqlx::query("SELECT mode,state,remote_url,request_number,ci_status,merge_commit,pre_merge_commit,rollback_commit,updated_at FROM delivery_records WHERE task_id=?")
+        let row = sqlx::query("SELECT mode,state,remote_url,request_number,ci_status,ci_checks_json,merge_commit,pre_merge_commit,rollback_commit,updated_at FROM delivery_records WHERE task_id=?")
             .bind(task_id).fetch_optional(self.store.pool()).await?;
         row.map(|row| {
             Ok(DeliveryRecord {
@@ -299,6 +299,8 @@ impl Orchestrator {
                 remote_url: row.get("remote_url"),
                 number: row.get("request_number"),
                 ci_status: parse_opt(row.get("ci_status"))?,
+                ci_checks: serde_json::from_str(row.get::<String, _>("ci_checks_json").as_str())
+                    .unwrap_or_default(),
                 merge_commit: row.get("merge_commit"),
                 pre_merge_commit: row.get("pre_merge_commit"),
                 rollback_commit: row.get("rollback_commit"),
@@ -317,6 +319,8 @@ impl Orchestrator {
         Ok(TaskGovernance {
             manifest: self.reproducibility_manifest(task_id, revision).await?,
             quality: self.latest_quality(task_id, revision).await?,
+            original_quality: self.original_quality(task_id, revision).await?,
+            latest_replay: self.latest_replay_attempt(task_id, revision).await?,
             budget: self.budget_usage(task_id).await?,
             delivery: self.delivery_record(task_id).await?,
         })
@@ -346,6 +350,40 @@ impl Orchestrator {
     ) -> Result<Option<QualityEvaluation>, OrchestratorError> {
         let json: Option<String> = sqlx::query_scalar(
             "SELECT evaluation_json FROM quality_evaluations WHERE task_id=? AND revision=? ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(task_id)
+        .bind(revision)
+        .fetch_optional(self.store.pool())
+        .await?;
+        json.map(|value| {
+            serde_json::from_str(&value).map_err(|error| OrchestratorError::Config(error.to_string()))
+        }).transpose()
+    }
+
+    async fn original_quality(
+        &self,
+        task_id: &str,
+        revision: i64,
+    ) -> Result<Option<QualityEvaluation>, OrchestratorError> {
+        let json: Option<String> = sqlx::query_scalar(
+            "SELECT evaluation_json FROM quality_evaluations WHERE task_id=? AND revision=? AND replay=0 ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(task_id)
+        .bind(revision)
+        .fetch_optional(self.store.pool())
+        .await?;
+        json.map(|value| {
+            serde_json::from_str(&value).map_err(|error| OrchestratorError::Config(error.to_string()))
+        }).transpose()
+    }
+
+    async fn latest_replay_attempt(
+        &self,
+        task_id: &str,
+        revision: i64,
+    ) -> Result<Option<QualityReplayAttempt>, OrchestratorError> {
+        let json: Option<String> = sqlx::query_scalar(
+            "SELECT attempt_json FROM quality_replay_attempts WHERE task_id=? AND revision=? ORDER BY created_at DESC LIMIT 1",
         )
         .bind(task_id)
         .bind(revision)

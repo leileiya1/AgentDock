@@ -1,5 +1,7 @@
-use agentflow_contracts::{CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE};
-use std::collections::HashMap;
+use agentflow_contracts::{
+    CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE, DEEPSEEK_API_KEYCHAIN_SERVICE,
+};
+use std::{collections::HashMap, process::Stdio};
 
 #[derive(Debug, Clone, Copy)]
 struct CliCredentialSpec {
@@ -18,6 +20,13 @@ fn credential_spec(name: &str) -> Option<CliCredentialSpec> {
         "codex" => Some(CliCredentialSpec {
             env_key: "CODEX_API_KEY",
             keychain_service: CODEX_CLI_KEYCHAIN_SERVICE,
+        }),
+        // The supported Grok custom-model setup routes inference to DeepSeek. Keep the credential
+        // under its real provider name; the per-run loopback compatibility boundary owns the real
+        // key and gives the opaque CLI only a random, short-lived local token.
+        "grok" => Some(CliCredentialSpec {
+            env_key: "DEEPSEEK_API_KEY",
+            keychain_service: DEEPSEEK_API_KEYCHAIN_SERVICE,
         }),
         _ => None,
     }
@@ -45,9 +54,47 @@ fn keychain_key(service: &str) -> Option<String> {
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            // Locally built/ad-hoc desktop bundles get a different code identity after every
+            // reinstall. Existing login-keychain items may then reject the framework lookup even
+            // though the user's `security` client can still read the same item. Keep the secret
+            // out of argv and logs; capture it only in memory as a compatibility fallback.
+            let output = std::process::Command::new("/usr/bin/security")
+                .args([
+                    "find-generic-password",
+                    "-s",
+                    service,
+                    "-a",
+                    "AgentFlow",
+                    "-w",
+                ])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        })
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(not(target_os = "macos"))]
 fn keychain_key(_service: &str) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grok_reuses_the_deepseek_credential_without_masquerading_as_xai() {
+        let Some(spec) = credential_spec("grok") else {
+            panic!("Grok credential spec is missing");
+        };
+        assert_eq!(spec.env_key, "DEEPSEEK_API_KEY");
+        assert_eq!(spec.keychain_service, DEEPSEEK_API_KEYCHAIN_SERVICE);
+    }
 }

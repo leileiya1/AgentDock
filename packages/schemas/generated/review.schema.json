@@ -13,27 +13,42 @@
       "properties": {
         "description": {
           "maxLength": 4000,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "file": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "line_end": {
           "format": "int64",
           "minimum": 1,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "line_start": {
           "format": "int64",
           "minimum": 1,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "severity": {
           "$ref": "#/$defs/Severity"
         },
         "suggested_action": {
           "maxLength": 2000,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "title": {
           "maxLength": 200,
@@ -42,7 +57,12 @@
         }
       },
       "required": [
+        "description",
+        "file",
+        "line_end",
+        "line_start",
         "severity",
+        "suggested_action",
         "title"
       ],
       "type": "object"
@@ -79,7 +99,8 @@
       "type": "integer"
     },
     "schema_version": {
-      "const": 1
+      "const": 1,
+      "type": "integer"
     },
     "summary": {
       "maxLength": 4000,
@@ -90,13 +111,13 @@
     }
   },
   "required": [
-    "schema_version",
-    "task_id",
-    "revision",
     "commit_sha",
     "decision",
+    "issues",
+    "revision",
+    "schema_version",
     "summary",
-    "issues"
+    "task_id"
   ],
   "title": "ReviewResult",
   "type": "object"

@@ -72,3 +72,20 @@ agentflow-cli task cancel <task-id>
 ```
 
 The daemon runs automatic cleanup every six hours and emits macOS notifications when a task needs attention, completes, or changes provider. Shared schemas and TypeScript bindings are generated with `cargo run -p xtask`.
+
+## Verifying changes
+
+Run the full local gate — it mirrors CI, so green here means green there:
+
+```bash
+scripts/verify.sh          # fmt + clippy (-D warnings, all targets) + workspace tests + FE typecheck
+scripts/verify.sh --full   # also regenerate bindings/schemas and fail on drift
+```
+
+Always run the gate through this script rather than a bare `cargo test … | tail`: a test target that fails to compile runs **zero** tests, and piping cargo through another command reports that command's exit code, so a broken build can look green. The script uses `set -euo pipefail` and never pipes a gate command, so a failure can't be masked.
+
+To make a broken build unpushable, enable the checked-in pre-push hook once per clone:
+
+```bash
+git config core.hooksPath scripts/hooks
+```

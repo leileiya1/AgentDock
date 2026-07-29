@@ -1,0 +1,40 @@
+name: Release macOS
+
+# Build, sign and gate the desktop bundle. The gate fails closed: a bundle that is only ad-hoc
+# signed, un-notarized, or whose DMG does not verify cannot be released (问题清单 P0-03).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  bundle-gate:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+
+      - run: bun install --frozen-lockfile
+        working-directory: apps/desktop
+      - run: bun run prepare:sidecar
+        working-directory: apps/desktop
+      - run: bun run build
+        working-directory: apps/desktop
+
+      # Build and sign the bundle. Signing + notarization need the Developer ID identity in repo
+      # secrets; supply them so the gate below can pass. Without them the build is ad-hoc signed and
+      # the gate correctly refuses to release it.
+      - run: bun run app:build
+        working-directory: apps/desktop
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # Enforce codesign --verify --deep --strict, Gatekeeper assessment and DMG integrity.
+      - run: scripts/verify-macos-bundle.sh

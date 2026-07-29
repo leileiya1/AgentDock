@@ -459,6 +459,7 @@ mod failure_tests {
                 read_only_mode: false,
                 supports_development: true,
                 supports_review: false,
+                permission_broker: false,
             }
         }
         async fn start(
@@ -474,6 +475,7 @@ mod failure_tests {
                     args: vec!["-c".into(), "sleep 30 & wait".into()],
                     cwd: req.worktree,
                     env: HashMap::new(),
+                    clear_environment: false,
                     env_denylist: Vec::new(),
                     timeout: req.timeout,
                     idle_timeout: req.idle_timeout,

@@ -96,6 +96,30 @@ const ERROR_COPY: Record<ErrorCode, { title: string; hint?: string }> = {
     title: "为保护现有改动，已拒绝回滚",
     hint: "确认目标分支工作区干净；存在后续提交时请使用回滚提交。",
   },
+  PERMISSION_REQUEST_STALE: {
+    title: "这项权限请求已经变化",
+    hint: "任务轮次、操作或策略已更新，请打开最新请求重新确认。",
+  },
+  PERMISSION_PATH_ESCAPE: {
+    title: "路径越出了任务工作树",
+    hint: "符号链接或上级目录跳转已被阻止，请让 Agent 改用工作树内路径。",
+  },
+  PERMISSION_RULE_TOO_BROAD: {
+    title: "不能保存这么宽的项目规则",
+    hint: "请缩小到精确命令、路径或域名，或只允许本次操作。",
+  },
+  PERMISSION_NOT_GRANTABLE: {
+    title: "这项系统能力不能授权",
+    hint: "sudo、秘密读取和系统设置等操作必须改用安全方案。",
+  },
+  PERMISSION_EXPIRED: {
+    title: "这项权限请求已过期",
+    hint: "重新运行任务以生成与当前状态一致的新请求。",
+  },
+  PERMISSION_DENIED: {
+    title: "权限请求已拒绝",
+    hint: "Agent 会根据你的指引尝试受限方案。",
+  },
   IO_ERROR: {
     title: "读写文件失败",
     hint: "检查磁盘空间与目录权限后重试。",

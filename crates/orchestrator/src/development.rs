@@ -60,11 +60,17 @@ impl Orchestrator {
             &project.settings,
             task.api_egress_approved,
         );
+        let mut catalog = self.provider_list().await;
+        self.apply_runtime_probes(&mut catalog, &chain).await;
+        let assessment = Self::assess_chain(&chain, &catalog);
         let mut result = None;
         let mut selected_developer = task.developer.clone();
         let mut previous = None;
-        let mut previous_error = String::new();
-        for candidate in chain {
+        let mut previous_error = assessment.skipped_reasons().join("；");
+        // Classify the most recent developer attempt (idle hang §15 / auth expiry §5 / normal) so
+        // the final block can surface the matching recovery instead of a generic run failure.
+        let mut last_attempt_class = RunFailureClass::Normal;
+        for candidate in assessment.ready {
             if let Some(from) = previous.clone() {
                 self.git.reset_owned_worktree(&wt, &baseline).await?;
                 reset_io_dirs(&wt).await?;
@@ -107,11 +113,20 @@ impl Orchestrator {
                     running
                 }
                 Ok(running) => {
+                    last_attempt_class = if running.outcome.idle_timed_out {
+                        RunFailureClass::Unresponsive
+                    } else if run_output_indicates_auth_failure(&running.run_dir).await {
+                        RunFailureClass::AuthExpired
+                    } else {
+                        RunFailureClass::Normal
+                    };
                     previous = Some(candidate);
                     previous_error = format!(
                         "provider exited with {:?}{}",
                         running.outcome.exit_code,
-                        if running.outcome.timed_out {
+                        if running.outcome.idle_timed_out {
+                            " after going unresponsive (no output)"
+                        } else if running.outcome.timed_out {
                             " after timing out"
                         } else {
                             ""
@@ -127,6 +142,29 @@ impl Orchestrator {
                     if self.task(&task.id).await?.status == TaskStatus::Cancelled {
                         return Ok(());
                     }
+                    if let OrchestratorError::Adapter(
+                        agentflow_agent_adapters::AdapterError::PermissionRequired(required),
+                    ) = &error
+                    {
+                        self.git.reset_owned_worktree(&wt, &baseline).await?;
+                        self.permission_request(PermissionRequestInput {
+                            task_id: task.id.clone(),
+                            run_id: None,
+                            provider_id: candidate,
+                            role: RunRole::Developer,
+                            action_type: required.action_type,
+                            reason: required.reason.clone(),
+                            operation: required.operation.clone(),
+                            provider_resume_token: required.resume_token.clone(),
+                        })
+                        .await?;
+                        return Ok(());
+                    }
+                    last_attempt_class = if adapter_error_is_auth(&error) {
+                        RunFailureClass::AuthExpired
+                    } else {
+                        RunFailureClass::Normal
+                    };
                     previous = Some(candidate);
                     previous_error = error.to_string();
                     if self.enforce_budget(&self.task(&task.id).await?).await? {
@@ -197,9 +235,12 @@ impl Orchestrator {
         }
         let Some(result) = result else {
             self.git.reset_owned_worktree(&wt, &baseline).await?;
+            // An idle hang (§15) is surfaced separately from an ordinary run failure (§16): the
+            // worktree edits were already protected into a checkpoint, so recovery can retry from
+            // the current state, switch developer, or restore the pre-task snapshot.
             self.block(
                 &task,
-                BlockedReason::RunFailed,
+                run_failure_reason(last_attempt_class, BlockedReason::RunFailed),
                 &format!("all developer providers failed: {previous_error}"),
             )
             .await?;
@@ -333,7 +374,10 @@ impl Orchestrator {
                 config.review.max_patch_bytes,
             )
             .await?;
-        let stat = summarize(&diff);
+        let mut stat = summarize(&diff);
+        // §45: record how many files this round fully deleted, so a mass deletion is visible at the
+        // mandatory human approval. Non-fatal: a count failure must not sink a valid revision.
+        stat.deleted_files = self.git.deleted_file_count(&wt, base, &sha).await.unwrap_or(0);
         let artifact_dir = self.task_dir(&task.id).join("artifacts");
         tokio::fs::create_dir_all(&artifact_dir).await?;
         tokio::fs::write(

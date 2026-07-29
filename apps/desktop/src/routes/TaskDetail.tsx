@@ -1,20 +1,22 @@
-import { useEffect, useMemo } from "react";
-import { Link, useParams } from "react-router-dom";
-import { AnimatePresence, motion } from "motion/react";
-import { ChevronLeft } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useParams } from "react-router-dom";
+import { motion } from "motion/react";
+import { PanelLeft } from "lucide-react";
 import type { DetailTab } from "@/stores/uiStore";
 import { useTaskDetail } from "@/hooks/useTasks";
 import { useUiStore } from "@/stores/uiStore";
 import { useRunLogStream } from "@/hooks/useRunLogStream";
-import { useEvents } from "@/hooks/useTaskData";
-import { taskCode, shortSha } from "@/lib/format";
+import { useExecutionTree } from "@/hooks/useExecutionTree";
+import { useLayout } from "@/hooks/useBreakpoint";
 import { cn } from "@/lib/utils";
-import { agentLabel } from "@/copy/agents";
-import { StateBadge } from "@/components/StateBadge";
-import { Timeline } from "@/components/Timeline";
 import { ApprovalBar } from "@/components/ApprovalBar";
-import { AgentMark } from "@/components/AgentMark";
-import { CopyText } from "@/components/CopyText";
+import { PermissionGate } from "@/components/permission/PermissionGate";
+import { SidePanel } from "@/components/SidePanel";
+import { TaskHeader } from "@/components/TaskHeader";
+import { ExecutionTree } from "@/components/execution/ExecutionTree";
+import { LiveStatusBar } from "@/components/execution/LiveStatusBar";
+import { StopRunButton } from "@/components/execution/StopRunButton";
+import { AgentConsole } from "@/components/execution/AgentConsole";
 import { ErrorState } from "@/components/ErrorState";
 import { SkeletonRows } from "@/components/Skeleton";
 import { OverviewTab } from "@/routes/detail/OverviewTab";
@@ -22,30 +24,38 @@ import { LogsTab } from "@/routes/detail/LogsTab";
 import { DiffTab } from "@/routes/detail/DiffTab";
 import { ReviewTab } from "@/routes/detail/ReviewTab";
 import { GovernanceTab } from "@/routes/detail/GovernanceTab";
+import { isAgentRunning, isTaskExecuting } from "@/lib/taskStatus";
 
 const TABS: Array<{ id: DetailTab; label: string; key: string }> = [
-  { id: "overview", label: "概览", key: "1" },
+  { id: "overview", label: "结果与验收", key: "1" },
   { id: "logs", label: "日志", key: "2" },
   { id: "diff", label: "Diff", key: "3" },
   { id: "review", label: "审查", key: "4" },
   { id: "governance", label: "治理", key: "5" },
 ];
 
-const ACTIVE_STATUSES = new Set(["PLANNING", "DEVELOPING", "VALIDATING", "REVIEWING", "REVISING", "MERGING"]);
+// Only these phases run a supervised Agent process with a registered cancellation token, so only
+// here is "停止" both accurate (there really is an Agent) and safe. VALIDATING (build/test) and
+// MERGING (git) hold no agent_run, so cancelling there would force-remove the worktree out from
+// under a live build — exclude them from the stop affordance.
 
 export function TaskDetail() {
   const { taskId, projectId } = useParams();
   const task = useTaskDetail(taskId);
-  const events = useEvents(taskId);
 
   const activeTab = useUiStore((s) => (taskId ? s.activeTab[taskId] : undefined)) ?? "overview";
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   const selectedRevStore = useUiStore((s) => (taskId ? s.selectedRevision[taskId] : undefined));
-  const setSelectedRevision = useUiStore((s) => s.setSelectedRevision);
+  const treeSelection = useUiStore((s) => (taskId ? s.treeSelection[taskId] : undefined)) ?? null;
+  const selectTreeNode = useUiStore((s) => s.selectTreeNode);
 
   useRunLogStream();
 
+  const layout = useLayout();
+  const [treeDrawerOpen, setTreeDrawerOpen] = useState(false);
+
   const detail = task.data;
+  const execution = useExecutionTree(detail);
   const selectedRevision = selectedRevStore ?? detail?.currentRevision ?? 1;
 
   useEffect(() => {
@@ -60,17 +70,16 @@ export function TaskDetail() {
     return () => window.removeEventListener("keydown", onKey);
   }, [taskId, setActiveTab]);
 
+  // Events drive updates; this is only the recovery poll for a dropped subscription.
   useEffect(() => {
-    if (!detail || !ACTIVE_STATUSES.has(detail.status)) return;
+    if (!detail || !isTaskExecuting(detail.status)) return;
     const timer = setTimeout(() => {
       task.refetch();
-      events.refetch();
+      execution.refetch();
     }, 60_000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail?.updatedAt, detail?.status]);
-
-  const revisions = useMemo(() => detail?.revisions ?? [], [detail]);
 
   if (task.isLoading) {
     return (
@@ -88,78 +97,83 @@ export function TaskDetail() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <header className="flex shrink-0 flex-col gap-2 border-b border-line/70 px-6 py-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <Link
-            to={`/p/${projectId}`}
-            className="flex h-7 items-center gap-1 rounded-md px-2 text-[13px] text-t3 transition-colors hover:bg-raised hover:text-t1"
-            title="返回任务列表"
-          >
-            <ChevronLeft className="size-4" /> 返回
-          </Link>
-          <span className="shrink-0 font-mono text-[13px] text-t3">{taskCode(detail.seq)}</span>
-          <h1 className="min-w-0 flex-1 truncate text-[16px] font-semibold">{detail.title}</h1>
-          <StateBadge status={detail.status} />
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex gap-1">
-            {revisions.map((r) => {
-              const on = r.revision === selectedRevision;
-              return (
-                <button
-                  key={r.revision}
-                  onClick={() => taskId && setSelectedRevision(taskId, r.revision)}
-                  title={r.commitSha ? `commit ${shortSha(r.commitSha)}` : undefined}
-                  className={cn(
-                    "relative flex items-center gap-1 rounded-md border px-2 py-1 font-mono text-[12px] transition-colors",
-                    on ? "border-run/60 bg-raised text-t1" : "border-line text-t2 hover:border-line-strong hover:text-t1"
-                  )}
-                >
-                  r{r.revision}
-                  {r.revision === detail.currentRevision && (
-                    <span className="font-sans text-[10px] text-t3">当前</span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          <div className="flex flex-wrap items-center gap-3 font-mono text-[12px] text-t3">
-            {detail.branch && (
-              <span className="flex items-center gap-1">分支 <CopyText value={detail.branch} className="text-t2">{detail.branch}</CopyText></span>
-            )}
-            {detail.baseCommit && (
-              <span className="flex items-center gap-1">base <CopyText value={detail.baseCommit} className="text-t2">{shortSha(detail.baseCommit)}</CopyText></span>
-            )}
-            <span className="flex items-center gap-1.5 font-sans">
-              <AgentMark kind={detail.developerAgent} /> 开发 {agentLabel(detail.developerAgent)}
-            </span>
-            <span className="flex items-center gap-1.5 font-sans">
-              <AgentMark kind={detail.reviewerAgent} /> 审查 {agentLabel(detail.reviewerAgent)}
-            </span>
-          </div>
-        </div>
-      </header>
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+      <TaskHeader
+        task={detail}
+        projectId={projectId}
+        phaseSummary={execution.live ? [execution.live.headline, execution.live.detail].filter(Boolean).join(" · ") : null}
+      />
 
       <div className="flex min-h-0 flex-1">
-        <aside className="w-60 shrink-0 overflow-y-auto border-r border-line/70 px-2 py-2">
-          {events.isLoading ? (
-            <SkeletonRows rows={5} gap={14} />
-          ) : events.isError ? (
-            <ErrorState error={events.error} onRetry={() => events.refetch()} compact />
-          ) : (
-            <Timeline
-              events={events.data ?? []}
-              developerAgent={detail.developerAgent}
-              reviewerAgent={detail.reviewerAgent}
-              selectedRevision={selectedRevision}
-              onSelectRevision={(rev) => taskId && setSelectedRevision(taskId, rev)}
-            />
-          )}
-        </aside>
+        {/* 执行树需要容纳 28–30 px Provider 图标 + 名称 + 状态词 (05 §5.4)；
+            窄屏放不下就收进抽屉，而不是把正文挤没 (05 §8)。 */}
+        <SidePanel
+          drawer={layout === "compact"}
+          open={treeDrawerOpen}
+          onClose={() => setTreeDrawerOpen(false)}
+          title="执行树"
+          width="19rem"
+        >
+          <div className="px-2 py-2">
+            {execution.isLoading || !execution.tree ? (
+              <SkeletonRows rows={5} gap={14} />
+            ) : execution.error ? (
+              <ErrorState error={execution.error} onRetry={() => execution.refetch()} compact />
+            ) : (
+              <ExecutionTree
+                tree={execution.tree}
+                selection={treeSelection}
+                onSelect={(selection) => {
+                  if (taskId) {
+                    selectTreeNode(taskId, selection);
+                    if (selection.runId) setActiveTab(taskId, "logs");
+                  }
+                  // 抽屉里选完就收起，否则内容被自己挡住。
+                  if (layout === "compact") setTreeDrawerOpen(false);
+                }}
+                revisionStats={detail.revisions}
+              />
+            )}
+          </div>
+        </SidePanel>
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="flex shrink-0 gap-1 border-b border-line/70 px-4 pt-2" role="tablist" aria-label="任务详情">
+          <div className="flex shrink-0 items-start gap-2 px-4 pt-3">
+            {layout === "compact" && (
+              <button
+                type="button"
+                onClick={() => setTreeDrawerOpen(true)}
+                aria-label="打开执行树"
+                className="mt-0.5 flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1.5 text-[12px] text-t2 transition-colors hover:bg-raised hover:text-t1"
+              >
+                <PanelLeft className="size-3.5" aria-hidden /> 执行树
+              </button>
+            )}
+            <div className="min-w-0 flex-1">
+              <LiveStatusBar status={execution.live} />
+            </div>
+            {/* 只有真正跑着 Agent 的阶段才给「停止」入口 (§14/§17)：这些阶段可安全中止，
+                构建/合并阶段没有 Agent 进程，停止会与工作区清理竞争，故不显示。 */}
+            {isAgentRunning(detail.status) && <StopRunButton taskId={detail.id} />}
+          </div>
+          {execution.tree && (
+            <div className="shrink-0 px-4 pt-2">
+              <AgentConsole
+                task={detail}
+                tree={execution.tree}
+                onOpen={(phase, runId, revision) => {
+                  if (!taskId) return;
+                  selectTreeNode(taskId, { revision, phase, runId });
+                  if (runId) setActiveTab(taskId, "logs");
+                }}
+              />
+            </div>
+          )}
+          <div
+            className="flex shrink-0 gap-1 overflow-x-auto border-b border-line/70 px-4 pt-2"
+            role="tablist"
+            aria-label="任务详情"
+          >
             {TABS.map((t) => {
               const on = activeTab === t.id;
               return (
@@ -188,26 +202,43 @@ export function TaskDetail() {
           </div>
 
           <div className="relative min-h-0 flex-1">
-            <AnimatePresence mode="wait">
+            {/* Tab content switches instantly and robustly. We intentionally avoid AnimatePresence +
+                `mode="wait"` here: waiting for an exit animation to finish before mounting the next
+                tab means a stalled exit (throttled rAF in a backgrounded window, extreme jank) can
+                leave the user unable to switch tabs, and a lingering exiting pane can bleed through
+                the incoming one. `initial={false}` renders each tab at its resting state immediately,
+                so the content is always correct even if animations never tick. The active-tab
+                underline still animates via its shared `layoutId`. */}
+            <div className="absolute inset-0">
               <motion.div
                 key={activeTab}
                 className="absolute inset-0 flex flex-col [&>*]:min-h-0 [&>*]:flex-1"
-                initial={{ opacity: 0, y: 6 }}
+                initial={false}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
                 transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
               >
-                {activeTab === "overview" && <OverviewTab task={detail} events={events.data ?? []} />}
-                {activeTab === "logs" && taskId && <LogsTab taskId={taskId} />}
+                {activeTab === "overview" && <OverviewTab task={detail} events={execution.events} />}
+                {activeTab === "logs" && taskId && execution.tree && (
+                  <LogsTab
+                    taskId={taskId}
+                    tree={execution.tree}
+                    runs={execution.runs}
+                    revision={selectedRevision}
+                    lastActivityAt={execution.lastActivityAt}
+                  />
+                )}
                 {activeTab === "diff" && taskId && <DiffTab taskId={taskId} revision={selectedRevision} />}
-                {activeTab === "review" && taskId && <ReviewTab taskId={taskId} revision={selectedRevision} />}
+                {activeTab === "review" && taskId && (
+                  <ReviewTab task={detail} revision={selectedRevision} events={execution.events} />
+                )}
                 {activeTab === "governance" && <GovernanceTab task={detail} revision={selectedRevision} />}
               </motion.div>
-            </AnimatePresence>
+            </div>
           </div>
         </div>
       </div>
 
+      <PermissionGate taskId={detail.id} projectId={projectId} taskStatus={detail.status} />
       <ApprovalBar task={detail} />
     </div>
   );

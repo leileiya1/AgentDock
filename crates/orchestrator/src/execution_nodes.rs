@@ -1,6 +1,6 @@
 impl Orchestrator {
     pub async fn execution_node_list(&self) -> Result<Vec<ExecutionNode>, OrchestratorError> {
-        let rows = sqlx::query("SELECT id,name,host,port,username,work_root,enabled,status,platform,git_version,problem,last_checked_at FROM execution_nodes ORDER BY name")
+        let rows = sqlx::query("SELECT id,name,host,port,username,work_root,identity_file,deny_network,enabled,status,platform,git_version,problem,last_checked_at,diagnostics_json FROM execution_nodes ORDER BY name")
             .fetch_all(self.store.pool()).await?;
         rows.into_iter().map(execution_node_from_row).collect()
     }
@@ -14,9 +14,10 @@ impl Orchestrator {
             node.id = Uuid::now_v7().to_string();
         }
         let now = Utc::now().to_rfc3339();
-        sqlx::query("INSERT INTO execution_nodes(id,name,host,port,username,work_root,enabled,status,platform,git_version,problem,last_checked_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'unknown',NULL,NULL,NULL,NULL,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,host=excluded.host,port=excluded.port,username=excluded.username,work_root=excluded.work_root,enabled=excluded.enabled,status='unknown',problem=NULL,updated_at=excluded.updated_at")
+        sqlx::query("INSERT INTO execution_nodes(id,name,host,port,username,work_root,identity_file,deny_network,enabled,status,platform,git_version,problem,last_checked_at,diagnostics_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'unknown',NULL,NULL,NULL,NULL,'[]',?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,host=excluded.host,port=excluded.port,username=excluded.username,work_root=excluded.work_root,identity_file=excluded.identity_file,deny_network=excluded.deny_network,enabled=excluded.enabled,status='unknown',problem=NULL,diagnostics_json='[]',updated_at=excluded.updated_at")
             .bind(&node.id).bind(node.name.trim()).bind(node.host.trim()).bind(i64::from(node.port))
-            .bind(node.username.trim()).bind(node.work_root.trim()).bind(i64::from(node.enabled))
+            .bind(node.username.trim()).bind(node.work_root.trim()).bind(node.identity_file.as_deref())
+            .bind(i64::from(node.deny_network)).bind(i64::from(node.enabled))
             .bind(&now).bind(&now).execute(self.store.pool()).await?;
         self.execution_node_get(&node.id).await
     }
@@ -41,52 +42,19 @@ impl Orchestrator {
         node_id: &str,
     ) -> Result<ExecutionNode, OrchestratorError> {
         let node = self.execution_node_get(node_id).await?;
-        let destination = format!("{}@{}", node.username, node.host);
-        let root = shell_quote(&node.work_root);
-        let remote = format!(
-            "set -eu; {}; mkdir -p {root}; test -w {root}; command -v git >/dev/null; command -v tar >/dev/null; uname -srm; git --version",
-            remote_environment_prelude(),
-        );
-        let result = tokio::time::timeout(
-            Duration::from_secs(12),
-            Command::new("ssh")
-                .args(ssh_base_args(&node))
-                .arg(destination)
-                .arg(remote)
-                .output(),
-        )
-        .await;
+        let probe = probe_execution_node(&node).await;
         let checked = Utc::now().to_rfc3339();
-        let (status, platform, git_version, problem) = match result {
-            Ok(Ok(output)) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                let mut lines = text.lines();
-                (
-                    NodeStatus::Online,
-                    lines.next().map(str::to_string),
-                    lines.next().map(str::to_string),
-                    None,
-                )
-            }
-            Ok(Ok(output)) => (
-                NodeStatus::Offline,
-                None,
-                None,
-                Some(agentflow_process_supervisor::redact(
-                    String::from_utf8_lossy(&output.stderr).chars().take(1000).collect(),
-                )),
-            ),
-            Ok(Err(error)) => (NodeStatus::Offline, None, None, Some(error.to_string())),
-            Err(_) => (NodeStatus::Offline, None, None, Some("SSH health check timed out".into())),
-        };
-        sqlx::query("UPDATE execution_nodes SET status=?,platform=?,git_version=?,problem=?,last_checked_at=?,updated_at=? WHERE id=?")
-            .bind(status.to_string()).bind(platform).bind(git_version).bind(problem)
-            .bind(&checked).bind(&checked).bind(node_id).execute(self.store.pool()).await?;
+        let diagnostics_json = serde_json::to_string(&probe.diagnostics)
+            .map_err(|error| OrchestratorError::Config(error.to_string()))?;
+        sqlx::query("UPDATE execution_nodes SET status=?,platform=?,git_version=?,problem=?,last_checked_at=?,diagnostics_json=?,updated_at=? WHERE id=?")
+            .bind(probe.status.to_string()).bind(probe.platform).bind(probe.git_version).bind(probe.problem)
+            .bind(&checked).bind(diagnostics_json)
+            .bind(&checked).bind(node_id).execute(self.store.pool()).await?;
         self.execution_node_get(node_id).await
     }
 
     async fn execution_node_get(&self, node_id: &str) -> Result<ExecutionNode, OrchestratorError> {
-        let row = sqlx::query("SELECT id,name,host,port,username,work_root,enabled,status,platform,git_version,problem,last_checked_at FROM execution_nodes WHERE id=?")
+        let row = sqlx::query("SELECT id,name,host,port,username,work_root,identity_file,deny_network,enabled,status,platform,git_version,problem,last_checked_at,diagnostics_json FROM execution_nodes WHERE id=?")
             .bind(node_id).fetch_one(self.store.pool()).await?;
         execution_node_from_row(row)
     }
@@ -144,16 +112,15 @@ impl Orchestrator {
         let mut transport_error = None;
         for step in steps {
             let allowed = remaining.map_or(step.timeout_secs, |value| value.min(step.timeout_secs)).max(1);
-            let command = remote_validation_command(&remote_dir, &step.argv);
+            let command = remote_validation_command(node, &remote_dir, &step.argv, allowed);
             let started = Instant::now();
-            let output = tokio::time::timeout(
-                Duration::from_secs(allowed),
-                Command::new("ssh").args(ssh_base_args(node)).arg(&destination).arg(command).output(),
-            ).await;
+            let mut ssh = Command::new("ssh");
+            ssh.args(ssh_base_args(node)).arg(&destination).arg(command);
+            let output = output_with_deadline(ssh, Duration::from_secs(allowed)).await;
             let elapsed = started.elapsed();
             remaining = remaining.map(|value| value.saturating_sub(elapsed.as_secs()));
             match output {
-                Ok(Ok(output)) => {
+                Ok(Some(output)) => {
                     let passed = output.status.success();
                     report.passed &= passed;
                     report.steps.push(TestStepReport {
@@ -161,15 +128,15 @@ impl Orchestrator {
                         duration_ms: elapsed.as_millis() as u64, stdout_tail: tail(&output.stdout), stderr_tail: tail(&output.stderr),
                     });
                 }
-                Ok(Err(error)) => {
+                Err(error) => {
                     transport_error = Some(OrchestratorError::RemoteNodeUnavailable(error.to_string()));
                     break;
                 }
-                Err(_) => {
+                Ok(None) => {
                     report.passed = false;
                     report.steps.push(TestStepReport {
                         name: step.name.clone(), argv: step.argv.clone(), exit_code: None,
-                        duration_ms: elapsed.as_millis() as u64, stdout_tail: String::new(), stderr_tail: "timed out".into(),
+                        duration_ms: elapsed.as_millis() as u64, stdout_tail: String::new(), stderr_tail: "timed out (local ssh terminated; remote watchdog reaps the step)".into(),
                     });
                 }
             }
@@ -178,6 +145,59 @@ impl Orchestrator {
         // ephemeral fixed-commit sandbox and is removed after the run.
         let _ = cleanup_remote_dir(node, &remote_dir).await;
         transport_error.map_or(Ok(report), Err)
+    }
+}
+
+/// Run one command with a hard deadline. The child gets its own process group, and on timeout
+/// the whole group is terminated before returning `None` — a expired validation step must never
+/// keep mutating the worktree (or racing remote cleanup) behind the scheduler's back.
+async fn output_with_deadline(
+    mut command: Command,
+    allowed: Duration,
+) -> Result<Option<std::process::Output>, std::io::Error> {
+    use tokio::io::AsyncReadExt;
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn()?;
+    let pid = child.id().unwrap_or(0);
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    // Both pipes are drained concurrently with the wait: a step that fills one pipe while the
+    // other is idle must not deadlock, and a timeout must not lose already-produced output.
+    let drain = tokio::spawn(async move {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        tokio::join!(
+            async {
+                if let Some(pipe) = stdout_pipe.as_mut() {
+                    let _ = pipe.read_to_end(&mut stdout).await;
+                }
+            },
+            async {
+                if let Some(pipe) = stderr_pipe.as_mut() {
+                    let _ = pipe.read_to_end(&mut stderr).await;
+                }
+            }
+        );
+        (stdout, stderr)
+    });
+    match tokio::time::timeout(allowed, child.wait()).await {
+        Ok(status) => {
+            let status = status?;
+            let (stdout, stderr) = drain.await.unwrap_or_default();
+            Ok(Some(std::process::Output { status, stdout, stderr }))
+        }
+        Err(_) => {
+            let _ = agentflow_process_supervisor::terminate_spawned_group(&mut child, pid).await;
+            let _ = child.wait().await;
+            drain.abort();
+            Ok(None)
+        }
     }
 }
 
@@ -193,14 +213,13 @@ async fn execute_local_validation(
         }
         let allowed = remaining.map_or(step.timeout_secs, |value| value.min(step.timeout_secs)).max(1);
         let started = Instant::now();
-        let output = tokio::time::timeout(
-            Duration::from_secs(allowed),
-            Command::new(&step.argv[0]).args(&step.argv[1..]).current_dir(worktree).output(),
-        ).await;
+        let mut command = Command::new(&step.argv[0]);
+        command.args(&step.argv[1..]).current_dir(worktree);
+        let output = output_with_deadline(command, Duration::from_secs(allowed)).await;
         let elapsed = started.elapsed();
         remaining = remaining.map(|value| value.saturating_sub(elapsed.as_secs()));
         match output {
-            Ok(Ok(output)) => {
+            Ok(Some(output)) => {
                 let passed = output.status.success();
                 report.passed &= passed;
                 report.steps.push(TestStepReport {
@@ -208,12 +227,12 @@ async fn execute_local_validation(
                     duration_ms: elapsed.as_millis() as u64, stdout_tail: tail(&output.stdout), stderr_tail: tail(&output.stderr),
                 });
             }
-            Ok(Err(error)) => return Err(OrchestratorError::ValidationInfra(error.to_string())),
-            Err(_) => {
+            Err(error) => return Err(OrchestratorError::ValidationInfra(error.to_string())),
+            Ok(None) => {
                 report.passed = false;
                 report.steps.push(TestStepReport {
                     name: step.name.clone(), argv: step.argv.clone(), exit_code: None,
-                    duration_ms: elapsed.as_millis() as u64, stdout_tail: String::new(), stderr_tail: "timed out".into(),
+                    duration_ms: elapsed.as_millis() as u64, stdout_tail: String::new(), stderr_tail: "timed out (process group terminated)".into(),
                 });
             }
         }
@@ -231,36 +250,82 @@ async fn upload_remote_archive(
         "mkdir -p {} && tar -xf - -C {}",
         shell_quote(remote_dir), shell_quote(remote_dir)
     );
-    let mut child = Command::new("ssh")
-        .args(ssh_base_args(node)).arg(destination).arg(command)
+    let mut ssh = Command::new("ssh");
+    ssh.args(ssh_base_args(node)).arg(destination).arg(command)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    ssh.process_group(0);
+    let mut child = ssh
         .spawn()
         .map_err(|error| OrchestratorError::RemoteNodeUnavailable(error.to_string()))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(archive).await?;
+    let pid = child.id().unwrap_or(0);
+    let mut stdin = child.stdin.take();
+    let mut stderr_pipe = child.stderr.take();
+    let archive = archive.to_vec();
+    // Streaming the archive and draining stderr run beside the wait so a timeout can still
+    // terminate the ssh process group instead of leaking it mid-upload.
+    let io_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut stderr = Vec::new();
+        tokio::join!(
+            async {
+                if let Some(mut stdin) = stdin.take() {
+                    let _ = stdin.write_all(&archive).await;
+                    let _ = stdin.shutdown().await;
+                }
+            },
+            async {
+                if let Some(pipe) = stderr_pipe.as_mut() {
+                    let _ = pipe.read_to_end(&mut stderr).await;
+                }
+            }
+        );
+        stderr
+    });
+    match tokio::time::timeout(Duration::from_secs(120), child.wait()).await {
+        Ok(Ok(status)) => {
+            let stderr = io_task.await.unwrap_or_default();
+            if status.success() {
+                Ok(())
+            } else {
+                Err(OrchestratorError::RemoteNodeUnavailable(
+                    agentflow_process_supervisor::redact(
+                        String::from_utf8_lossy(&stderr).chars().take(1000).collect(),
+                    ),
+                ))
+            }
+        }
+        Ok(Err(error)) => {
+            io_task.abort();
+            Err(OrchestratorError::RemoteNodeUnavailable(error.to_string()))
+        }
+        Err(_) => {
+            let _ = agentflow_process_supervisor::terminate_spawned_group(&mut child, pid).await;
+            let _ = child.wait().await;
+            io_task.abort();
+            Err(OrchestratorError::RemoteNodeUnavailable("remote upload timed out".into()))
+        }
     }
-    let output = tokio::time::timeout(Duration::from_secs(120), child.wait_with_output())
-        .await
-        .map_err(|_| OrchestratorError::RemoteNodeUnavailable("remote upload timed out".into()))?
-        .map_err(|error| OrchestratorError::RemoteNodeUnavailable(error.to_string()))?;
-    if !output.status.success() {
-        return Err(OrchestratorError::RemoteNodeUnavailable(
-            agentflow_process_supervisor::redact(
-                String::from_utf8_lossy(&output.stderr).chars().take(1000).collect(),
-            ),
-        ));
-    }
-    Ok(())
 }
 
 fn ssh_base_args(node: &ExecutionNode) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-o".into(), "BatchMode=yes".into(),
         "-o".into(), "ConnectTimeout=8".into(),
         "-p".into(), node.port.to_string(),
-    ]
+    ];
+    if let Some(identity_file) = node.identity_file.as_deref() {
+        args.extend([
+            "-o".into(),
+            "IdentitiesOnly=yes".into(),
+            "-i".into(),
+            identity_file.into(),
+        ]);
+    }
+    args
 }
 
 /// SSH executes commands through a non-interactive shell, so user toolchains
@@ -271,12 +336,32 @@ fn remote_environment_prelude() -> &'static str {
     "export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH\"; export CI=1"
 }
 
-fn remote_validation_command(remote_dir: &str, argv: &[String]) -> String {
+fn remote_validation_command(
+    node: &ExecutionNode,
+    remote_dir: &str,
+    argv: &[String],
+    allowed_secs: u64,
+) -> String {
+    // The detached watchdog kills the whole remote session group two seconds after the local
+    // deadline: killing the local ssh alone would leave the remote step running and racing the
+    // rm -rf cleanup. Its file descriptors are detached so sshd can close the session as soon
+    // as the main shell exits on the normal path.
+    let command = argv
+        .iter()
+        .map(|value| shell_quote(value))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = if node.deny_network {
+        format!("sudo -n /usr/local/sbin/agentflow-offline -- {command}")
+    } else {
+        command
+    };
     format!(
-        "set -eu; {}; cd {} && {}",
+        "( sleep {}; kill -KILL -- -$$ ) >/dev/null 2>&1 </dev/null & set -eu; {}; cd {} && {}",
+        allowed_secs.saturating_add(2),
         remote_environment_prelude(),
         shell_quote(remote_dir),
-        argv.iter().map(|value| shell_quote(value)).collect::<Vec<_>>().join(" "),
+        command,
     )
 }
 
@@ -294,30 +379,47 @@ fn validate_execution_node(node: &ExecutionNode) -> Result<(), OrchestratorError
         || node.work_root.contains(['\n', '\r', '\0']) {
         return Err(OrchestratorError::Config("invalid execution node fields".into()));
     }
+    if let Some(identity_file) = node.identity_file.as_deref() {
+        let identity = Path::new(identity_file);
+        if identity_file.len() > 512
+            || identity_file.contains(['\n', '\r', '\0'])
+            || !identity.is_absolute()
+            || !identity.is_file()
+        {
+            return Err(OrchestratorError::Config(
+                "SSH identity file must be an existing absolute file".into(),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if identity.metadata()?.permissions().mode() & 0o077 != 0 {
+                return Err(OrchestratorError::Config(
+                    "SSH identity file must not be readable by group or other users".into(),
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
 async fn cleanup_remote_dir(node: &ExecutionNode, remote_dir: &str) -> Result<(), OrchestratorError> {
     let destination = format!("{}@{}", node.username, node.host);
-    let output = tokio::time::timeout(
-        Duration::from_secs(20),
-        Command::new("ssh")
-            .args(ssh_base_args(node))
-            .arg(destination)
-            .arg(format!("rm -rf -- {}", shell_quote(remote_dir)))
-            .output(),
-    )
-    .await
-    .map_err(|_| OrchestratorError::RemoteNodeUnavailable("remote cleanup timed out".into()))?
-    .map_err(|error| OrchestratorError::RemoteNodeUnavailable(error.to_string()))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(OrchestratorError::RemoteNodeUnavailable(
+    let mut ssh = Command::new("ssh");
+    ssh.args(ssh_base_args(node))
+        .arg(destination)
+        .arg(format!("rm -rf -- {}", shell_quote(remote_dir)));
+    match output_with_deadline(ssh, Duration::from_secs(20)).await {
+        Ok(Some(output)) if output.status.success() => Ok(()),
+        Ok(Some(output)) => Err(OrchestratorError::RemoteNodeUnavailable(
             agentflow_process_supervisor::redact(
                 String::from_utf8_lossy(&output.stderr).chars().take(1000).collect(),
             ),
-        ))
+        )),
+        Ok(None) => Err(OrchestratorError::RemoteNodeUnavailable(
+            "remote cleanup timed out".into(),
+        )),
+        Err(error) => Err(OrchestratorError::RemoteNodeUnavailable(error.to_string())),
     }
 }
 
@@ -326,9 +428,13 @@ fn execution_node_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ExecutionNode
         id: row.get("id"), name: row.get("name"), host: row.get("host"),
         port: u16::try_from(row.get::<i64, _>("port")).map_err(|_|OrchestratorError::Config("invalid SSH port".into()))?,
         username: row.get("username"), work_root: row.get("work_root"),
+        identity_file: row.get("identity_file"),
+        deny_network: row.get::<i64, _>("deny_network") != 0,
         enabled: row.get::<i64, _>("enabled") != 0, status: parse(row.get("status"))?,
         platform: row.get("platform"), git_version: row.get("git_version"),
         problem: row.get("problem"), last_checked_at: row.get("last_checked_at"),
+        diagnostics: serde_json::from_str(row.get::<String, _>("diagnostics_json").as_str())
+            .unwrap_or_default(),
     })
 }
 
@@ -341,21 +447,36 @@ mod execution_node_tests {
     use super::*;
 
     #[test]
-    fn ssh_fields_and_shell_quoting_are_bounded() {
-        let node = ExecutionNode {
+    fn ssh_fields_and_shell_quoting_are_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let mut node = ExecutionNode {
             id: String::new(), name: "builder".into(), host: "10.0.0.8".into(), port: 22,
-            username: "runner".into(), work_root: "/srv/agent flow".into(), enabled: true,
+            username: "runner".into(), work_root: "/srv/agent flow".into(), identity_file: None,
+            deny_network: false, enabled: true,
             status: NodeStatus::Unknown, platform: None, git_version: None, problem: None,
-            last_checked_at: None,
+            last_checked_at: None, diagnostics: Vec::new(),
         };
         assert!(validate_execution_node(&node).is_ok());
+        let identity = tempfile::NamedTempFile::new()?;
+        node.identity_file = Some(identity.path().to_string_lossy().into_owned());
+        assert!(validate_execution_node(&node).is_ok());
+        let args = ssh_base_args(&node);
+        assert!(args.windows(2).any(|pair| pair == ["-i", identity.path().to_string_lossy().as_ref()]));
+        node.identity_file = None;
         assert_eq!(shell_quote("a'b"), "'a'\"'\"'b'");
         let command = remote_validation_command(
+            &node,
             "/srv/agent flow",
             &["bun".into(), "test; touch /tmp/escaped".into()],
+            60,
         );
         assert!(command.contains("$HOME/.bun/bin"));
         assert!(command.contains("'test; touch /tmp/escaped'"));
+        // Remote watchdog: fires after the local deadline and kills the session group.
+        assert!(command.contains("sleep 62"));
+        assert!(command.contains("kill -KILL -- -$$"));
+        node.deny_network = true;
+        let isolated = remote_validation_command(&node, "/srv/work", &["/bin/true".into()], 5);
+        assert!(isolated.contains("sudo -n /usr/local/sbin/agentflow-offline -- '/bin/true'"));
         let mut unsafe_node = node;
         unsafe_node.host = "host;touch".into();
         assert!(validate_execution_node(&unsafe_node).is_err());
@@ -364,6 +485,32 @@ mod execution_node_tests {
         assert!(validate_execution_node(&unsafe_node).is_err());
         unsafe_node.work_root = "/srv/../root".into();
         assert!(validate_execution_node(&unsafe_node).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_validation_step_kills_the_whole_process_group()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let marker = dir.path().join("survived.marker");
+        let mut command = Command::new("/bin/sh");
+        // The grandchild would create the marker after the deadline; a group kill must
+        // take it down together with its parent shell.
+        command.arg("-c").arg(format!(
+            "(sleep 2; touch {}) & wait",
+            marker.to_string_lossy()
+        ));
+        let started = Instant::now();
+        let output = output_with_deadline(command, Duration::from_millis(300)).await?;
+        assert!(output.is_none(), "step must report a timeout");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        assert!(
+            !marker.exists(),
+            "grandchild kept running after the timeout: the process group was not killed"
+        );
+        Ok(())
     }
 
     /// Opt-in smoke test for a real Unix SSH node. It exercises the same archive
@@ -386,12 +533,15 @@ mod execution_node_tests {
             port,
             username,
             work_root: work_root.clone(),
+            identity_file: std::env::var("AGENTFLOW_TEST_SSH_IDENTITY").ok(),
+            deny_network: std::env::var("AGENTFLOW_TEST_SSH_DENY_NETWORK").as_deref() == Ok("1"),
             enabled: true,
             status: NodeStatus::Unknown,
             platform: None,
             git_version: None,
             problem: None,
             last_checked_at: None,
+            diagnostics: Vec::new(),
         };
         validate_execution_node(&node)?;
 
@@ -430,21 +580,22 @@ mod execution_node_tests {
         let remote_dir = format!("{work_root}/agentflow/live-probe-{}", Uuid::now_v7());
         upload_remote_archive(&node, &remote_dir, &archive.stdout).await?;
         let destination = format!("{}@{}", node.username, node.host);
-        let argv = vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            "test -f probe.txt && bun --version && cargo --version".into(),
-        ];
+        let validation = if node.deny_network {
+            "test -f probe.txt && test -z \"$(/usr/sbin/ip -4 route show default)\" && test -z \"$(/usr/sbin/ip -6 route show default)\" && ! sudo -n true >/dev/null 2>&1 && printf AGENTFLOW_REMOTE_VALIDATION_OK"
+        } else {
+            "test -f probe.txt && printf AGENTFLOW_REMOTE_VALIDATION_OK"
+        };
+        let argv = vec!["/bin/sh".into(), "-c".into(), validation.into()];
         let result = Command::new("ssh")
             .args(ssh_base_args(&node))
             .arg(&destination)
-            .arg(remote_validation_command(&remote_dir, &argv))
+            .arg(remote_validation_command(&node, &remote_dir, &argv, 120))
             .output()
             .await?;
         cleanup_remote_dir(&node, &remote_dir).await?;
         assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
         let output = String::from_utf8_lossy(&result.stdout);
-        assert!(output.lines().count() >= 2, "{output}");
+        assert!(output.contains("AGENTFLOW_REMOTE_VALIDATION_OK"), "{output}");
 
         let removed = Command::new("ssh")
             .args(ssh_base_args(&node))

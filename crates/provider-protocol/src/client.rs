@@ -1,6 +1,7 @@
 use crate::{
     HandshakeParams, HandshakeResult, HealthResult, PROTOCOL_VERSION, ProtocolRunRequest,
-    ProtocolRunResult, ResolvedProviderManifest, RpcNotification, RpcRequest, RpcResponse,
+    ProtocolRunResult, ProviderPermissionRequest, ResolvedProviderManifest, RpcNotification,
+    RpcRequest, RpcResponse, SUPPORTED_PROTOCOLS,
 };
 use chrono::Utc;
 use serde::{Serialize, de::DeserializeOwned};
@@ -8,7 +9,9 @@ use serde_json::Value;
 use std::{process::Stdio, time::Duration};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
+    io::{
+        AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter,
+    },
     process::{Child, ChildStdin, ChildStdout, Command},
     task::JoinHandle,
     time::Instant,
@@ -18,6 +21,10 @@ use tokio_util::sync::CancellationToken;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
+/// An external sidecar is untrusted code. A line longer than this is a protocol violation,
+/// not a large result: without a ceiling, a provider that never writes a newline grows the
+/// daemon's memory without bound.
+const MAX_STDOUT_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -35,6 +42,8 @@ pub enum ProtocolError {
     Timeout(&'static str),
     #[error("provider stderr task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
+    #[error("provider wrote a stdout line above the {0} byte protocol limit")]
+    LineTooLong(usize),
 }
 
 #[derive(Debug)]
@@ -47,6 +56,7 @@ pub struct ProtocolRunOutcome {
     pub stderr: String,
     pub stderr_truncated: bool,
     pub result: Option<ProtocolRunResult>,
+    pub permission_request: Option<ProviderPermissionRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +99,7 @@ impl ProtocolClient {
         let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
         let idle_timeout = Duration::from_millis(request.idle_timeout_ms);
         let mut result = None;
+        let mut permission_request = None;
         let mut timed_out = false;
         let mut cancelled = false;
 
@@ -101,27 +112,45 @@ impl ProtocolClient {
             let remaining = deadline.saturating_duration_since(now);
             let wait_for = idle_timeout.min(remaining);
             let mut line = String::new();
-            let read = session.stdout.read_line(&mut line);
-            tokio::select! {
+            let read = read_bounded_line(&mut session.stdout, &mut line);
+            let outcome = tokio::select! {
                 _ = cancel.cancelled() => {
                     cancelled = true;
                     break;
                 }
-                response = tokio::time::timeout(wait_for, read) => {
-                    match response {
-                        Err(_) => {
-                            timed_out = true;
-                            break;
-                        }
-                        Ok(Ok(0)) => return Err(ProtocolError::Closed),
-                        Ok(Ok(_)) => {
-                            if let Some(run_result) = handle_run_message(&line, &event_tx).await? {
-                                result = Some(run_result);
-                                break;
-                            }
-                        }
-                        Ok(Err(error)) => return Err(ProtocolError::Io(error)),
+                response = tokio::time::timeout(wait_for, read) => response,
+            };
+            // Every failure below still falls through to the kill/shutdown block: returning
+            // early here would drop the Session and leave an orphaned sidecar running.
+            match outcome {
+                Err(_) => {
+                    timed_out = true;
+                    break;
+                }
+                Ok(Ok(0)) => {
+                    session.kill().await?;
+                    return Err(ProtocolError::Closed);
+                }
+                Ok(Ok(_)) => match handle_run_message(&line, &event_tx).await {
+                    // A sidecar that prints diagnostics or a crash trace on stdout is common
+                    // in CLI ecosystems; skip the stray line rather than abandoning the run.
+                    Ok(RunMessage::Continue) | Err(ProtocolError::Json(_)) => {}
+                    Ok(RunMessage::Result(run_result)) => {
+                        result = Some(run_result);
+                        break;
                     }
+                    Ok(RunMessage::Permission(request)) => {
+                        permission_request = Some(request);
+                        break;
+                    }
+                    Err(error) => {
+                        session.kill().await?;
+                        return Err(error);
+                    }
+                },
+                Ok(Err(error)) => {
+                    session.kill().await?;
+                    return Err(error);
                 }
             }
         }
@@ -132,6 +161,9 @@ impl ProtocolClient {
             session.shutdown().await?;
         }
         let stderr = session.stderr().await?;
+        if let Some(permission) = permission_request.as_ref() {
+            validate_provider_permission(&self.provider, permission)?;
+        }
         let exit_code = result.as_ref().map(|value| value.exit_code);
         Ok(ProtocolRunOutcome {
             pid: session.pid,
@@ -142,27 +174,89 @@ impl ProtocolClient {
             stderr: stderr.text,
             stderr_truncated: stderr.truncated,
             result,
+            permission_request,
         })
     }
+}
+
+fn validate_provider_permission(
+    provider: &ResolvedProviderManifest,
+    request: &ProviderPermissionRequest,
+) -> Result<(), ProtocolError> {
+    use agentflow_contracts::PermissionActionType as Action;
+    let maximum = &provider.manifest.permissions;
+    let allowed = match request.action_type {
+        Action::WorktreeRead | Action::GitRead => maximum.worktree_read,
+        Action::WorktreeWrite | Action::WorktreeDelete | Action::ControlPlaneWrite => {
+            maximum.worktree_write
+        }
+        Action::CommandExecute => request
+            .operation
+            .argv
+            .first()
+            .is_some_and(|command| maximum.commands.contains(command)),
+        Action::DependencyInstall => {
+            request
+                .operation
+                .argv
+                .first()
+                .is_some_and(|command| maximum.commands.contains(command))
+                && request
+                    .operation
+                    .network_domains
+                    .iter()
+                    .all(|domain| maximum.network_domains.contains(domain))
+        }
+        Action::NetworkAccess => request
+            .operation
+            .network_domains
+            .iter()
+            .all(|domain| maximum.network_domains.contains(domain)),
+        Action::ProcessControl => true,
+        Action::EnvironmentRead
+        | Action::SecretAccess
+        | Action::GitMutation
+        | Action::SystemChange
+        | Action::ExternalPath => false,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(ProtocolError::Incompatible(
+            "PERMISSION_MANIFEST_EXCEEDED".into(),
+        ))
+    }
+}
+
+enum RunMessage {
+    Continue,
+    Result(ProtocolRunResult),
+    Permission(ProviderPermissionRequest),
 }
 
 async fn handle_run_message(
     line: &str,
     event_tx: &tokio::sync::mpsc::Sender<agentflow_contracts::AgentEvent>,
-) -> Result<Option<ProtocolRunResult>, ProtocolError> {
+) -> Result<RunMessage, ProtocolError> {
     let value: Value = serde_json::from_str(line)?;
-    if value.get("method").is_some() {
+    if let Some(method) = value.get("method").and_then(Value::as_str) {
+        if method == "permission/requested" {
+            let params = value.get("params").cloned().ok_or_else(|| {
+                ProtocolError::Incompatible("permission notification has no params".into())
+            })?;
+            return Ok(RunMessage::Permission(serde_json::from_value(params)?));
+        }
         let notification: RpcNotification = serde_json::from_value(value)?;
         if notification.method == "event" {
             let _ = event_tx.send(notification.params).await;
         }
-        return Ok(None);
+        return Ok(RunMessage::Continue);
     }
     let response: RpcResponse = serde_json::from_value(value)?;
     if response.id != 2 {
-        return Ok(None);
+        return Ok(RunMessage::Continue);
     }
-    decode_response(response).map(Some)
+    decode_response(response).map(RunMessage::Result)
 }
 
 fn decode_response<T: DeserializeOwned>(response: RpcResponse) -> Result<T, ProtocolError> {
@@ -204,9 +298,18 @@ impl Session {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        command.env_clear();
+        for key in ["HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "SHELL", "TERM"] {
+            if let Ok(value) = std::env::var(key) {
+                command.env(key, value);
+            }
+        }
         for key in env_denylist {
             command.env_remove(key);
         }
+        // Any early return between spawn and the explicit kill/shutdown must still reap the
+        // sidecar: without this the dropped Session leaves an orphan holding CPU and API quota.
+        command.kill_on_drop(true);
         let mut child = command.spawn()?;
         let pid = child.id().unwrap_or(0);
         let stdin = child
@@ -237,7 +340,10 @@ impl Session {
     ) -> Result<HandshakeResult, ProtocolError> {
         let params = HandshakeParams {
             core_version: env!("CARGO_PKG_VERSION").into(),
-            supported_protocols: vec![PROTOCOL_VERSION.into()],
+            supported_protocols: SUPPORTED_PROTOCOLS
+                .iter()
+                .map(|version| (*version).to_string())
+                .collect(),
         };
         let result: HandshakeResult = self
             .request(1, "handshake", &params, STARTUP_TIMEOUT)
@@ -266,7 +372,7 @@ impl Session {
     ) -> Result<T, ProtocolError> {
         self.send(&RpcRequest::new(id, method, params)?).await?;
         let mut line = String::new();
-        let read = tokio::time::timeout(timeout, self.stdout.read_line(&mut line))
+        let read = tokio::time::timeout(timeout, read_bounded_line(&mut self.stdout, &mut line))
             .await
             .map_err(|_| ProtocolError::Timeout("waiting for provider response"))??;
         if read == 0 {
@@ -319,6 +425,42 @@ impl Session {
         };
         Ok(task.await??)
     }
+}
+
+/// Reads one NDJSON line with a hard ceiling. `BufReader::read_line` grows its target string
+/// without limit, so an untrusted provider that never emits a newline could exhaust memory.
+/// Returns the byte count read, or `LineTooLong` once the limit is crossed.
+async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    line: &mut String,
+) -> Result<usize, ProtocolError> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = match reader.fill_buf().await {
+            Ok(buffer) => buffer,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(ProtocolError::Io(error)),
+        };
+        if available.is_empty() {
+            break;
+        }
+        let (consumed, done) = match available.iter().position(|byte| *byte == b'\n') {
+            Some(index) => (index + 1, true),
+            None => (available.len(), false),
+        };
+        if bytes.len().saturating_add(consumed) > MAX_STDOUT_LINE_BYTES {
+            reader.consume(consumed);
+            return Err(ProtocolError::LineTooLong(MAX_STDOUT_LINE_BYTES));
+        }
+        bytes.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+        if done {
+            break;
+        }
+    }
+    let read = bytes.len();
+    line.push_str(&String::from_utf8_lossy(&bytes));
+    Ok(read)
 }
 
 async fn capture_stderr<R: AsyncRead + Unpin>(

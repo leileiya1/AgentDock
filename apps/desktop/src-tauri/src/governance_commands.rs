@@ -1,8 +1,8 @@
 use super::Backend;
 use crate::{daemon_client::mutate as daemon_mutate, error::app_error};
 use agentflow_contracts::{
-    AppError, BudgetLimitPatch, ExecutionNode, QualityEvaluation, RollbackStrategy, TaskDetail,
-    TaskGovernance,
+    AppError, BudgetLimitPatch, ExecutionNode, PlanReviewContext, QualityReplayAttempt,
+    RollbackPreflight, RollbackStrategy, TaskDetail, TaskGovernance,
 };
 use agentflow_daemon::{DaemonRequest, ExecutionNodeRequest, GovernanceRequest};
 use serde::Deserialize;
@@ -87,10 +87,36 @@ pub(crate) async fn task_governance_get(
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn task_rollback_preflight(
+    state: State<'_, Backend>,
+    args: super::TaskIdArgs,
+) -> Result<RollbackPreflight, AppError> {
+    state
+        .0
+        .task_rollback_preflight(&args.task_id)
+        .await
+        .map_err(app_error)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn task_plan_review_context(
+    state: State<'_, Backend>,
+    args: super::TaskIdArgs,
+) -> Result<PlanReviewContext, AppError> {
+    state
+        .0
+        .task_plan_review_context(&args.task_id)
+        .await
+        .map_err(app_error)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn task_quality_replay(
     state: State<'_, Backend>,
     args: GovernanceArgs,
-) -> Result<QualityEvaluation, AppError> {
+) -> Result<QualityReplayAttempt, AppError> {
     daemon_mutate(
         &state,
         DaemonRequest::Governance {
@@ -117,7 +143,9 @@ pub(crate) async fn execution_node_upsert(
     args: NodeUpsertArgs,
 ) -> Result<ExecutionNode, AppError> {
     daemon_mutate(&state, DaemonRequest::ExecutionNode {
-        action: ExecutionNodeRequest::Upsert { node: args.node },
+        action: ExecutionNodeRequest::Upsert {
+            node: Box::new(args.node),
+        },
     }).await
 }
 

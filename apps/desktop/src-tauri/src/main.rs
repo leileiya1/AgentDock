@@ -8,6 +8,7 @@ use specta::Type;
 use specta_typescript::Typescript;
 use std::{path::PathBuf, sync::Arc};
 use tauri::{Manager, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_specta::{Builder, collect_commands};
 
 #[macro_use]
@@ -24,7 +25,6 @@ use daemon_client::{ensure_daemon, mutate as daemon_mutate};
 use error::app_error;
 use governance_commands::*;
 use management_commands::*;
-use view_types::ExportPath;
 use provider_setup::{
     api_credential_delete, api_credential_set, cli_credential_delete, cli_credential_set,
     cli_install,
@@ -59,12 +59,22 @@ struct TaskCreateArgs {
     project_id: String,
     title: String,
     description: String,
+    acceptance_criteria: Vec<agentflow_contracts::AcceptanceCriterionInput>,
     developer_agent: AgentKind,
     reviewer_agent: AgentKind,
     target_branch: Option<String>,
     max_revisions: Option<i32>,
     allow_api_egress: bool,
     policy: agentflow_contracts::TaskPolicy,
+}
+#[derive(Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+struct ProviderPreflightArgs {
+    project_id: String,
+    developer_agent: AgentKind,
+    reviewer_agent: AgentKind,
+    allow_api_egress: bool,
+    require_plan_approval: bool,
 }
 #[derive(Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +112,12 @@ struct EventsArgs {
 }
 #[derive(Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+struct AuditExportArgs {
+    project_id: String,
+    task_id: Option<String>,
+}
+#[derive(Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 struct ProjectSettingsArgs {
     project_id: String,
     patch: agentflow_contracts::ProjectSettings,
@@ -129,6 +145,24 @@ async fn provider_list(
     state: State<'_, Backend>,
 ) -> Result<Vec<agentflow_contracts::ProviderDescriptor>, AppError> {
     Ok(state.0.provider_list().await)
+}
+#[tauri::command]
+#[specta::specta]
+async fn provider_preflight(
+    state: State<'_, Backend>,
+    args: ProviderPreflightArgs,
+) -> Result<agentflow_contracts::TaskPreflightReport, AppError> {
+    state
+        .0
+        .provider_preflight(
+            &args.project_id,
+            args.developer_agent,
+            args.reviewer_agent,
+            args.allow_api_egress,
+            args.require_plan_approval,
+        )
+        .await
+        .map_err(app_error)
 }
 #[tauri::command]
 #[specta::specta]
@@ -249,6 +283,7 @@ async fn task_create(
             project_id: args.project_id,
             title: args.title,
             description: args.description,
+            acceptance_criteria: args.acceptance_criteria,
             developer_agent: args.developer_agent,
             reviewer_agent: args.reviewer_agent,
             target_branch: args.target_branch,
@@ -418,16 +453,16 @@ async fn events_list(
 #[specta::specta]
 async fn events_export(
     state: State<'_, Backend>,
-    args: ProjectIdArgs,
-) -> Result<ExportPath, AppError> {
-    state
-        .0
-        .events_export(&args.project_id)
-        .await
-        .map(|p| ExportPath {
-            path: p.to_string_lossy().into_owned(),
-        })
-        .map_err(app_error)
+    args: AuditExportArgs,
+) -> Result<agentflow_contracts::AuditExportResult, AppError> {
+    daemon_mutate(
+        &state,
+        DaemonRequest::EventsExport {
+            project_id: args.project_id,
+            task_id: args.task_id,
+        },
+    )
+    .await
 }
 #[tauri::command]
 #[specta::specta]
@@ -493,6 +528,7 @@ fn command_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         env_check,
         provider_list,
+        provider_preflight,
         onboarding_check,
         onboarding_complete,
         storage_report,
@@ -513,6 +549,7 @@ fn command_builder() -> Builder<tauri::Wry> {
         project_import,
         project_list,
         project_git_compatibility,
+        project_prune_stale_worktrees,
         task_create,
         task_list,
         task_get,
@@ -521,6 +558,7 @@ fn command_builder() -> Builder<tauri::Wry> {
         queue_task_pause,
         queue_task_resume,
         queue_task_priority,
+        queue_task_status,
         task_resume_with_guidance,
         task_repair_inspect,
         task_repair_apply,
@@ -531,11 +569,13 @@ fn command_builder() -> Builder<tauri::Wry> {
         task_mark_merged_external,
         task_plan_approve,
         task_plan_reject,
+        task_plan_review_context,
         task_budget_update,
         task_governance_get,
         task_quality_replay,
         task_delivery_start,
         task_delivery_refresh,
+        task_rollback_preflight,
         task_rollback,
         execution_node_list,
         execution_node_upsert,
@@ -550,6 +590,10 @@ fn command_builder() -> Builder<tauri::Wry> {
         project_config_trust_get,
         project_config_trust_approve,
         project_config_trust_revoke,
+        permission_request_list,
+        permission_decide,
+        permission_rule_list,
+        permission_rule_revoke,
         settings_get,
         settings_update,
         review_get,
@@ -557,17 +601,27 @@ fn command_builder() -> Builder<tauri::Wry> {
     ])
 }
 
+fn initialize_backend(
+    app: &tauri::App,
+) -> Result<(PathBuf, Arc<Orchestrator>), Box<dyn std::error::Error>> {
+    let path = app.path().app_data_dir()?;
+    tauri::async_runtime::block_on(ensure_daemon(&path))?;
+    let orchestrator = tauri::async_runtime::block_on(Orchestrator::open_client(&path))?;
+    Ok((path, Arc::new(orchestrator)))
+}
+
 fn main() {
     let builder = command_builder();
     if std::env::args().any(|arg| arg == "--export-bindings") {
         // Only the explicit xtask may update checked-in bindings. Otherwise launching an older
         // debug app can silently overwrite newer generated types in the shared source tree.
-        builder
-            .export(
-                Typescript::default(),
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../src/generated/bindings.ts"),
-            )
-            .expect("failed to export Tauri TypeScript bindings");
+        if let Err(error) = builder.export(
+            Typescript::default(),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../src/generated/bindings.ts"),
+        ) {
+            eprintln!("failed to export Tauri TypeScript bindings: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     tauri::Builder::default()
@@ -575,15 +629,29 @@ fn main() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
-            let path = app.path().app_data_dir()?;
-            tauri::async_runtime::block_on(ensure_daemon(&path))?;
-            let orchestrator = tauri::async_runtime::block_on(Orchestrator::open_client(&path))
-                .map_err(Box::<dyn std::error::Error>::from)?;
-            let orchestrator = Arc::new(orchestrator);
-            event_bridge::spawn(app.handle().clone(), Arc::clone(&orchestrator));
-            app.manage(Backend(orchestrator, path, tokio::sync::Mutex::new(())));
+            match initialize_backend(app) {
+                Ok((path, orchestrator)) => {
+                    event_bridge::spawn(app.handle().clone(), Arc::clone(&orchestrator));
+                    app.manage(Backend(orchestrator, path, tokio::sync::Mutex::new(())));
+                }
+                Err(error) => {
+                    let detail = error.to_string();
+                    eprintln!("AgentFlow startup failed: {detail}");
+                    let handle = app.handle().clone();
+                    app.dialog()
+                        .message(format!(
+                            "后台服务或本地数据库无法初始化。\n\n{detail}\n\n数据没有被删除，请修复问题后重新打开 AgentFlow。"
+                        ))
+                        .title("AgentFlow 启动失败")
+                        .kind(MessageDialogKind::Error)
+                        .show(move |_| handle.exit(1));
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("AgentFlow desktop failed");
+        .unwrap_or_else(|error| {
+            eprintln!("AgentFlow desktop failed: {error}");
+            std::process::exit(1);
+        });
 }
