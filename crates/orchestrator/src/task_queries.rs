@@ -210,6 +210,7 @@ impl Orchestrator {
         if task.status != TaskStatus::Blocked {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
         }
+        let blocked_reason = self.store.task_summary(task_id).await?.blocked_reason;
         sqlx::query("UPDATE tasks SET blocked_detail=?,blocked_reason=NULL WHERE id=?")
             .bind(guidance)
             .bind(task_id)
@@ -221,6 +222,11 @@ impl Orchestrator {
             TaskStatus::Planning
         } else if task.revision == 0 {
             TaskStatus::ReadyForDevelopment
+        } else if blocked_reason == Some(BlockedReason::ReviewFailed) {
+            // The revision commit and validation evidence are already durable. A reviewer process
+            // or result-contract failure must retry that read-only checkpoint, not create a new
+            // development revision that can only end as a misleading "no changes" failure.
+            TaskStatus::ReadyForReview
         } else {
             TaskStatus::ReadyForRevision
         };
@@ -257,7 +263,10 @@ impl Orchestrator {
     }
     pub async fn cancel(&self, task_id: &str) -> Result<TaskSummary, OrchestratorError> {
         let task = self.task(task_id).await?;
-        if matches!(task.status, TaskStatus::Merged | TaskStatus::RolledBack | TaskStatus::Cancelled) {
+        if matches!(
+            task.status,
+            TaskStatus::Merged | TaskStatus::RolledBack | TaskStatus::Cancelled
+        ) {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
         }
         // Make cancellation authoritative before signalling the child. Development/review loops
@@ -467,10 +476,8 @@ impl Orchestrator {
                     description: issue.get("description"),
                     suggested_action: issue.get("suggested_action"),
                     resolved: issue.get::<i64, _>("resolved") != 0,
-                    reported_by: serde_json::from_str(
-                        &issue.get::<String, _>("reported_by_json"),
-                    )
-                    .unwrap_or_default(),
+                    reported_by: serde_json::from_str(&issue.get::<String, _>("reported_by_json"))
+                        .unwrap_or_default(),
                     agreement_count: issue.get("agreement_count"),
                     severity_disagreement: issue.get::<i64, _>("severity_disagreement") != 0,
                 })
@@ -484,12 +491,11 @@ impl Orchestrator {
             .unwrap_or_default();
         let mut member_votes = Vec::new();
         for member_id in member_ids {
-            if let Some(member) = sqlx::query(
-                "SELECT reviewer_agent,decision,summary FROM reviews WHERE id=?",
-            )
-            .bind(&member_id)
-            .fetch_optional(self.store.pool())
-            .await?
+            if let Some(member) =
+                sqlx::query("SELECT reviewer_agent,decision,summary FROM reviews WHERE id=?")
+                    .bind(&member_id)
+                    .fetch_optional(self.store.pool())
+                    .await?
                 && let Some(agent) = member
                     .get::<Option<String>, _>("reviewer_agent")
                     .and_then(|value| value.parse().ok())
@@ -507,15 +513,13 @@ impl Orchestrator {
             commit_sha: row.get("commit_sha"),
             decision: parse(row.get("decision"))?,
             summary: row.get("summary"),
-            reviewer_agents: serde_json::from_str(
-                &row.get::<String, _>("reviewer_agents_json"),
-            )
-            .unwrap_or_else(|_| {
-                row.get::<Option<String>, _>("reviewer_agent")
-                    .and_then(|value| value.parse().ok())
-                    .into_iter()
-                    .collect()
-            }),
+            reviewer_agents: serde_json::from_str(&row.get::<String, _>("reviewer_agents_json"))
+                .unwrap_or_else(|_| {
+                    row.get::<Option<String>, _>("reviewer_agent")
+                        .and_then(|value| value.parse().ok())
+                        .into_iter()
+                        .collect()
+                }),
             member_votes,
             issues,
         }))
@@ -639,7 +643,9 @@ impl Orchestrator {
             self.forget_log_cursor(run_id);
             return None;
         }
-        file.seek(std::io::SeekFrom::Start(cached.byte)).await.ok()?;
+        file.seek(std::io::SeekFrom::Start(cached.byte))
+            .await
+            .ok()?;
         let mut appended = Vec::new();
         file.read_to_end(&mut appended).await.ok()?;
         let text = String::from_utf8_lossy(&appended).into_owned();
@@ -661,7 +667,14 @@ impl Orchestrator {
         }
         let next = from_line + consumed_lines;
         let byte = cached.byte + consumed_bytes;
-        self.remember_log_cursor(run_id, LogCursor { line: next, byte, len });
+        self.remember_log_cursor(
+            run_id,
+            LogCursor {
+                line: next,
+                byte,
+                len,
+            },
+        );
         Some((events, next, byte >= len))
     }
 

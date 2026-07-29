@@ -4,7 +4,7 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::{
     path::{Component, Path, PathBuf},
-    process::Stdio,
+    process::{Command as StdCommand, Stdio},
 };
 use thiserror::Error;
 use tokio::process::Command;
@@ -61,16 +61,29 @@ impl Git {
         }
     }
     async fn output(&self, cwd: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
-        let out = Command::new(&self.executable)
-            .args(args)
-            .current_dir(cwd)
-            .env("LC_ALL", "C")
-            .stdin(Stdio::null())
-            .output()
-            .await?;
+        let executable = self.executable.clone();
+        let cwd = cwd.to_path_buf();
+        let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        let operation = args.join(" ");
+        // Git commands are short-lived and local. Running the blocking std implementation on
+        // Tokio's blocking pool avoids an intermittent macOS process-reaper stall where an
+        // already-exited child remains a zombie and the async `Command::output` future never
+        // resolves, leaving the task and desktop spinner permanently in a running state.
+        let out = tokio::task::spawn_blocking(move || {
+            StdCommand::new(executable)
+                .args(args)
+                .current_dir(cwd)
+                .env("LC_ALL", "C")
+                .stdin(Stdio::null())
+                .output()
+        })
+        .await
+        .map_err(|error| {
+            std::io::Error::other(format!("git worker could not be joined: {error}"))
+        })??;
         if !out.status.success() {
             return Err(GitError::Failed {
-                operation: args.join(" "),
+                operation,
                 stderr: String::from_utf8_lossy(&out.stderr).trim().into(),
             });
         }
@@ -117,15 +130,24 @@ impl Git {
         ancestor: &str,
         descendant: &str,
     ) -> Result<bool, GitError> {
-        let status = Command::new(&self.executable)
-            .args(["merge-base", "--is-ancestor", ancestor, descendant])
-            .current_dir(repo)
-            .env("LC_ALL", "C")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .status()
-            .await?;
+        let executable = self.executable.clone();
+        let repo = repo.to_path_buf();
+        let ancestor = ancestor.to_owned();
+        let descendant = descendant.to_owned();
+        let status = tokio::task::spawn_blocking(move || {
+            StdCommand::new(executable)
+                .args(["merge-base", "--is-ancestor", &ancestor, &descendant])
+                .current_dir(repo)
+                .env("LC_ALL", "C")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .status()
+        })
+        .await
+        .map_err(|error| {
+            std::io::Error::other(format!("git worker could not be joined: {error}"))
+        })??;
         match status.code() {
             Some(0) => Ok(true),
             Some(1) => Ok(false),

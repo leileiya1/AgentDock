@@ -16,16 +16,28 @@ mod tests {
                 BlockedReason::AuthExpired
             );
             // A normal failure keeps its role-specific fallback untouched.
-            assert_eq!(run_failure_reason(RunFailureClass::Normal, fallback), fallback);
+            assert_eq!(
+                run_failure_reason(RunFailureClass::Normal, fallback),
+                fallback
+            );
         }
     }
 
     #[test]
     fn merge_suggestions_keeps_distinct_and_collapses_duplicates() {
         // §23 不同建议: different fixes are both kept; identical or subsumed ones collapse to one.
-        assert_eq!(merge_suggestions(None, Some("拆分函数")).as_deref(), Some("拆分函数"));
-        assert_eq!(merge_suggestions(Some("拆分函数"), None).as_deref(), Some("拆分函数"));
-        assert_eq!(merge_suggestions(Some("拆分函数"), Some("拆分函数")).as_deref(), Some("拆分函数"));
+        assert_eq!(
+            merge_suggestions(None, Some("拆分函数")).as_deref(),
+            Some("拆分函数")
+        );
+        assert_eq!(
+            merge_suggestions(Some("拆分函数"), None).as_deref(),
+            Some("拆分函数")
+        );
+        assert_eq!(
+            merge_suggestions(Some("拆分函数"), Some("拆分函数")).as_deref(),
+            Some("拆分函数")
+        );
         let combined = merge_suggestions(Some("拆分函数"), Some("保持现状")).unwrap_or_default();
         assert!(combined.contains("拆分函数") && combined.contains("保持现状"));
         // A suggestion that already contains the other is not duplicated.
@@ -40,12 +52,18 @@ mod tests {
     fn auth_markers_are_detected_without_matching_ordinary_failures() {
         // §5: real auth failures are recognised…
         assert!(output_indicates_auth_failure("Error: 401 Unauthorized"));
-        assert!(output_indicates_auth_failure("codex: not logged in, please run `codex login`"));
+        assert!(output_indicates_auth_failure(
+            "codex: not logged in, please run `codex login`"
+        ));
         assert!(output_indicates_auth_failure("Invalid API key provided"));
         assert!(output_indicates_auth_failure("认证已失效，请重新登录"));
         // …while ordinary build/test failures are not misclassified as auth problems.
-        assert!(!output_indicates_auth_failure("error[E0599]: no method named `foo`"));
-        assert!(!output_indicates_auth_failure("test result: FAILED. 2 passed; 1 failed"));
+        assert!(!output_indicates_auth_failure(
+            "error[E0599]: no method named `foo`"
+        ));
+        assert!(!output_indicates_auth_failure(
+            "test result: FAILED. 2 passed; 1 failed"
+        ));
     }
 
     #[tokio::test]
@@ -104,7 +122,10 @@ mod tests {
                 None,
                 None,
                 false,
-                TaskPolicy { require_plan_approval: true, ..TaskPolicy::default() },
+                TaskPolicy {
+                    require_plan_approval: true,
+                    ..TaskPolicy::default()
+                },
             )
             .await?;
         sqlx::query("UPDATE tasks SET status='PLANNING',current_revision=0 WHERE id=?")
@@ -112,10 +133,58 @@ mod tests {
             .execute(owner.store.pool())
             .await?;
         let task_row = owner.task(&task.id).await?;
-        owner.block(&task_row, BlockedReason::AuthExpired, "login expired").await?;
+        owner
+            .block(&task_row, BlockedReason::AuthExpired, "login expired")
+            .await?;
         let resumed = owner.resume_with_guidance(&task.id, "认证已修复").await?;
         assert_eq!(resumed.status, TaskStatus::Planning);
         assert_eq!(resumed.current_revision, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reviewer_failure_resumes_the_same_review_checkpoint()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let owner = Orchestrator::open(&dir.path().join("data")).await?;
+        let project = owner
+            .store
+            .import_project(
+                "review",
+                "/tmp/review-resume",
+                "main",
+                "/tmp/review-resume-wt",
+            )
+            .await?;
+        let task = owner
+            .task_create(
+                &project.id,
+                "review resume",
+                "test",
+                AgentKind::QoderCli,
+                AgentKind::GrokCli,
+                None,
+                None,
+            )
+            .await?;
+        sqlx::query("UPDATE tasks SET status='REVIEWING',current_revision=1 WHERE id=?")
+            .bind(&task.id)
+            .execute(owner.store.pool())
+            .await?;
+        let task_row = owner.task(&task.id).await?;
+        owner
+            .block_review(
+                &task_row,
+                BlockedReason::ReviewFailed,
+                "invalid reviewer result",
+            )
+            .await?;
+
+        let resumed = owner
+            .resume_with_guidance(&task.id, "reviewer output fixed")
+            .await?;
+        assert_eq!(resumed.status, TaskStatus::ReadyForReview);
+        assert_eq!(resumed.current_revision, 1);
         Ok(())
     }
 
@@ -126,7 +195,12 @@ mod tests {
         let owner = Orchestrator::open(&dir.path().join("data")).await?;
         let project = owner
             .store
-            .import_project("acceptance", "/tmp/acceptance", "main", "/tmp/acceptance-wt")
+            .import_project(
+                "acceptance",
+                "/tmp/acceptance",
+                "main",
+                "/tmp/acceptance-wt",
+            )
             .await?;
         let criteria = vec![
             AcceptanceCriterionInput {
@@ -155,7 +229,10 @@ mod tests {
         let detail = owner.task_get(&task.id).await?;
         assert_eq!(detail.max_revisions, 4);
         assert_eq!(detail.acceptance_criteria.len(), 2);
-        assert_eq!(detail.acceptance_criteria[0].kind, AcceptanceCriterionKind::Build);
+        assert_eq!(
+            detail.acceptance_criteria[0].kind,
+            AcceptanceCriterionKind::Build
+        );
         assert_eq!(detail.acceptance_criteria[1].text, "人工确认空状态文案");
 
         let invalid = owner
@@ -214,8 +291,7 @@ mod tests {
             )
             .await?;
         let cancellation = CancellationToken::new();
-        let watcher =
-            orchestrator.watch_task_cancellation(task.id.clone(), cancellation.clone());
+        let watcher = orchestrator.watch_task_cancellation(task.id.clone(), cancellation.clone());
         sqlx::query("UPDATE tasks SET status='CANCELLED' WHERE id=?")
             .bind(&task.id)
             .execute(orchestrator.store.pool())
@@ -227,8 +303,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn client_open_never_recovers_daemon_owned_runs()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn client_open_never_recovers_daemon_owned_runs() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir()?;
         let owner = Orchestrator::open(dir.path()).await?;
         let project = owner
@@ -263,13 +339,15 @@ mod tests {
                 .fetch_one(client.store.pool())
                 .await?;
         assert_eq!(run_status, "RUNNING");
-        assert_eq!(client.task_get(&task.id).await?.summary.status, TaskStatus::Developing);
+        assert_eq!(
+            client.task_get(&task.id).await?.summary.status,
+            TaskStatus::Developing
+        );
         Ok(())
     }
 
     #[tokio::test]
-    async fn owner_recovery_never_signals_a_reused_pid()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn owner_recovery_never_signals_a_reused_pid() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let owner = Orchestrator::open(dir.path()).await?;
         let worktree = dir.path().join("worktree");
@@ -296,11 +374,13 @@ mod tests {
                 None,
             )
             .await?;
-        sqlx::query("UPDATE tasks SET status='DEVELOPING',current_revision=1,worktree_path=? WHERE id=?")
-            .bind(worktree.to_string_lossy().as_ref())
-            .bind(&task.id)
-            .execute(owner.store.pool())
-            .await?;
+        sqlx::query(
+            "UPDATE tasks SET status='DEVELOPING',current_revision=1,worktree_path=? WHERE id=?",
+        )
+        .bind(worktree.to_string_lossy().as_ref())
+        .bind(&task.id)
+        .execute(owner.store.pool())
+        .await?;
         let lease = agentflow_process_supervisor::ProcessLease {
             pid: std::process::id(),
             process_group: std::process::id(),
@@ -334,7 +414,10 @@ mod tests {
         let events = recovered.events_list(&task.id, None, None).await?;
         assert!(events.iter().any(|event| {
             event.event_type == "recovery:interrupted"
-                && event.payload.get("process_recovery").and_then(Value::as_str)
+                && event
+                    .payload
+                    .get("process_recovery")
+                    .and_then(Value::as_str)
                     == Some("pid_reused_not_signaled")
         }));
         Ok(())
@@ -370,11 +453,13 @@ mod tests {
                 None,
             )
             .await?;
-        sqlx::query("UPDATE tasks SET status='DEVELOPING',current_revision=1,worktree_path=? WHERE id=?")
-            .bind(worktree.to_string_lossy().as_ref())
-            .bind(&task.id)
-            .execute(owner.store.pool())
-            .await?;
+        sqlx::query(
+            "UPDATE tasks SET status='DEVELOPING',current_revision=1,worktree_path=? WHERE id=?",
+        )
+        .bind(worktree.to_string_lossy().as_ref())
+        .bind(&task.id)
+        .execute(owner.store.pool())
+        .await?;
         let lease_path = run_dir.join("process-lease.json");
         let (tx, mut rx) = mpsc::channel(8);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -436,11 +521,13 @@ mod tests {
             recovered.task_get(&task.id).await?.summary.status,
             TaskStatus::Developing
         );
-        assert!(recovered
-            .events_list(&task.id, None, None)
-            .await?
-            .iter()
-            .any(|event| event.event_type == "recovery:run_adopted"));
+        assert!(
+            recovered
+                .events_list(&task.id, None, None)
+                .await?
+                .iter()
+                .any(|event| event.event_type == "recovery:run_adopted")
+        );
         agentflow_process_supervisor::terminate_process_lease(&lease, Duration::from_secs(2))
             .await?;
         tokio::time::timeout(Duration::from_secs(2), drain).await??;
@@ -474,11 +561,13 @@ mod tests {
                 None,
             )
             .await?;
-        sqlx::query("UPDATE tasks SET status='DEVELOPING',current_revision=1,worktree_path=? WHERE id=?")
-            .bind(worktree.to_string_lossy().as_ref())
-            .bind(&created.id)
-            .execute(orchestrator.store.pool())
-            .await?;
+        sqlx::query(
+            "UPDATE tasks SET status='DEVELOPING',current_revision=1,worktree_path=? WHERE id=?",
+        )
+        .bind(worktree.to_string_lossy().as_ref())
+        .bind(&created.id)
+        .execute(orchestrator.store.pool())
+        .await?;
         let task = orchestrator.task(&created.id).await?;
         let project = orchestrator.project(&project.id).await?;
         let Some(repaired) = orchestrator
@@ -500,12 +589,16 @@ mod tests {
                 if value.summary == "结构化结果已自动修复"
         ));
         let events = orchestrator.events_list(&created.id, None, None).await?;
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == "result:repair_started"));
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == "result:repair_succeeded"));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "result:repair_started")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "result:repair_succeeded")
+        );
         Ok(())
     }
 
@@ -584,14 +677,16 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let orchestrator = Orchestrator::open(dir.path()).await?;
         let settings = ProjectSettings::default();
-        let developers =
-            orchestrator.provider_chain(AgentKind::ClaudeCode, RunRole::Developer, None, &settings, false);
+        let developers = orchestrator.provider_chain(
+            AgentKind::ClaudeCode,
+            RunRole::Developer,
+            None,
+            &settings,
+            false,
+        );
         assert_eq!(developers.first(), Some(&AgentKind::ClaudeCode));
         assert!(!developers.contains(&AgentKind::OpenAiApi));
-        assert_eq!(
-            &developers[1..],
-            &[AgentKind::QoderCli, AgentKind::GrokCli]
-        );
+        assert_eq!(&developers[1..], &[AgentKind::QoderCli, AgentKind::GrokCli]);
 
         let reviewers = orchestrator.provider_chain(
             AgentKind::Codex,
@@ -602,10 +697,7 @@ mod tests {
         );
         assert_eq!(reviewers.first(), Some(&AgentKind::Codex));
         assert!(!reviewers.contains(&AgentKind::ClaudeCode));
-        assert_eq!(
-            &reviewers[1..],
-            &[AgentKind::QoderCli, AgentKind::GrokCli]
-        );
+        assert_eq!(&reviewers[1..], &[AgentKind::QoderCli, AgentKind::GrokCli]);
         let private_reviewers = orchestrator.provider_chain(
             AgentKind::Codex,
             RunRole::Reviewer,
@@ -725,7 +817,9 @@ mod tests {
 }
 #[test]
 fn interactive_provider_permission_prompts_are_detected_without_false_shell_errors() {
-    assert!(looks_like_permission_prompt("Permission required: approve this action?"));
+    assert!(looks_like_permission_prompt(
+        "Permission required: approve this action?"
+    ));
     assert!(looks_like_permission_prompt("需要授权，等待批准"));
     assert!(!looks_like_permission_prompt("command exited with code 1"));
     assert!(!looks_like_permission_prompt("test assertion failed"));
