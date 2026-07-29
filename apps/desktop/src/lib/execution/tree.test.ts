@@ -106,6 +106,59 @@ describe("执行树 · Provider 降级 (05 §3.1 / §5.3)", () => {
   });
 });
 
+describe("执行树 · 结构化结果修复", () => {
+  it("同一开发 Provider 的结果修复是串行尝试，不伪装成审查委员会", () => {
+    const repairTree = build(
+      [event("result:repair_started", { min: 3, payload: { role: "developer", agent: "qoder_cli" } })],
+      [
+        run("dev1", "developer", "qoder_cli", "FAILED", 1),
+        run("dev2", "developer", "qoder_cli", "RUNNING", 4),
+      ]
+    );
+    const develop = repairTree.revisions[0].phases.find((phase) => phase.phase === "develop")!;
+
+    expect(develop.groups).toHaveLength(1);
+    expect(develop.groups[0].attempts.map((attempt) => attempt.attemptLabel)).toEqual([
+      "首选",
+      "结构修复 1",
+    ]);
+    expect(develop.groups[0].memberIndex).toBeNull();
+
+    const status = liveStatus({
+      tree: repairTree,
+      status: "DEVELOPING",
+      lastActivityAt: at(4),
+      now: Date.parse(at(4)),
+    })!;
+    expect(status.headline).toBe("Qoder CLI 正在开发");
+    expect(status.detail).toBe("结构修复 1");
+  });
+
+  it("同一审查 Provider 的结果修复也不是两个委员会成员", () => {
+    const repairTree = build(
+      [event("result:repair_started", { min: 3, payload: { role: "reviewer", agent: "grok_cli" } })],
+      [
+        run("review1", "reviewer", "grok_cli", "FAILED", 1),
+        run("review2", "reviewer", "grok_cli", "RUNNING", 4),
+      ],
+      { status: "REVIEWING" }
+    );
+    const review = repairTree.revisions[0].phases.find((phase) => phase.phase === "review")!;
+
+    expect(review.groups).toHaveLength(1);
+    expect(review.groups[0].attempts.map((attempt) => attempt.attemptLabel)).toEqual([
+      "首选",
+      "结构修复 1",
+    ]);
+    expect(liveStatus({
+      tree: repairTree,
+      status: "REVIEWING",
+      lastActivityAt: at(4),
+      now: Date.parse(at(4)),
+    })!.headline).toBe("Grok CLI 正在审查");
+  });
+});
+
 describe("执行树 · 审查委员会 (05 §6.11)", () => {
   const runs = [
     run("rv1", "reviewer", "claude_code", "SUCCEEDED", 10),

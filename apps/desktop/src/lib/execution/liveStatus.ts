@@ -63,7 +63,7 @@ export function liveStatus(input: LiveStatusInput): LiveStatus | null {
     const runningGroups = runningPhase.groups.filter((g) => g.state === "running");
     const active = runningGroups[0]?.current ?? runningPhase.groups.at(-1)?.current;
     const agent = active?.agent ? agentLabel(active.agent) : null;
-    const isCouncil = runningPhase.groups.length > 1;
+    const isCouncil = runningPhase.phase === "review" && runningPhase.groups.length > 1;
     const returned = runningPhase.groups.filter((g) => g.state !== "running" && g.state !== "pending").length;
 
     const started = active?.startedAt ?? runningPhase.startedAt;

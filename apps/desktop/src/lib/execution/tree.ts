@@ -190,12 +190,19 @@ function buildGroups(
       if (run.agent) chainByAgent.set(run.agent, chain);
       continue;
     }
+    // Structured-result repair re-runs the same Provider without emitting a
+    // provider:fallback event. It is another attempt in the same serial chain, never a
+    // parallel committee member. Real councils use distinct Provider kinds.
+    if (run.agent && chainByAgent.has(run.agent)) {
+      chainByAgent.get(run.agent)!.push(run);
+      continue;
+    }
     const chain = [run];
     chains.push(chain);
     if (run.agent) chainByAgent.set(run.agent, chain);
   }
 
-  const council = chains.length > 1;
+  const council = role === "reviewer" && chains.length > 1;
   return chains.map((chain, chainIndex) => {
     const attempts = chain.map((run, attemptIndex) => {
       const incoming = links.find((l) => l.to === run.agent && attemptIndex > 0);
@@ -205,7 +212,11 @@ function buildGroups(
         agent: run.agent,
         status: run.status,
         state: RUN_STATE[run.status],
-        attemptLabel: ATTEMPT_LABEL(attemptIndex),
+        attemptLabel: attemptIndex === 0
+          ? ATTEMPT_LABEL(0)
+          : incoming
+            ? ATTEMPT_LABEL(attemptIndex)
+            : `结构修复 ${attemptIndex}`,
         fallbackReason: attemptIndex > 0 ? incoming?.reason ?? null : null,
         startedAt: run.startedAt,
         finishedAt: run.finishedAt,

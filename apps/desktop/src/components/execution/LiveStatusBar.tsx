@@ -13,10 +13,14 @@ export function LiveStatusBar({ status }: { status: LiveStatus | null }) {
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
+    // A task may move directly from development to review while both phases have the same
+    // `running` tone. Reset the local one-second ticker to the new phase's server-derived
+    // elapsed base; otherwise development time is incorrectly carried into review.
+    setTick(0);
     if (status?.tone !== "running") return;
     const timer = setInterval(() => setTick((t) => t + 1), 1_000);
     return () => clearInterval(timer);
-  }, [status?.tone]);
+  }, [status?.tone, status?.headline, status?.elapsedSecs]);
 
   if (!status) return null;
 

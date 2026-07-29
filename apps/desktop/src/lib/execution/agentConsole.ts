@@ -49,7 +49,10 @@ function laneFromPhase(
     };
   }
   const agents = [...new Set(phase.groups.map((group) => group.current.agent).filter((agent): agent is AgentKind => !!agent))];
-  const fallbackCount = phase.groups.reduce((sum, group) => sum + Math.max(0, group.attempts.length - 1), 0);
+  const fallbackCount = phase.groups.reduce(
+    (sum, group) => sum + group.attempts.filter((attempt) => attempt.attemptLabel.startsWith("降级 ")).length,
+    0
+  );
   const current = phase.groups.find((group) => group.state === "running")?.current
     ?? phase.groups.find((group) => group.state === "attention" || group.state === "failed")?.current
     ?? phase.groups.at(-1)?.current;
