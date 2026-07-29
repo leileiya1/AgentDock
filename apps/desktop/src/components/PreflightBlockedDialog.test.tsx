@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { TaskPreflightReport } from "@/generated/bindings";
 import { summarizePreflight } from "@/lib/preflight";
-import { PreflightReportBody } from "./PreflightBlockedDialog";
+import { PreflightProgress, PreflightReportBody } from "./PreflightBlockedDialog";
 
 const report: TaskPreflightReport = {
   ready: false,
@@ -44,5 +44,21 @@ describe("PreflightReportBody", () => {
     expect(html).toContain("无可运行 Provider");
     // The guidance keeps the "no need to recreate the task" promise.
     expect(html).toContain("无需重新创建任务");
+  });
+});
+
+describe("PreflightProgress", () => {
+  it("names every in-flight Provider and says probes run in parallel", () => {
+    const html = renderToStaticMarkup(
+      <PreflightProgress roles={[
+        { role: "developer", label: "开发", providers: [{ key: "qoder_cli", label: "Qoder CLI" }] },
+        { role: "reviewer", label: "审查", providers: [{ key: "grok_cli", label: "Grok CLI" }] },
+      ]} />
+    );
+
+    expect(html).toContain("正在并行检测 Provider");
+    expect(html).toContain("Qoder CLI · 检测中");
+    expect(html).toContain("Grok CLI · 检测中");
+    expect(html).not.toContain("%");
   });
 });

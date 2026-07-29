@@ -1,10 +1,14 @@
 import type {
+  AgentKind,
   PreflightRole,
+  ProjectSettings,
+  ProviderDescriptor,
+  ProviderPreflightArgs,
   ProviderReadiness,
   RoleReadiness,
   TaskPreflightReport,
 } from "@/generated/bindings";
-import { agentLabel } from "@/copy/agents";
+import { agentLabel, isApiAgent } from "@/copy/agents";
 
 /** 角色的人话名称：Preflight 报告里只有 developer/reviewer 两种角色。 */
 export function preflightRoleLabel(role: PreflightRole): string {
@@ -31,6 +35,66 @@ export interface PreflightView {
   roles: PreflightRoleView[];
   /** 没有任何可运行 Provider 的角色——正是它们挡住了启动。 */
   blockingRoles: PreflightRoleView[];
+}
+
+export interface PendingPreflightRole {
+  role: PreflightRole;
+  label: string;
+  providers: Array<{ key: AgentKind; label: string }>;
+}
+
+function unique(values: AgentKind[]): AgentKind[] {
+  return values.filter((value, index) => values.indexOf(value) === index);
+}
+
+/**
+ * Mirrors the backend's candidate selection closely enough to name the real chains
+ * while the concurrent probes are in flight. This is not a fake percentage: every
+ * listed Provider remains "检测中" until the authoritative report comes back.
+ */
+export function pendingPreflightRoles(
+  args: ProviderPreflightArgs,
+  settings: ProjectSettings | undefined,
+  catalog: ProviderDescriptor[],
+): PendingPreflightRole[] {
+  const descriptor = (kind: AgentKind) => catalog.find((provider) => provider.id === kind);
+  const needsEgress = (kind: AgentKind) => {
+    const provider = descriptor(kind);
+    return isApiAgent(kind)
+      || (!!provider && provider.executionLocation !== "local")
+      || (!!provider && provider.dataEgress !== "none")
+      || (provider?.permissions.networkDomains?.length ?? 0) > 0;
+  };
+  const allowed = (kind: AgentKind) => args.allowApiEgress || !needsEgress(kind);
+  const label = (kind: AgentKind) => descriptor(kind)?.displayName || agentLabel(kind);
+
+  const developer = unique([
+    args.developerAgent,
+    ...(settings?.developerFallbacks ?? []),
+  ]).filter((kind) => !isApiAgent(kind))
+    .filter((kind) => !args.requirePlanApproval || descriptor(kind)?.capabilities.planning !== false)
+    .filter(allowed);
+
+  const reviewer = unique([
+    args.reviewerAgent,
+    ...(isApiAgent(args.reviewerAgent) && settings?.apiFallbackProvider
+      ? [settings.apiFallbackProvider]
+      : []),
+    ...(settings?.reviewerFallbacks ?? []),
+  ]).filter(allowed);
+
+  return [
+    {
+      role: "developer",
+      label: preflightRoleLabel("developer"),
+      providers: developer.map((kind) => ({ key: kind, label: label(kind) })),
+    },
+    {
+      role: "reviewer",
+      label: preflightRoleLabel("reviewer"),
+      providers: reviewer.map((kind) => ({ key: kind, label: label(kind) })),
+    },
+  ];
 }
 
 function providerView(entry: ProviderReadiness): PreflightProviderView {

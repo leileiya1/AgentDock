@@ -45,21 +45,21 @@ const MAIN_CLIS: CliDefinition[] = [
 const EXTRA_CLIS: CliDefinition[] = [
   { id: "qwen_code", label: "Qwen Code", field: "qwenCode", packageName: "@qwen-code/qwen-code@latest" },
   { id: "qoder_cli", label: "Qoder CLI", field: "qoderCli", packageName: "qoder.com 官方安装器", installable: false },
-  { id: "grok_cli", label: "Grok Build", field: "grokCli", packageName: "@xai-official/grok" },
+  { id: "grok_cli", label: "Grok Build CLI", field: "grokCli", packageName: "@xai-official/grok" },
   { id: "kimi_cli", label: "Kimi Code", field: "kimiCli", packageName: "@moonshot-ai/kimi-code" },
   { id: "minimax_cli", label: "MiniMax CLI", field: "minimaxCli", packageName: "mmx-cli" },
 ];
 
 const MAIN_APIS: ApiDefinition[] = [
-  { id: "openai_api", label: "OpenAI", field: "openaiApi" },
-  { id: "anthropic_api", label: "Anthropic", field: "anthropicApi" },
-  { id: "deepseek_api", label: "DeepSeek", field: "deepseekApi" },
+  { id: "openai_api", label: "OpenAI API", field: "openaiApi" },
+  { id: "anthropic_api", label: "Anthropic API", field: "anthropicApi" },
+  { id: "deepseek_api", label: "DeepSeek API", field: "deepseekApi" },
 ];
 
 const EXTRA_APIS: ApiDefinition[] = [
-  { id: "grok_api", label: "Grok", field: "grokApi" },
-  { id: "minimax_api", label: "MiniMax", field: "minimaxApi" },
-  { id: "kimi_api", label: "Kimi", field: "kimiApi" },
+  { id: "grok_api", label: "Grok API", field: "grokApi" },
+  { id: "minimax_api", label: "MiniMax API", field: "minimaxApi" },
+  { id: "kimi_api", label: "Kimi API", field: "kimiApi" },
 ];
 
 const BUILTIN_IDS = new Set<string>([...MAIN_CLIS, ...EXTRA_CLIS, ...MAIN_APIS, ...EXTRA_APIS].map((item) => item.id));
@@ -86,7 +86,7 @@ export function ProviderCatalog({ env, providers = [] }: Props) {
 
   return (
     <>
-      <ProviderGroup title="CLI">
+      <ProviderGroup title="本地 CLI">
         {MAIN_CLIS.map((item) => (
           overrides.has(item.id)
             ? <ExternalRow key={item.id} provider={overrides.get(item.id)!} />
@@ -94,7 +94,7 @@ export function ProviderCatalog({ env, providers = [] }: Props) {
         ))}
       </ProviderGroup>
 
-      <ProviderGroup title="API">
+      <ProviderGroup title="远程 API">
         {MAIN_APIS.map((item) => (
           overrides.has(item.id)
             ? <ExternalRow key={item.id} provider={overrides.get(item.id)!} />

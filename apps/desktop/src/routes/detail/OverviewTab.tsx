@@ -16,6 +16,8 @@ import { latestValidationReport, latestValidationOutcome } from "@/lib/execution
 import { isMassDeletion } from "@/lib/execution/massDeletion";
 import { ValidationReportCard } from "@/components/execution/ValidationReportCard";
 import { AcceptanceCriteriaPanel } from "@/components/AcceptanceCriteriaPanel";
+import { STATUS_COPY } from "@/copy/status";
+import { isTaskExecuting, isTaskQueued } from "@/lib/taskStatus";
 
 interface Props {
   task: TaskDetail;
@@ -48,30 +50,20 @@ interface ProgressMeta {
   spinning?: boolean;
 }
 
-const ACTIVE_PROGRESS: Partial<Record<TaskStatus, string>> = {
-  READY_FOR_DEVELOPMENT: "准备启动",
-  DEVELOPING: "开发中",
-  VALIDATING: "验证中",
-  READY_FOR_REVIEW: "等待审查",
-  REVIEWING: "审查中",
-  READY_FOR_REVISION: "等待返工",
-  REVISING: "返工中",
-  MERGING: "合并中",
-};
-
 function currentProgress(status: TaskStatus): ProgressMeta {
-  const activeLabel = ACTIVE_PROGRESS[status];
-  if (activeLabel) return { label: activeLabel, icon: LoaderCircle, color: "text-run", spinning: true };
+  const label = STATUS_COPY[status].label;
+  if (isTaskExecuting(status)) return { label, icon: LoaderCircle, color: "text-run", spinning: true };
+  if (isTaskQueued(status)) return { label, icon: CircleDashed, color: "text-t3" };
   if (status === "WAITING_FOR_HUMAN_APPROVAL") {
-    return { label: "等待你批准", icon: CircleAlert, color: "text-human" };
+    return { label, icon: CircleAlert, color: "text-human" };
   }
   if (status === "BLOCKED" || status === "MERGE_CONFLICT") {
-    return { label: status === "BLOCKED" ? "需要你处理" : "合并冲突", icon: CircleAlert, color: "text-human" };
+    return { label, icon: CircleAlert, color: "text-human" };
   }
-  if (status === "CANCELLED") return { label: "已取消", icon: XCircle, color: "text-t3" };
+  if (status === "CANCELLED") return { label, icon: XCircle, color: "text-t3" };
   if (status === "DRAFT") return { label: "尚未启动", icon: CircleDashed, color: "text-t3" };
-  if (status === "APPROVED") return { label: "已批准", icon: CheckCircle2, color: "text-ok" };
-  return { label: "已完成", icon: CheckCircle2, color: "text-ok" };
+  if (status === "ROLLED_BACK") return { label, icon: CircleDashed, color: "text-t3" };
+  return { label, icon: CheckCircle2, color: "text-ok" };
 }
 
 function RevisionProgress({ meta }: { meta: ProgressMeta }) {

@@ -18,8 +18,7 @@ import { AuditExportDialog } from "@/components/AuditExportDialog";
 import { PermissionProjectSummary } from "@/components/permission/PermissionProjectSummary";
 import { ProjectOverview } from "@/components/home/ProjectOverview";
 import { HomeEmpty } from "@/components/home/HomeEmpty";
-
-const ACTIVE_STATUSES = new Set(["DEVELOPING", "VALIDATING", "REVIEWING", "REVISING", "MERGING"]);
+import { isTaskExecuting } from "@/lib/taskStatus";
 
 export function TaskList() {
   const { projectId } = useParams();
@@ -175,7 +174,7 @@ function TaskRow({
   index?: number;
   attention?: boolean;
 }) {
-  const active = ACTIVE_STATUSES.has(task.status);
+  const active = isTaskExecuting(task.status);
   return (
     <motion.button
       type="button"

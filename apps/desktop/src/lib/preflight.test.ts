@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { TaskPreflightReport } from "@/generated/bindings";
-import { preflightBlockLine, preflightRoleLabel, summarizePreflight } from "@/lib/preflight";
+import type { ProviderDescriptor, TaskPreflightReport } from "@/generated/bindings";
+import { pendingPreflightRoles, preflightBlockLine, preflightRoleLabel, summarizePreflight } from "@/lib/preflight";
 
 function report(): TaskPreflightReport {
   return {
@@ -82,5 +82,50 @@ describe("preflightRoleLabel", () => {
   it("maps roles to human labels", () => {
     expect(preflightRoleLabel("developer")).toBe("开发");
     expect(preflightRoleLabel("reviewer")).toBe("审查");
+  });
+});
+
+describe("pendingPreflightRoles", () => {
+  const provider = (id: string, displayName: string, planning = true): ProviderDescriptor => ({
+    id,
+    displayName,
+    source: "builtin",
+    protocolVersion: "1.0",
+    capabilities: {
+      planning,
+      development: true,
+      review: true,
+      streaming: true,
+      structuredOutput: true,
+      sandbox: true,
+      resume: true,
+    },
+    executionLocation: "local",
+    dataEgress: "none",
+    permissions: { worktreeRead: true, worktreeWrite: true, networkDomains: [], commands: [] },
+    trust: "builtin",
+    available: true,
+    problem: null,
+  });
+
+  it("shows the actual parallel fallback chains instead of a fake percentage", () => {
+    const roles = pendingPreflightRoles(
+      {
+        projectId: "p1",
+        developerAgent: "qoder_cli",
+        reviewerAgent: "grok_cli",
+        allowApiEgress: false,
+        requirePlanApproval: true,
+      },
+      {
+        developerFallbacks: ["grok_cli", "deepseek_api"],
+        reviewerFallbacks: ["qoder_cli"],
+      },
+      [provider("qoder_cli", "Qoder CLI"), provider("grok_cli", "Grok CLI")],
+    );
+
+    expect(roles[0].providers.map((item) => item.label)).toEqual(["Qoder CLI", "Grok CLI"]);
+    expect(roles[1].providers.map((item) => item.label)).toEqual(["Grok CLI", "Qoder CLI"]);
+    expect(roles.flatMap((role) => role.providers).some((item) => item.key === "deepseek_api")).toBe(false);
   });
 });

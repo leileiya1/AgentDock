@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertTriangle, Plus, Trash2 } from "lucide-react";
 import type {
@@ -19,10 +19,10 @@ import { useCreateTask, useStartTask } from "@/hooks/useTasks";
 import { useExecutionNodes } from "@/hooks/useGovernance";
 import { useUiStore } from "@/stores/uiStore";
 import { errorLine } from "@/copy/errors";
-import { preflightBlockLine, summarizePreflight } from "@/lib/preflight";
+import { pendingPreflightRoles, preflightBlockLine, summarizePreflight } from "@/lib/preflight";
 import { toast } from "@/stores/toastStore";
 import { Dialog } from "@/components/Dialog";
-import { PreflightBlockedDialog } from "@/components/PreflightBlockedDialog";
+import { PreflightBlockedDialog, PreflightProgress } from "@/components/PreflightBlockedDialog";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -77,6 +77,7 @@ export function NewTaskDialog() {
   const start = useStartTask();
   const preflight = useProviderPreflight();
   const navigate = useNavigate();
+  const preflightSession = useRef(0);
 
   const project = useMemo(() => projects.data?.find((p) => p.id === projectId), [projects.data, projectId]);
   const catalog = providers.data ?? FALLBACK_PROVIDERS;
@@ -128,6 +129,17 @@ export function NewTaskDialog() {
     && !create.isPending
     && !start.isPending
     && !preflight.isPending;
+  const pendingRoles = pendingPreflightRoles(
+    {
+      projectId: projectId ?? "",
+      developerAgent,
+      reviewerAgent,
+      allowApiEgress,
+      requirePlanApproval,
+    },
+    projectSettings.data,
+    catalog,
+  );
 
   const reset = () => {
     setTitle("");
@@ -150,6 +162,9 @@ export function NewTaskDialog() {
     setPreflightReport(null);
   };
   const onClose = () => {
+    // Tauri invokes cannot be cancelled in flight. Invalidating the session makes
+    // a late preflight response inert, so closing this dialog can never create a task.
+    preflightSession.current += 1;
     close();
     reset();
   };
@@ -203,7 +218,9 @@ export function NewTaskDialog() {
       // Before spawning a run, verify at least one developer and one reviewer Provider can really
       // run. If not, list every reason instead of creating a task that would only fail (P0-01/02).
       if (thenStart) {
+        const session = ++preflightSession.current;
         const report = await preflight.mutateAsync(preflightArgs());
+        if (session !== preflightSession.current) return;
         if (!report.ready) {
           setPreflightReport(report);
           return;
@@ -220,7 +237,9 @@ export function NewTaskDialog() {
   const redetect = async () => {
     if (!projectId) return;
     try {
+      const session = ++preflightSession.current;
       const report = await preflight.mutateAsync(preflightArgs());
+      if (session !== preflightSession.current) return;
       if (report.ready) {
         setPreflightReport(null);
         await createThenStart(true);
@@ -255,7 +274,8 @@ export function NewTaskDialog() {
         </>
       }
     >
-      <div className="flex flex-col gap-4">
+      <fieldset disabled={preflight.isPending} className="flex flex-col gap-4 disabled:opacity-90">
+        {preflight.isPending && <PreflightProgress roles={pendingRoles} />}
         {(gitCompatibility.data?.prunableWorktrees.length ?? 0) > 0 && (
           <div className="flex items-start gap-2 rounded-md border border-human/50 bg-human-bg px-3 py-2 text-[13px]">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-human" />
@@ -487,14 +507,17 @@ export function NewTaskDialog() {
             <BudgetField label="最低质量" value={minimumQualityScore} onChange={setMinimumQualityScore} max={100} />
           </div>
         </div>
-      </div>
+      </fieldset>
     </Dialog>
     <PreflightBlockedDialog
       open={!!preflightReport}
       report={preflightReport}
       redetecting={preflight.isPending}
       onRedetect={redetect}
-      onClose={() => setPreflightReport(null)}
+      onClose={() => {
+        preflightSession.current += 1;
+        setPreflightReport(null);
+      }}
     />
     </>
   );

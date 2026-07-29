@@ -70,7 +70,7 @@ export const BLOCKED_COPY: Record<BlockedReason, BlockedCopy> = {
   run_failed: {
     title: "这一轮运行失败了",
     explanation:
-      "开发或验证运行没有正常结束。补充一点指引后可以再试一轮，或取消任务。",
+      "开发或验证没有正常结束。先看本次退出原因；环境恢复后可从检查点继续，也可以调整 Provider 顺序。",
     detailIsQuestion: false,
     actions: ["providerSetup", "redetect", "retryAvailable", "editFallback", "guidance", "cancel"],
   },
@@ -84,7 +84,7 @@ export const BLOCKED_COPY: Record<BlockedReason, BlockedCopy> = {
   auth_expired: {
     title: "Agent 登录已失效，任务已安全暂停",
     explanation:
-      "所选 Agent 的登录或密钥已失效或过期，AgentFlow 已停止本轮运行。本轮改动已回滚，项目没有被修改。请先在对应 CLI 或设置里重新登录 / 更新密钥，然后点「补充指引继续」即可从当前状态继续；也可以换一个已登录的 Agent 或取消任务。",
+      "所选 Provider 的登录或密钥已失效。本轮运行已经停止，未提交的改动已保存。重新认证后先刷新状态，再用可用 Provider 继续。",
     detailIsQuestion: false,
     actions: ["providerSetup", "redetect", "retryAvailable", "editFallback", "cancel"],
   },
@@ -164,14 +164,14 @@ export const BLOCKED_COPY: Record<BlockedReason, BlockedCopy> = {
 };
 
 export const BLOCKED_ACTION_LABEL: Record<BlockedAction, string> = {
-  guidance: "补充指引继续",
+  guidance: "补充说明并继续",
   answer: "回答并继续",
   forceApprove: "直接送去批准",
   cancel: "取消任务",
   repair: "打开修复中心",
   budget: "调整预算继续",
-  providerSetup: "认证 / 安装 Provider",
-  redetect: "重新检测",
-  retryAvailable: "从可用 Provider 重试",
-  editFallback: "编辑降级链",
+  providerSetup: "打开 Provider 设置",
+  redetect: "刷新 Provider 状态",
+  retryAvailable: "用可用 Provider 继续",
+  editFallback: "调整 Provider 顺序",
 };

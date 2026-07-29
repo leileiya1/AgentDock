@@ -2,6 +2,7 @@ import type { TaskStatus } from "@/generated/bindings";
 import { agentLabel } from "@/copy/agents";
 import { PHASE_LABEL, type NodeState } from "@/copy/events";
 import type { ExecutionTree } from "./tree";
+import { isTaskExecuting, isTaskTerminal } from "@/lib/taskStatus";
 
 /**
  * 当前运行状态必须持续可见 (05 §3.4). Pure derivation so the状态条 never disagrees with
@@ -25,8 +26,6 @@ export interface LiveStatus {
 }
 
 const IDLE_THRESHOLD_MS = 10_000;
-const TERMINAL_STATUSES: TaskStatus[] = ["MERGED", "ROLLED_BACK", "CANCELLED"];
-
 const WAITING_COPY: Partial<Record<TaskStatus, { headline: string; detail: string | null }>> = {
   WAITING_FOR_PLAN_APPROVAL: { headline: "等待你批准编码计划", detail: "任务已暂停，批准后才会开始写代码" },
   WAITING_FOR_HUMAN_APPROVAL: { headline: "等待你确认本轮改动", detail: "确认后才会进入交付" },
@@ -50,12 +49,16 @@ export function liveStatus(input: LiveStatusInput): LiveStatus | null {
   const { tree, status, lastActivityAt } = input;
   // A persisted task terminal state is authoritative even if an older event snapshot
   // still contains a running transition. Never keep the spinner alive after delivery.
-  if (TERMINAL_STATUSES.includes(status)) return null;
+  if (isTaskTerminal(status)) return null;
 
   const now = input.now ?? Date.now();
   const current = tree.revisions.find((r) => r.revision === tree.currentRevision);
 
-  const runningPhase = current?.phases.find((p) => p.state === "running");
+  // Persisted task state wins over a delayed run/event snapshot. A blocked,
+  // queued or approval-waiting task must never look as if its old process is live.
+  const runningPhase = isTaskExecuting(status)
+    ? current?.phases.find((p) => p.state === "running")
+    : undefined;
   if (runningPhase) {
     const runningGroups = runningPhase.groups.filter((g) => g.state === "running");
     const active = runningGroups[0]?.current ?? runningPhase.groups.at(-1)?.current;

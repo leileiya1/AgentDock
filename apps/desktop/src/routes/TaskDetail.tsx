@@ -23,6 +23,7 @@ import { LogsTab } from "@/routes/detail/LogsTab";
 import { DiffTab } from "@/routes/detail/DiffTab";
 import { ReviewTab } from "@/routes/detail/ReviewTab";
 import { GovernanceTab } from "@/routes/detail/GovernanceTab";
+import { isAgentRunning, isTaskExecuting } from "@/lib/taskStatus";
 
 const TABS: Array<{ id: DetailTab; label: string; key: string }> = [
   { id: "overview", label: "概览", key: "1" },
@@ -32,12 +33,10 @@ const TABS: Array<{ id: DetailTab; label: string; key: string }> = [
   { id: "governance", label: "治理", key: "5" },
 ];
 
-const ACTIVE_STATUSES = new Set(["PLANNING", "DEVELOPING", "VALIDATING", "REVIEWING", "REVISING", "MERGING"]);
 // Only these phases run a supervised Agent process with a registered cancellation token, so only
 // here is "停止" both accurate (there really is an Agent) and safe. VALIDATING (build/test) and
 // MERGING (git) hold no agent_run, so cancelling there would force-remove the worktree out from
 // under a live build — exclude them from the stop affordance.
-const AGENT_RUNNING_STATUSES = new Set(["PLANNING", "DEVELOPING", "REVISING", "REVIEWING"]);
 
 export function TaskDetail() {
   const { taskId, projectId } = useParams();
@@ -72,7 +71,7 @@ export function TaskDetail() {
 
   // Events drive updates; this is only the recovery poll for a dropped subscription.
   useEffect(() => {
-    if (!detail || !ACTIVE_STATUSES.has(detail.status)) return;
+    if (!detail || !isTaskExecuting(detail.status)) return;
     const timer = setTimeout(() => {
       task.refetch();
       execution.refetch();
@@ -154,7 +153,7 @@ export function TaskDetail() {
             </div>
             {/* 只有真正跑着 Agent 的阶段才给「停止」入口 (§14/§17)：这些阶段可安全中止，
                 构建/合并阶段没有 Agent 进程，停止会与工作区清理竞争，故不显示。 */}
-            {AGENT_RUNNING_STATUSES.has(detail.status) && <StopRunButton taskId={detail.id} />}
+            {isAgentRunning(detail.status) && <StopRunButton taskId={detail.id} />}
           </div>
           <div
             className="flex shrink-0 gap-1 overflow-x-auto border-b border-line/70 px-4 pt-2"

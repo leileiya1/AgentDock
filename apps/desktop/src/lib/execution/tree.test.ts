@@ -212,6 +212,46 @@ describe("执行树 · 轮次结构 (05 §3.1 / §3.5)", () => {
     expect(tree.revisions[0].phases.some((p) => p.state === "pending")).toBe(false);
   });
 
+  it("任务进入阻断后，延迟到达的 RUNNING 快照不会继续转", () => {
+    const tree = build(
+      [event("run:started", { min: 1, runId: "r1" })],
+      [run("r1", "developer", "codex", "RUNNING", 1)],
+      { status: "BLOCKED" }
+    );
+    const develop = tree.revisions[0].phases.find((p) => p.phase === "develop")!;
+
+    expect(develop.state).toBe("info");
+    expect(develop.groups[0].state).toBe("info");
+    expect(develop.groups[0].current.state).toBe("info");
+    expect(develop.events.every((item) => item.copy.state !== "running")).toBe(true);
+  });
+
+  it("并行分支已有失败时，也会关闭另一分支残留的 RUNNING", () => {
+    const tree = build(
+      [],
+      [
+        run("r1", "reviewer", "codex", "FAILED", 1),
+        run("r2", "reviewer", "qoder_cli", "RUNNING", 1),
+      ],
+      { status: "BLOCKED" }
+    );
+    const review = tree.revisions[0].phases.find((p) => p.phase === "review")!;
+
+    expect(review.state).toBe("failed");
+    expect(review.groups.some((group) => group.state === "running")).toBe(false);
+    expect(review.groups.flatMap((group) => group.attempts).some((attempt) => attempt.state === "running")).toBe(false);
+  });
+
+  it("已合并任务会关闭残留的交付动画", () => {
+    const tree = build([event("human:merge", { min: 8 })], [], { status: "MERGED" });
+    const delivery = tree.revisions[0].phases.find((p) => p.phase === "delivery")!;
+
+    expect(delivery.state).toBe("ok");
+    expect(delivery.summary).toBe("已合并到目标分支");
+    expect(delivery.events[0].copy.state).toBe("info");
+    expect(tree.revisions[0].state).toBe("ok");
+  });
+
   it("后到的计划批准关闭先前的等待状态", () => {
     const tree = build(
       [event("plan:proposed", { min: 1 }), event("human:plan_approve", { min: 2 })],
@@ -285,5 +325,19 @@ describe("持续运行状态 (05 §3.4)", () => {
       lastActivityAt: at(8),
       now: Date.parse(at(8)) + 60_000,
     })).toBeNull();
+  });
+
+  it("任务已阻断时，即使 run 快照仍为 RUNNING 也先显示检查点状态", () => {
+    const staleTree = build([], [run("r1", "developer", "codex", "RUNNING", 0)]);
+    const status = liveStatus({
+      tree: staleTree,
+      status: "BLOCKED",
+      lastActivityAt: at(1),
+      now: Date.parse(at(1)) + 60_000,
+    });
+
+    expect(status?.headline).toBe("需要你处理");
+    expect(status?.detail).toBe("任务已安全停在检查点");
+    expect(status?.tone).toBe("attention");
   });
 });

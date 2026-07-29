@@ -1,5 +1,6 @@
 import type { AgentKind, RunRole, RunStatus, RunSummary, TaskStatus } from "@/generated/bindings";
 import { PHASE_LABEL, PHASE_ORDER, type NodeState, type Phase } from "@/copy/events";
+import { isTaskExecuting, isTaskTerminal } from "@/lib/taskStatus";
 import { runHint, type NormalizedEvent } from "./normalize";
 
 /**
@@ -284,7 +285,57 @@ function pendingPhase(phase: Phase): PhaseNode {
   };
 }
 
-const TERMINAL_STATUSES: TaskStatus[] = ["MERGED", "ROLLED_BACK", "CANCELLED"];
+function settleEvent(event: NormalizedEvent): NormalizedEvent {
+  if (event.copy.state !== "running") return event;
+  return { ...event, copy: { ...event.copy, state: "info" } };
+}
+
+/** Close stale run/event markers once the persisted task has left an executing state. */
+function settlePhaseForTask(phase: PhaseNode, status: TaskStatus): PhaseNode {
+  const hasRunningMarker = phase.state === "running"
+    || phase.events.some((event) => event.copy.state === "running")
+    || phase.groups.some((group) => group.state === "running"
+      || group.attempts.some((attempt) => attempt.state === "running"
+        || attempt.events.some((event) => event.copy.state === "running")
+        || attempt.recovery.some((event) => event.copy.state === "running")));
+  if (isTaskExecuting(status) || !hasRunningMarker) return phase;
+
+  const groups = phase.groups.map((group) => {
+    const attempts = group.attempts.map((attempt) => ({
+      ...attempt,
+      state: attempt.state === "running" ? "info" as const : attempt.state,
+      events: attempt.events.map(settleEvent),
+      recovery: attempt.recovery.map(settleEvent),
+    }));
+    return {
+      ...group,
+      attempts,
+      current: attempts[attempts.length - 1],
+      state: group.state === "running" ? "info" as const : group.state,
+    };
+  });
+  const events = phase.events.map(settleEvent);
+  const endCandidates = [
+    ...groups.flatMap((group) => group.attempts.flatMap((attempt) => [attempt.finishedAt, attempt.startedAt])),
+    ...events.map((event) => event.ts),
+  ].filter((value): value is string => !!value).sort();
+  const summary = status === "MERGED" && phase.phase === "delivery"
+    ? "已合并到目标分支"
+    : status === "ROLLED_BACK"
+      ? "任务已回滚"
+      : status === "CANCELLED"
+        ? "任务已取消"
+        : phase.summary;
+
+  return {
+    ...phase,
+    groups,
+    events,
+    state: status === "MERGED" && phase.phase === "delivery" ? "ok" : phaseState(groups, events),
+    summary,
+    endedAt: phase.endedAt ?? endCandidates.at(-1) ?? null,
+  };
+}
 
 function revisionConclusion(node: Omit<RevisionNode, "conclusion">, isCurrent: boolean): string {
   if (isCurrent) return "当前轮";
@@ -342,26 +393,30 @@ export function buildExecutionTree(input: BuildTreeInput): ExecutionTree {
         phases.push(buildPhase(phase, groups, phaseEvents));
       }
 
-      if (isCurrent && !TERMINAL_STATUSES.includes(status)) {
-        const reached = new Set(phases.map((p) => p.phase));
-        const lastIndex = Math.max(...phases.map((p) => PHASE_ORDER.indexOf(p.phase)), -1);
+      const settledPhases = isCurrent
+        ? phases.map((phase) => settlePhaseForTask(phase, status))
+        : phases;
+
+      if (isCurrent && !isTaskTerminal(status)) {
+        const reached = new Set(settledPhases.map((p) => p.phase));
+        const lastIndex = Math.max(...settledPhases.map((p) => PHASE_ORDER.indexOf(p.phase)), -1);
         for (const phase of ["approval", "delivery"] as Phase[]) {
-          if (!reached.has(phase) && PHASE_ORDER.indexOf(phase) > lastIndex) phases.push(pendingPhase(phase));
+          if (!reached.has(phase) && PHASE_ORDER.indexOf(phase) > lastIndex) settledPhases.push(pendingPhase(phase));
         }
       }
 
-      const starts = phases.map((p) => p.startedAt).filter((t): t is string => !!t).sort();
-      const ends = phases.map((p) => p.endedAt).filter((t): t is string => !!t).sort();
+      const starts = settledPhases.map((p) => p.startedAt).filter((t): t is string => !!t).sort();
+      const ends = settledPhases.map((p) => p.endedAt).filter((t): t is string => !!t).sort();
       const base = {
         revision,
-        phases,
-        state: worst(phases.filter((p) => p.state !== "pending").map((p) => p.state)),
+        phases: settledPhases,
+        state: worst(settledPhases.filter((p) => p.state !== "pending").map((p) => p.state)),
         startedAt: starts[0] ?? null,
-        endedAt: phases.some((p) => p.state === "running" || p.state === "pending") ? null : ends.at(-1) ?? null,
+        endedAt: settledPhases.some((p) => p.state === "running" || p.state === "pending") ? null : ends.at(-1) ?? null,
       };
       return {
         ...base,
-        conclusion: revisionConclusion(base, isCurrent && !TERMINAL_STATUSES.includes(status)),
+        conclusion: revisionConclusion(base, isCurrent && !isTaskTerminal(status)),
       };
     });
 

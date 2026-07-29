@@ -50,7 +50,7 @@ export function ApprovalBar({ task }: Props) {
 
   // A blocked task needs an explicit user decision, so surface it in the
   // viewport instead of letting the action bar fall below short windows.
-  if (task.status === "BLOCKED") {
+  if (task.status === "BLOCKED" && task.blockedReason !== "permission_required") {
     return (
       <AnimatePresence>
         {show && (
@@ -100,6 +100,7 @@ export function ApprovalBar({ task }: Props) {
           {task.status === "WAITING_FOR_HUMAN_APPROVAL" && <WaitingBar task={task} />}
           {task.status === "APPROVED" && <ApprovedBar task={task} />}
           {task.status === "MERGE_CONFLICT" && <ConflictBar task={task} />}
+          {task.status === "BLOCKED" && <BlockedBar task={task} />}
         </motion.div>
       )}
     </AnimatePresence>
@@ -513,7 +514,7 @@ function BlockedBar({ task }: Props) {
   const redetect = async () => {
     const [, providerResult] = await Promise.all([env.refetch(), providers.refetch()]);
     const ready = providerResult.data?.filter((provider) => provider.available).length ?? 0;
-    toast.info(`检测完成：${ready} 个 Provider 当前可运行`);
+    toast.info(`状态已刷新：${ready} 个 Provider 可用`);
   };
 
   const retryAvailable = async () => {
@@ -550,7 +551,7 @@ function BlockedBar({ task }: Props) {
       case "providerSetup":
         return <Button key={action} variant="human" onClick={() => navigate("/settings#providers")}>{label}</Button>;
       case "redetect":
-        return <Button key={action} variant="outline" disabled={env.isFetching || providers.isFetching} onClick={() => run(redetect)}>{label}</Button>;
+        return <Button key={action} variant="outline" disabled={env.isFetching || providers.isFetching} onClick={() => run(redetect)}>{env.isFetching || providers.isFetching ? "刷新中…" : label}</Button>;
       case "retryAvailable":
         return <Button key={action} variant="human" disabled={resume.isPending || env.isFetching || providers.isFetching} onClick={() => run(retryAvailable)}>{label}</Button>;
       case "editFallback":
@@ -577,7 +578,7 @@ function BlockedBar({ task }: Props) {
       <Dialog
         open={guidanceOpen}
         onClose={() => setGuidanceOpen(false)}
-        title={asAnswer ? "回答开发 Agent 的问题" : "补充指引后继续"}
+        title={asAnswer ? "回答开发 Agent 的问题" : "补充说明后继续"}
         onConfirmKey={submitGuidance}
         footer={
           <>

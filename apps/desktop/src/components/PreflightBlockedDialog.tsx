@@ -1,6 +1,6 @@
-import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, LoaderCircle, XCircle } from "lucide-react";
 import type { TaskPreflightReport } from "@/generated/bindings";
-import { summarizePreflight, type PreflightRoleView, type PreflightView } from "@/lib/preflight";
+import { summarizePreflight, type PendingPreflightRole, type PreflightRoleView, type PreflightView } from "@/lib/preflight";
 import { Dialog } from "./Dialog";
 import { Button } from "@/components/ui/button";
 
@@ -10,6 +10,33 @@ interface Props {
   redetecting: boolean;
   onRedetect: () => void;
   onClose: () => void;
+}
+
+export function PreflightProgress({ roles }: { roles: PendingPreflightRole[] }) {
+  return (
+    <div className="rounded-md border border-run/35 bg-run/5 px-3 py-2.5" role="status" aria-live="polite">
+      <div className="flex items-center gap-2 text-[13px] font-medium text-t1">
+        <LoaderCircle className="size-4 animate-spin text-run" aria-hidden />
+        正在并行检测 Provider
+      </div>
+      <div className="mt-2 flex flex-col gap-1.5">
+        {roles.map((role) => (
+          <div key={role.role} className="grid grid-cols-[3rem_minmax(0,1fr)] gap-2 text-[12px] leading-5">
+            <span className="text-t3">{role.label}</span>
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+              {role.providers.map((provider) => (
+                <span key={provider.key} className="inline-flex items-center gap-1.5 text-t2">
+                  <span className="size-1.5 rounded-full bg-run animate-pulse-dot" aria-hidden />
+                  {provider.label} · 检测中
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-1.5 text-[11px] text-t3">全部返回后再创建任务；不可用项会保留具体原因。</p>
+    </div>
+  );
 }
 
 /**
