@@ -1,10 +1,13 @@
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 use uuid::Uuid;
 
 use crate::{PersistenceError, Store, protection};
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "com.agentflow.provider-resume";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Store {

@@ -1,7 +1,9 @@
 use agentflow_contracts::{
     CLAUDE_CLI_KEYCHAIN_SERVICE, CODEX_CLI_KEYCHAIN_SERVICE, DEEPSEEK_API_KEYCHAIN_SERVICE,
 };
-use std::{collections::HashMap, process::Stdio};
+use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
 
 #[derive(Debug, Clone, Copy)]
 struct CliCredentialSpec {

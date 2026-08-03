@@ -1,10 +1,31 @@
 import { expect, test, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
 
 const FIXED_NOW = new Date("2026-07-30T12:00:00+08:00");
+const VISUAL_FONT = readFileSync(
+  new URL(
+    "../node_modules/@fontsource/noto-sans-sc/files/noto-sans-sc-chinese-simplified-400-normal.woff2",
+    import.meta.url,
+  ),
+).toString("base64");
 
 async function openStable(page: Page, path: string) {
   await page.clock.install({ time: FIXED_NOW });
   await page.goto(path);
+  // Runtime UI intentionally uses the native macOS font stack. Screenshot baselines need a
+  // bundled CJK face so GitHub's macOS image version cannot turn glyph rasterization into noise.
+  await page.addStyleTag({
+    content: `
+      @font-face {
+        font-family: "AgentFlow Visual Sans";
+        font-style: normal;
+        font-weight: 100 900;
+        src: url(data:font/woff2;base64,${VISUAL_FONT}) format("woff2");
+      }
+      :root { --font-sans: "AgentFlow Visual Sans", sans-serif !important; }
+    `,
+  });
+  await page.evaluate(() => document.fonts.ready);
   await expect(page.locator("#root")).not.toBeEmpty();
   await page.waitForTimeout(650);
 }
