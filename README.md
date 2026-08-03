@@ -83,6 +83,49 @@ flowchart LR
 - 设置页分离环境、Provider、执行、权限、安全与存储、通知。
 - 支持紧凑密度、键盘导航、reduced motion 和 800×600 至宽屏布局。
 
+## 技术栈与工具职责
+
+AgentFlow 不是单一框架项目。下面这些工具共同组成了从 Agent 执行到桌面验收的完整系统：
+
+| 层级 | 使用的工具或技术 | 在 AgentFlow 中负责什么 |
+| --- | --- | --- |
+| 核心语言 | Rust 2024 | 任务状态机、Provider 适配、Git 操作、权限、持久化、进程监管和发布门禁 |
+| 异步运行时 | Tokio | 并发 Provider 探针、后台任务、超时、取消、进程和网络 I/O |
+| 本地服务 | Axum | daemon 与桌面/CLI 之间的本地服务接口 |
+| 数据存储 | SQLite + SQLx | 保存项目、任务、revision、运行、审查、权限和审计事实 |
+| 数据契约 | Serde、JSON Schema、Specta | 校验 Provider 结构化输出，并生成 Rust/TypeScript 共享契约 |
+| 网络客户端 | Reqwest + rustls | 在明确数据外发授权后访问 API Provider，避免依赖系统 OpenSSL |
+| 桌面外壳 | Tauri 2 | 将 Rust 后端与 macOS 桌面界面、系统通知和 sidecar 打包在一起 |
+| 前端 | React 18 + TypeScript | 首页队列、任务详情、设置、权限审批和治理控制台 |
+| 构建与样式 | Vite 5 + Tailwind CSS 4 | 前端开发服务器、生产构建和语义化设计令牌 |
+| 无障碍组件 | Radix UI | Dialog、Select、Tabs、Tooltip、Switch 等键盘与焦点行为 |
+| 服务端状态 | TanStack Query | 后端事实查询、缓存、刷新和 mutation 生命周期 |
+| 本地界面状态 | Zustand | 侧栏、密度模式和技术日志等非业务 UI 状态 |
+| 代码与 Diff | Monaco Editor | 只读代码、变更对比和技术证据查看 |
+| JavaScript 工具链 | Bun | 安装依赖、类型检查、单元测试和桌面构建脚本 |
+| 视觉验收 | Playwright | 固定夹具截图、窗口尺寸、200% 缩放和异常状态回归 |
+| 版本与隔离 | Git + worktree | 每任务独立工作树、revision 提交、恢复、比较和安全合并 |
+| macOS 凭据 | Keychain + security-framework | 保存 API key 和 Provider resume token，避免进入 SQLite 或日志 |
+| 后台运行 | macOS LaunchAgent | 桌面窗口关闭后继续调度任务并恢复 daemon |
+| 强隔离验证 | Lima + OpenSSH | 在不挂载宿主目录的 Linux VM 中执行远程或断网验证 |
+| 自动化门禁 | GitHub Actions | Rust 跨平台测试、桌面契约、Provider 固定版本和视觉回归 |
+| 发布校验 | codesign、spctl、hdiutil、SHA-256 | 检查 macOS `.app`/DMG 完整性并阻止不合格产物发布 |
+
+### 接入的 AI 工具
+
+AgentFlow 负责调用和约束这些外部 AI 工具，但不会读取它们的 OAuth token，也不会把“已安装”误判为“可执行”：
+
+| 工具 | 可承担的角色 | AgentFlow 提供的控制 |
+| --- | --- | --- |
+| Claude Code | 计划、开发、审查 | 动态 Bash 权限恢复、登录检测、结构化结果和有界恢复 |
+| Codex CLI | 计划、开发、审查 | sandbox、严格 schema、临时会话和用量归一化 |
+| Qoder CLI | 计划、开发、审查 | 固定版本矩阵、真实探针、非交互权限模式和安全降级 |
+| Grok CLI | 计划、开发、审查 | 结构化输出、sandbox、辅助模型请求兼容和凭据隔离 |
+| Gemini CLI / Qwen Code | 开发、审查候选 | 能力检测；只有满足版本、认证和探针要求后才进入任务链 |
+| Kimi CLI / MiniMax CLI | 可扩展 CLI 候选 | Provider 目录展示和兼容矩阵约束，未验证版本不会自动放行 |
+| OpenAI / Anthropic / DeepSeek / Grok / MiniMax / Kimi API | 计划、开发或独立审查 | 每任务数据外发批准、Keychain 凭据、限流、预算和响应协议校验 |
+| 外部 Provider sidecar | manifest 声明的角色 | Provider Protocol、能力协商、最小权限、隔离和一致性测试 |
+
 ## 可以用来做什么
 
 - 让 Qoder 开发、Grok 或 Codex 独立审查，再由你批准合并。
