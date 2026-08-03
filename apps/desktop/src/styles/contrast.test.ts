@@ -55,7 +55,7 @@ describe("正文层级对比度", () => {
 
 describe("状态色作为文字", () => {
   // 状态词经常是 12–13 px，必须按正文标准而不是大字号标准。
-  for (const state of ["run", "ok", "bad", "review", "idle", "human"]) {
+  for (const state of ["status-running", "status-success", "status-danger", "status-review", "status-idle", "status-human", "caution", "link"]) {
     for (const [surfaceName, surface] of SURFACES) {
       it(`${state} on ${surfaceName} ≥ ${AA}:1`, () => {
         expect(contrast(token(state), surface)).toBeGreaterThanOrEqual(AA);
@@ -63,13 +63,17 @@ describe("状态色作为文字", () => {
     }
   }
 
-  it("human 在自己的浅色块 human-bg 上也要可读", () => {
-    expect(contrast(token("human"), token("human-bg"))).toBeGreaterThanOrEqual(AA);
+  it("human 在自己的浅色块上也要可读", () => {
+    expect(contrast(token("status-human"), token("status-human-bg"))).toBeGreaterThanOrEqual(AA);
+  });
+
+  it("caution 在自己的浅色块上也要可读", () => {
+    expect(contrast(token("caution"), token("caution-bg"))).toBeGreaterThanOrEqual(AA);
   });
 });
 
-describe("状态色作为填充（白字按钮 / 徽标）", () => {
-  for (const fill of ["run", "human", "bad", "review"]) {
+describe("实心动作与状态填充", () => {
+  for (const fill of ["action", "status-running", "status-human", "status-danger", "status-review"]) {
     it(`白字在 ${fill} 上 ≥ ${AA}:1`, () => {
       expect(contrast(WHITE, token(fill))).toBeGreaterThanOrEqual(AA);
     });

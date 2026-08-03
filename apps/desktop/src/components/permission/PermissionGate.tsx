@@ -40,7 +40,7 @@ export function PermissionGate({
     <>
       <div
         role="status"
-        className="flex shrink-0 items-center justify-between gap-3 border-t border-human/50 bg-human-bg px-4 py-2.5 text-[13px] text-human"
+        className="flex shrink-0 items-center justify-between gap-3 border-t border-status-human/50 bg-status-human-bg px-4 py-2.5 text-body text-status-human"
       >
         <span className="flex min-w-0 items-center gap-2">
           <ShieldAlert className="size-4 shrink-0" aria-hidden />

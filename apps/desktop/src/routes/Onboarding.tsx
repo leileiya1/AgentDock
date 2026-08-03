@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { errorLine, toAppError } from "@/copy/errors";
 import { toast } from "@/stores/toastStore";
 
-const sectionH = "mb-3 text-[13px] font-semibold uppercase tracking-wider text-t2";
+const sectionH = "mb-3 text-body font-semibold uppercase tracking-wider text-t2";
 
 export function Onboarding() {
   const onboarding = useOnboarding();
@@ -51,7 +51,7 @@ export function Onboarding() {
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
         <div className="mx-auto max-w-3xl">
-          <p className="mb-4 text-[13px] text-t2">
+          <p className="mb-4 text-body text-t2">
             连接至少两个 Provider，即可分别负责开发和独立审查。未安装的 CLI 可以稍后直接安装。
           </p>
 
@@ -62,24 +62,24 @@ export function Onboarding() {
           ) : onboarding.data && (
             <>
               <div className="mb-4 grid gap-2 sm:grid-cols-2">
-                <div className={`rounded-[var(--radius-panel)] border px-4 py-3 ${onboarding.data.appReady ? "border-ok/30 bg-ok/5" : "border-human/40 bg-human-bg"}`}>
+                <div className={`rounded-section border px-4 py-3 ${onboarding.data.appReady ? "border-ok/30 bg-ok/5" : "border-caution/40 bg-caution-bg"}`}>
                   <div className="font-medium">应用基础环境：{onboarding.data.appReady ? "可用" : "需要处理"}</div>
-                  <p className="mt-1 text-[12px] text-t3">应用能否安全打开并使用本地数据。</p>
+                  <p className="mt-1 text-meta text-t3">应用能否安全打开并使用本地数据。</p>
                 </div>
-                <div className={`rounded-[var(--radius-panel)] border px-4 py-3 ${onboarding.data.workflowReady ? "border-ok/30 bg-ok/5" : "border-human/40 bg-human-bg"}`}>
+                <div className={`rounded-section border px-4 py-3 ${onboarding.data.workflowReady ? "border-ok/30 bg-ok/5" : "border-caution/40 bg-caution-bg"}`}>
                   <div className="font-medium">端到端工作流：{onboarding.data.workflowReady ? "就绪" : "未就绪"}</div>
-                  <p className="mt-1 text-[12px] text-t3">至少一组开发与独立审查 Provider 通过检测。</p>
+                  <p className="mt-1 text-meta text-t3">至少一组开发与独立审查 Provider 通过检测。</p>
                 </div>
               </div>
               {onboarding.data.notices.length > 0 && (
-                <ul className="mb-4 list-inside list-disc rounded-[var(--radius-panel)] border border-bad/25 bg-panel px-4 py-3 text-[13px] text-t2">
+                <ul className="mb-4 list-inside list-disc rounded-section border border-bad/25 bg-panel px-4 py-3 text-body text-t2">
                   {onboarding.data.notices.map((notice, index) => <li key={index}>{notice}</li>)}
                 </ul>
               )}
 
               <section className="mb-6">
                 <h2 className={sectionH}>AI Provider</h2>
-                <div className="flex flex-col gap-4 rounded-[var(--radius-panel)] border border-line bg-panel/60 p-4">
+                <div className="flex flex-col gap-4 rounded-section border border-line bg-panel/60 p-4">
                   <ProviderCatalog env={onboarding.data.env} />
                 </div>
               </section>
@@ -88,7 +88,7 @@ export function Onboarding() {
 
           <section className="mb-6">
             <h2 className={sectionH}>导入项目</h2>
-            <div className="rounded-[var(--radius-panel)] border border-line bg-panel/60 p-2">
+            <div className="rounded-section border border-line bg-panel/60 p-2">
               <EmptyState
                 title="导入你的第一个项目"
                 hint="选择一个已经是 Git 仓库的目录。非 Git 目录会给出明确指引。"

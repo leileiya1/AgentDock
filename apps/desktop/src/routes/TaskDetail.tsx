@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { PanelLeft } from "lucide-react";
+import { ListTree } from "lucide-react";
 import type { DetailTab } from "@/stores/uiStore";
 import { useTaskDetail } from "@/hooks/useTasks";
 import { useUiStore } from "@/stores/uiStore";
 import { useRunLogStream } from "@/hooks/useRunLogStream";
 import { useExecutionTree } from "@/hooks/useExecutionTree";
-import { useLayout } from "@/hooks/useBreakpoint";
 import { cn } from "@/lib/utils";
 import { ApprovalBar } from "@/components/ApprovalBar";
 import { PermissionGate } from "@/components/permission/PermissionGate";
@@ -28,9 +27,9 @@ import { isAgentRunning, isTaskExecuting } from "@/lib/taskStatus";
 
 const TABS: Array<{ id: DetailTab; label: string; key: string }> = [
   { id: "overview", label: "结果与验收", key: "1" },
-  { id: "logs", label: "日志", key: "2" },
-  { id: "diff", label: "Diff", key: "3" },
-  { id: "review", label: "审查", key: "4" },
+  { id: "diff", label: "Diff", key: "2" },
+  { id: "review", label: "审查", key: "3" },
+  { id: "logs", label: "日志", key: "4" },
   { id: "governance", label: "治理", key: "5" },
 ];
 
@@ -51,7 +50,6 @@ export function TaskDetail() {
 
   useRunLogStream();
 
-  const layout = useLayout();
   const [treeDrawerOpen, setTreeDrawerOpen] = useState(false);
 
   const detail = task.data;
@@ -105,10 +103,10 @@ export function TaskDetail() {
       />
 
       <div className="flex min-h-0 flex-1">
-        {/* 执行树需要容纳 28–30 px Provider 图标 + 名称 + 状态词 (05 §5.4)；
-            窄屏放不下就收进抽屉，而不是把正文挤没 (05 §8)。 */}
+        {/* The compact execution track is the primary model. The full tree is a
+            drill-down inspector so it cannot compete with the current result. */}
         <SidePanel
-          drawer={layout === "compact"}
+          drawer
           open={treeDrawerOpen}
           onClose={() => setTreeDrawerOpen(false)}
           title="执行树"
@@ -128,8 +126,7 @@ export function TaskDetail() {
                     selectTreeNode(taskId, selection);
                     if (selection.runId) setActiveTab(taskId, "logs");
                   }
-                  // 抽屉里选完就收起，否则内容被自己挡住。
-                  if (layout === "compact") setTreeDrawerOpen(false);
+                  setTreeDrawerOpen(false);
                 }}
                 revisionStats={detail.revisions}
               />
@@ -139,16 +136,14 @@ export function TaskDetail() {
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex shrink-0 items-start gap-2 px-4 pt-3">
-            {layout === "compact" && (
-              <button
-                type="button"
-                onClick={() => setTreeDrawerOpen(true)}
-                aria-label="打开执行树"
-                className="mt-0.5 flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1.5 text-[12px] text-t2 transition-colors hover:bg-raised hover:text-t1"
-              >
-                <PanelLeft className="size-3.5" aria-hidden /> 执行树
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setTreeDrawerOpen(true)}
+              aria-label="打开执行详情"
+              className="mt-0.5 flex shrink-0 items-center gap-1 rounded-control border border-line px-2 py-1.5 text-meta text-t2 transition-colors hover:bg-raised hover:text-t1"
+            >
+              <ListTree className="size-3.5" aria-hidden /> 执行详情
+            </button>
             <div className="min-w-0 flex-1">
               <LiveStatusBar status={execution.live} />
             </div>
@@ -184,7 +179,7 @@ export function TaskDetail() {
                   onClick={() => taskId && setActiveTab(taskId, t.id)}
                   title={`${t.label} (${t.key})`}
                   className={cn(
-                    "relative px-3 py-2 text-[13px] font-medium transition-colors",
+                    "relative px-3 py-2 text-body font-medium transition-colors",
                     on ? "text-t1" : "text-t2 hover:text-t1"
                   )}
                 >
@@ -192,7 +187,7 @@ export function TaskDetail() {
                   {on && (
                     <motion.span
                       layoutId="tab-underline"
-                      className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-run shadow-[var(--shadow-glow-run)]"
+                      className="absolute inset-x-2 -bottom-px h-0.5 rounded-pill bg-selection"
                       transition={{ type: "spring", stiffness: 500, damping: 34 }}
                     />
                   )}

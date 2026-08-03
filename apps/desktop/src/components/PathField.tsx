@@ -38,7 +38,7 @@ export function PathField({ value, onChange, onDetect, detecting, result, result
           </Button>
         )}
       </div>
-      {result && <div className={cn("text-[12px]", resultTone === "bad" ? "text-bad" : "text-ok")}>{result}</div>}
+      {result && <div className={cn("text-meta", resultTone === "bad" ? "text-bad" : "text-ok")}>{result}</div>}
     </div>
   );
 }

@@ -21,7 +21,7 @@ export function ProviderSection() {
       <div className="mb-3 flex items-center justify-between">
         <div>
           <h2 className={sectionH + " !mb-0"}>AI Provider</h2>
-          <p className="mt-0.5 text-[12px] text-t3">常用连接优先展示，其他适配器收进“更多”。</p>
+          <p className="mt-0.5 text-meta text-t3">常用连接优先展示，其他适配器收进“更多”。</p>
         </div>
         <Button variant="outline" size="sm" onClick={refresh} disabled={env.isFetching || providers.isFetching}>
           <RefreshCw className={`size-3.5 ${env.isFetching || providers.isFetching ? "animate-spin" : ""}`} />

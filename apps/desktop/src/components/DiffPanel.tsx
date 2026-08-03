@@ -58,10 +58,10 @@ export function DiffPanel({ diff, jumpFile, jumpLine }: Props) {
   return (
     <div className="flex h-full min-h-0">
       <div className="flex w-52 shrink-0 flex-col border-r border-line/70 lg:w-60 wide:w-72">
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line/70 px-3 py-2 text-[12px] text-t3">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line/70 px-3 py-2 text-meta text-t3">
           <span>{files.length} 个文件</span>
           {diff.truncated && (
-            <span className="text-human" title="diff 过大，部分文件内容已省略">已截断</span>
+            <span className="text-caution" title="diff 过大，部分文件内容已省略">已截断</span>
           )}
         </div>
 
@@ -85,7 +85,7 @@ export function DiffPanel({ diff, jumpFile, jumpLine }: Props) {
         </div>
 
         {risk.removedTests.length > 0 && (
-          <div className="shrink-0 border-b border-human/40 bg-human-bg px-3 py-2 text-[12px] text-t1">
+          <div className="shrink-0 border-b border-caution/40 bg-caution-bg px-3 py-2 text-meta text-t1">
             本轮删除了 {risk.removedTests.length} 个测试文件，测试覆盖可能下降。
           </div>
         )}
@@ -105,10 +105,10 @@ export function DiffPanel({ diff, jumpFile, jumpLine }: Props) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {currentRisks.length > 0 && (
-          <div className="shrink-0 border-b border-human bg-human-bg px-3 py-2">
+          <div className="shrink-0 border-b border-caution bg-caution-bg px-3 py-2">
             {currentRisks.map((kind) => (
-              <div key={kind} className="flex items-start gap-2 text-[12px] text-t1">
-                <RiskGlyph kind={kind} className="mt-0.5 size-3.5 shrink-0 text-human" />
+              <div key={kind} className="flex items-start gap-2 text-meta text-t1">
+                <RiskGlyph kind={kind} className="mt-0.5 size-3.5 shrink-0 text-caution" />
                 <span>
                   <strong className="font-medium">{RISK_META[kind].label}</strong>：{RISK_META[kind].why}
                 </span>
@@ -117,11 +117,11 @@ export function DiffPanel({ diff, jumpFile, jumpLine }: Props) {
           </div>
         )}
         {diff.truncated && (
-          <div className="shrink-0 border-b border-line/70 px-3 py-1 text-[12px] text-t3">
+          <div className="shrink-0 border-b border-line/70 px-3 py-1 text-meta text-t3">
             diff 过大，部分文件的内容已省略。可在仓库中查看完整改动。
           </div>
         )}
-        <div className="shrink-0 border-b border-line/70 px-3 py-2 text-[12px]">
+        <div className="shrink-0 border-b border-line/70 px-3 py-2 text-meta">
           {current && (
             <>
               <CopyText value={current.path}>{current.path}</CopyText>
@@ -182,9 +182,9 @@ function FilterTab({
       disabled={disabled}
       onClick={() => onClick(id)}
       className={cn(
-        "rounded-full border px-2 py-0.5 text-[12px] transition-colors disabled:opacity-40",
+        "rounded-pill border px-2 py-0.5 text-meta transition-colors disabled:opacity-40",
         active === id ? "border-line-strong bg-raised text-t1" : "border-line text-t3 hover:text-t1",
-        tone === "attention" && active !== id && "border-human/50 text-human"
+        tone === "attention" && active !== id && "border-caution/50 text-caution"
       )}
     >
       {label}
@@ -215,11 +215,11 @@ function FileRow({
         onClick={onClick}
         title={title}
         className={cn(
-          "flex w-full items-center justify-between gap-2 rounded-md px-2 py-[5px] text-left text-[12px] transition-colors hover:bg-raised",
+          "flex w-full items-center justify-between gap-2 rounded-control px-2 py-[5px] text-left text-meta transition-colors hover:bg-raised",
           active && "bg-raised ring-1 ring-line"
         )}
       >
-        <span className={cn("flex min-w-0 items-center gap-1 truncate font-mono", risks.length > 0 && "text-human")}>
+        <span className={cn("flex min-w-0 items-center gap-1 truncate font-mono", risks.length > 0 && "text-caution")}>
           {risks.map((kind) => (
             <RiskGlyph key={kind} kind={kind} className="size-3 shrink-0" />
           ))}

@@ -33,7 +33,7 @@ export function QueueControls({ task }: { task: TaskDetail }) {
 
   if (!relevant) return null;
   if (queue.isLoading) {
-    return <span className="text-[12px] text-t3">正在读取队列…</span>;
+    return <span className="text-meta text-t3">正在读取队列…</span>;
   }
   if (queue.isError) {
     return (
@@ -61,12 +61,12 @@ export function QueueControls({ task }: { task: TaskDetail }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
       <span
-        className="inline-flex items-center gap-1.5 whitespace-nowrap text-[12px] text-t3"
+        className="inline-flex items-center gap-1.5 whitespace-nowrap text-meta text-t3"
         title={`队列状态最后更新：${new Date(queue.data.updatedAt).toLocaleString("zh-CN")}`}
       >
         <span
           aria-hidden="true"
-          className={`size-1.5 rounded-full ${queue.data.state === "RUNNING" ? "bg-ok" : queue.data.state === "FAILED" ? "bg-bad" : paused ? "bg-human" : "bg-run"}`}
+          className={`size-1.5 rounded-circle ${queue.data.state === "RUNNING" ? "bg-ok" : queue.data.state === "FAILED" ? "bg-bad" : paused ? "bg-status-human" : "bg-status-running"}`}
         />
         {queueSummary(queue.data)}
       </span>
@@ -103,7 +103,7 @@ export function QueueControls({ task }: { task: TaskDetail }) {
           )
         }
       >
-        <SelectTrigger className="h-7 w-auto gap-1 px-2 text-[12px]" aria-label="调整排队优先级">
+        <SelectTrigger className="h-7 w-auto gap-1 px-2 text-meta" aria-label="调整排队优先级">
           <SelectValue placeholder="优先级">{priorityLabel(currentPriority)}</SelectValue>
         </SelectTrigger>
         <SelectContent>

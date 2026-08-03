@@ -10,18 +10,18 @@ import { cn } from "@/lib/utils";
  */
 
 const TONE_CLS: Record<RiskTone | "idle", string> = {
-  ok: "text-ok border-ok/40",
-  run: "text-run border-run/40",
-  human: "text-human border-human/60 bg-human-bg",
-  bad: "text-bad border-bad/40",
-  idle: "text-t3 border-line",
+  ok: "text-status-success border-status-success/40",
+  caution: "text-caution border-caution/45 bg-caution-bg/70",
+  human: "text-status-human border-status-human/60 bg-status-human-bg",
+  bad: "text-status-danger border-status-danger/40",
+  idle: "text-status-idle border-line",
 };
 
 function Pill({ tone, icon, children, className }: { tone: RiskTone | "idle"; icon?: ReactNode; children: ReactNode; className?: string }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none",
+        "inline-flex items-center gap-1 whitespace-nowrap rounded-pill border px-2 py-0.5 text-meta font-medium leading-none",
         TONE_CLS[tone],
         className
       )}

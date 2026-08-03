@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Outlet, useLocation, useMatch } from "react-router-dom";
+import { Outlet, useLocation, useMatch, useNavigate } from "react-router-dom";
 import { Sidebar } from "@/components/Sidebar";
 import { Toaster } from "@/components/Toaster";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -15,13 +15,31 @@ export function AppLayout() {
   const listMatch = useMatch("/p/:projectId");
   const detailMatch = useMatch("/p/:projectId/t/:taskId");
   const openNewTask = useUiStore((s) => s.openNewTask);
+  const navigate = useNavigate();
 
   useGlobalEvents();
 
-  // Cmd/Ctrl+N → new task for the current project (02 §9).
+  // Native desktop shortcuts stay global, but never steal keystrokes from text fields.
   useEffect(() => {
     const projectId = listMatch?.params.projectId ?? detailMatch?.params.projectId;
     const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === ",") {
+        e.preventDefault();
+        navigate("/settings");
+        return;
+      }
+      if (mod && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        if (!listMatch?.params.projectId) navigate(projectId ? `/p/${projectId}` : "/");
+        requestAnimationFrame(() => document.getElementById("task-search")?.focus());
+        return;
+      }
+      if (mod && e.key === "[") {
+        e.preventDefault();
+        navigate(-1);
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && (e.key === "n" || e.key === "N")) {
         if (projectId) {
           e.preventDefault();
@@ -31,7 +49,7 @@ export function AppLayout() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [listMatch, detailMatch, openNewTask]);
+  }, [listMatch, detailMatch, openNewTask, navigate]);
 
   return (
     <div className="flex h-dvh min-h-0 w-full overflow-hidden">

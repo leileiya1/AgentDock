@@ -1,4 +1,4 @@
-import type { EnvReport, ProviderStatus, ToolStatus } from "@/generated/bindings";
+import type { EnvReport, OnboardingReport, ProviderStatus, ToolStatus } from "@/generated/bindings";
 
 export type DotTone = "ok" | "bad" | "idle";
 export interface Dot {
@@ -51,4 +51,32 @@ export function buildDots(env: EnvReport | undefined, daemonRunning: boolean | u
     providerDot("anthropic", "Anthropic API", env.anthropicApi),
     providerDot("deepseek", "DeepSeek API", env.deepseekApi),
   ];
+}
+
+export interface EnvironmentSummary {
+  label: string;
+  detail: string;
+  tone: DotTone;
+  blocking: boolean;
+}
+
+/** One truthful environment summary shared by the sidebar and project toolbar. */
+export function summarizeEnvironment(report: OnboardingReport | undefined): EnvironmentSummary {
+  if (!report) {
+    return { label: "正在检查环境", detail: "正在读取本机工具与调度服务状态", tone: "idle", blocking: false };
+  }
+
+  const dots = buildDots(report.env, report.daemonRunning);
+  const firstBlocker = dots.find((dot) => dot.blocking);
+  const blocking = !report.workflowReady || !report.daemonRunning || firstBlocker != null;
+
+  if (!blocking) {
+    return { label: "端到端环境就绪", detail: "开发、审查与调度链路可运行", tone: "ok", blocking: false };
+  }
+
+  const detail = firstBlocker?.label ?? report.notices[0] ?? "进入设置查看阻塞项";
+  if (report.appReady && !report.workflowReady) {
+    return { label: "应用可用 · 工作流未就绪", detail, tone: "bad", blocking: true };
+  }
+  return { label: "环境有阻塞项", detail, tone: "bad", blocking: true };
 }

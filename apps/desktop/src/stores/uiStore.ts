@@ -2,10 +2,15 @@ import { create } from "zustand";
 import type { TreeSelection } from "@/components/execution/TreeNodes";
 
 export type DetailTab = "overview" | "logs" | "diff" | "review" | "governance";
+export type DensityMode = "comfortable" | "compact";
 
 interface UiState {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
+
+  /** High-information views may tighten rows without changing content or color. */
+  densityMode: DensityMode;
+  toggleDensity: () => void;
 
   /** per-task active detail tab */
   activeTab: Record<string, DetailTab>;
@@ -44,6 +49,8 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   sidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  densityMode: "comfortable",
+  toggleDensity: () => set((s) => ({ densityMode: s.densityMode === "comfortable" ? "compact" : "comfortable" })),
 
   activeTab: {},
   setActiveTab: (taskId, tab) =>

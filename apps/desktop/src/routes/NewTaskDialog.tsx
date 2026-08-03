@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronDown, Plus, Trash2 } from "lucide-react";
 import type {
   AcceptanceCriterionInput,
   AcceptanceCriterionKind,
@@ -101,6 +101,7 @@ export function NewTaskDialog() {
   const [priority, setPriority] = useState(0);
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("local_merge");
   const [executionNodeId, setExecutionNodeId] = useState("local");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [preflightReport, setPreflightReport] = useState<TaskPreflightReport | null>(null);
 
   const open = !!projectId;
@@ -159,6 +160,7 @@ export function NewTaskDialog() {
     setPriority(0);
     setDeliveryMode("local_merge");
     setExecutionNodeId("local");
+    setAdvancedOpen(false);
     setPreflightReport(null);
   };
   const onClose = () => {
@@ -260,16 +262,16 @@ export function NewTaskDialog() {
       open={open}
       onClose={onClose}
       title="新建任务"
-      width={560}
-      onConfirmKey={() => submit(false)}
+      width={720}
+      onConfirmKey={() => submit(true)}
       footer={
         <>
           <Button variant="outline" onClick={onClose}>取消</Button>
-          <Button variant="subtle" disabled={!canSubmit} onClick={() => submit(true)}>
-            {preflight.isPending ? "检测环境…" : "创建并立即开始"}
+          <Button variant="ghost" disabled={!canSubmit} onClick={() => submit(false)}>
+            {create.isPending && !preflight.isPending ? "创建中…" : "仅创建草稿"}
           </Button>
-          <Button variant="primary" disabled={!canSubmit} onClick={() => submit(false)}>
-            {create.isPending ? "创建中…" : "创建"}
+          <Button variant="primary" disabled={!canSubmit} onClick={() => submit(true)}>
+            {preflight.isPending ? "检测环境…" : create.isPending || start.isPending ? "启动中…" : "创建并立即开始"}
           </Button>
         </>
       }
@@ -277,10 +279,10 @@ export function NewTaskDialog() {
       <fieldset disabled={preflight.isPending} className="flex flex-col gap-4 disabled:opacity-90">
         {preflight.isPending && <PreflightProgress roles={pendingRoles} />}
         {(gitCompatibility.data?.prunableWorktrees.length ?? 0) > 0 && (
-          <div className="flex items-start gap-2 rounded-md border border-human/50 bg-human-bg px-3 py-2 text-[13px]">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-human" />
+          <div className="flex items-start gap-2 rounded-control border border-caution/50 bg-caution-bg px-3 py-2 text-body">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-caution" />
             <div className="min-w-0 flex-1">
-              <div className="font-medium text-human">检测到 {gitCompatibility.data?.prunableWorktrees.length} 个失效 worktree 注册</div>
+              <div className="font-medium text-caution">检测到 {gitCompatibility.data?.prunableWorktrees.length} 个失效 worktree 注册</div>
               <p className="mt-0.5 text-t2">不阻断创建，但建议先安全清理，避免 Git 工作树状态持续积累。</p>
             </div>
             <Button variant="outline" size="sm" onClick={() => { close(); navigate("/settings#project-settings"); }}>
@@ -293,11 +295,11 @@ export function NewTaskDialog() {
           <Input id="nt-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="一句话说清要做什么" autoFocus />
         </div>
 
-        <div className="flex flex-col gap-2 rounded-md border border-line bg-app/50 p-3">
+        <div className="flex flex-col gap-2 rounded-control border border-line bg-app/50 p-3">
           <div className="flex items-start justify-between gap-3">
             <div>
               <Label>结构化验收条件（可选）</Label>
-              <p className="mt-1 text-[12px] text-t3">构建、测试、行为和人工要求会独立保存，并在验证、审查和最终批准时逐条回显。</p>
+              <p className="mt-1 text-meta text-t3">构建、测试、行为和人工要求会独立保存，并在验证、审查和最终批准时逐条回显。</p>
             </div>
             <Button
               variant="outline"
@@ -312,7 +314,7 @@ export function NewTaskDialog() {
             </Button>
           </div>
           {acceptanceCriteria.length === 0 ? (
-            <div className="rounded-md border border-dashed border-line px-3 py-2 text-[12px] text-t3">还没有独立验收条件；描述仍会原样交给 Agent。</div>
+            <div className="rounded-control border border-dashed border-line px-3 py-2 text-meta text-t3">还没有独立验收条件；描述仍会原样交给 Agent。</div>
           ) : (
             <div className="flex flex-col gap-2">
               {acceptanceCriteria.map((criterion, index) => (
@@ -337,6 +339,16 @@ export function NewTaskDialog() {
                     onChange={(event) => setAcceptanceCriteria((current) => current.map((item) => (
                       item.id === criterion.id ? { ...item, text: event.target.value } : item
                     )))}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                      event.preventDefault();
+                      if (criterion.text.trim() && index === acceptanceCriteria.length - 1 && acceptanceCriteria.length < 20) {
+                        setAcceptanceCriteria((current) => [
+                          ...current,
+                          { id: crypto.randomUUID(), kind: criterion.kind, text: "" },
+                        ]);
+                      }
+                    }}
                     placeholder="写清可判断的完成标准"
                   />
                   <Button
@@ -349,7 +361,7 @@ export function NewTaskDialog() {
                   </Button>
                 </div>
               ))}
-              {!criteriaValid && <p className="text-[12px] text-bad">每条验收条件必须填写 1–500 个字符。</p>}
+              {!criteriaValid && <p className="text-meta text-bad">每条验收条件必须填写 1–500 个字符。</p>}
             </div>
           )}
         </div>
@@ -364,7 +376,7 @@ export function NewTaskDialog() {
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-4 max-sm:grid-cols-1">
           <div className="flex flex-col gap-2">
             <Label>开发 Agent</Label>
             <Select value={developerAgent} onValueChange={(v) => setDeveloperAgent(v as AgentKind)}>
@@ -394,14 +406,14 @@ export function NewTaskDialog() {
         </div>
 
         {sameAgent && (
-          <div className="flex items-start gap-2 rounded-md border border-human bg-human-bg px-3 py-2 text-[13px] text-human">
+          <div className="flex items-start gap-2 rounded-control border border-caution bg-caution-bg px-3 py-2 text-body text-caution">
             <AlertTriangle className="mt-0.5 size-4 shrink-0" />
             开发和审查不能用同一个 Agent。同源审查会显著降低缺陷检出——异构互审正是本工具的核心价值。
           </div>
         )}
 
         {apiMayBeUsed && (
-          <div className="flex items-start gap-3 rounded-md border border-line bg-app px-3 py-3 text-[13px]">
+          <div className="flex items-start gap-3 rounded-control border border-line bg-app px-3 py-3 text-body">
             <Switch
               id="nt-api-egress"
               checked={allowApiEgress}
@@ -415,7 +427,7 @@ export function NewTaskDialog() {
                 <span className="mt-1 block text-t3">保持关闭时，只会使用本地 CLI 审查和降级链。</span>
               )}
               {!allowApiEgress && (directEgress || councilMayUseApi) && (
-                <span className="mt-1 block text-human">
+                <span className="mt-1 block text-caution">
                   {directEgress ? "当前开发或审查 Provider 需要数据外发" : "审查委员会包含需要数据外发的成员"}，确认后才能创建。
                 </span>
               )}
@@ -424,14 +436,32 @@ export function NewTaskDialog() {
         )}
 
         {providers.isError && (
-          <div className="text-[12px] text-human">Provider 清单读取失败，当前暂用内置清单。</div>
+          <div className="text-meta text-caution">Provider 清单读取失败，当前暂用内置清单。</div>
         )}
+
+        <button
+          type="button"
+          className="flex w-full items-center gap-3 rounded-control border border-line bg-panel px-3 py-2.5 text-left transition-colors hover:bg-raised"
+          aria-expanded={advancedOpen}
+          aria-controls="new-task-governance"
+          onClick={() => setAdvancedOpen((current) => !current)}
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block text-body font-medium text-t1">运行与治理</span>
+            <span className="mt-0.5 block truncate text-meta text-t3">
+              {targetBranch.trim() || project?.defaultBranch || "main"} · {executionNodeId === "local" ? "本机" : "远端节点"} · 最多 {maxRevisions || "—"} 轮 · ${costBudgetUsd}
+            </span>
+          </span>
+          <ChevronDown className={`size-4 shrink-0 text-t3 transition-transform ${advancedOpen ? "rotate-180" : ""}`} aria-hidden />
+        </button>
+
+        {advancedOpen && <div id="new-task-governance" className="flex flex-col gap-4 rounded-section border border-line/70 bg-app/35 p-3">
 
         <div className="grid grid-cols-2 gap-4">
           <div className="flex flex-col gap-2">
             <Label htmlFor="nt-branch">目标分支</Label>
             <Input id="nt-branch" className="font-mono" value={targetBranch} onChange={(e) => setTargetBranch(e.target.value)} placeholder={project?.defaultBranch ?? "main"} />
-            <span className="text-[12px] text-t3">留空则使用项目默认分支 {project?.defaultBranch ?? "main"}。</span>
+            <span className="text-meta text-t3">留空则使用项目默认分支 {project?.defaultBranch ?? "main"}。</span>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="nt-max">最大返工轮数</Label>
@@ -445,19 +475,19 @@ export function NewTaskDialog() {
               onChange={(event) => setMaxRevisions(event.target.value)}
               onBlur={() => setMaxRevisionsTouched(true)}
             />
-            <span id="nt-max-help" className={`text-[12px] ${maxRevisionsTouched && maxRevisionsProblem ? "text-bad" : "text-t3"}`}>
+            <span id="nt-max-help" className={`text-meta ${maxRevisionsTouched && maxRevisionsProblem ? "text-bad" : "text-t3"}`}>
               {maxRevisionsTouched && maxRevisionsProblem ? maxRevisionsProblem : "允许 1–20 轮；输入完成后校验，不会自动改写。"}
             </span>
           </div>
         </div>
 
-        <div className="rounded-md border border-line bg-app/60 p-3">
+        <div className="rounded-control border border-line bg-app/60 p-3">
           <div className="mb-3 flex items-start justify-between gap-4">
             <div>
-              <div className="text-[13px] font-medium text-t1">执行控制</div>
-              <div className="mt-0.5 text-[12px] text-t3">计划门禁、硬预算、质量阈值和交付方式会随任务固化。</div>
+              <div className="text-body font-medium text-t1">执行控制</div>
+              <div className="mt-0.5 text-meta text-t3">计划门禁、硬预算、质量阈值和交付方式会随任务固化。</div>
             </div>
-            <label className="flex shrink-0 items-center gap-2 text-[12px] text-t2">
+            <label className="flex shrink-0 items-center gap-2 text-meta text-t2">
               <Switch checked={requirePlanApproval} onCheckedChange={setRequirePlanApproval} />
               编码前审批计划
             </label>
@@ -500,13 +530,14 @@ export function NewTaskDialog() {
               </Select>
             </div>
           </div>
-          <div className="mt-3 grid grid-cols-4 gap-2">
+          <div className="mt-3 grid grid-cols-4 gap-2 max-md:grid-cols-2">
             <BudgetField label="Token" value={tokenBudget} onChange={setTokenBudget} />
             <BudgetField label="费用 ($)" value={costBudgetUsd} onChange={setCostBudgetUsd} step="0.5" />
             <BudgetField label="时间 (秒)" value={timeBudgetSecs} onChange={setTimeBudgetSecs} />
             <BudgetField label="最低质量" value={minimumQualityScore} onChange={setMinimumQualityScore} max={100} />
           </div>
         </div>
+        </div>}
       </fieldset>
     </Dialog>
     <PreflightBlockedDialog

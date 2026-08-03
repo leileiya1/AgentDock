@@ -10,7 +10,7 @@ interface Props {
 }
 
 const base =
-  "inline-grid place-items-center shrink-0 rounded-full border font-mono font-semibold leading-none";
+  "inline-grid place-items-center shrink-0 rounded-circle border font-mono font-semibold leading-none";
 
 /** Reuse the Provider artwork in tasks and timelines for immediate recognition. */
 export function AgentMark({ kind, size = 24, title }: Props) {
@@ -19,7 +19,7 @@ export function AgentMark({ kind, size = 24, title }: Props) {
       title={title ?? agentLabel(kind)}
       aria-label={agentLabel(kind)}
     >
-      <ProviderIcon provider={kind} size={size} className="rounded-full" />
+      <ProviderIcon provider={kind} size={size} className="rounded-circle" />
     </span>
   );
 }
@@ -27,7 +27,7 @@ export function AgentMark({ kind, size = 24, title }: Props) {
 const ACTOR_MARK: Record<Actor, { mark: string; color: string; label: string }> = {
   orchestrator: { mark: "⚙", color: "var(--color-t2)", label: "调度" },
   agent: { mark: "•", color: "var(--color-t2)", label: "Agent" },
-  human: { mark: "你", color: "var(--color-human)", label: "你" },
+  human: { mark: "你", color: "var(--color-brand)", label: "你" },
   system: { mark: "◇", color: "var(--color-t3)", label: "系统" },
 };
 

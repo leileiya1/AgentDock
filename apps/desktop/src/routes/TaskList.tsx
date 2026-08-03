@@ -1,13 +1,12 @@
 import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { AnimatePresence, motion } from "motion/react";
-import { ChevronRight, ShieldAlert } from "lucide-react";
+import { ChevronRight, ListFilter, Search } from "lucide-react";
 import type { TaskSummary } from "@/generated/bindings";
 import { useProjects } from "@/hooks/useProjects";
 import { useTasks } from "@/hooks/useTasks";
 import { useUiStore } from "@/stores/uiStore";
-import { GROUP_LABEL, groupForStatus, type TaskGroup } from "@/copy/status";
 import { relativeTime, taskCode } from "@/lib/format";
+import { buildHomeTaskSections, type HomeView } from "@/lib/homeTasks";
 import { cn } from "@/lib/utils";
 import { StateBadge } from "@/components/StateBadge";
 import { AgentMark } from "@/components/AgentMark";
@@ -17,9 +16,14 @@ import { Badge } from "@/components/ui/badge";
 import { AuditExportDialog } from "@/components/AuditExportDialog";
 import { PermissionProjectSummary } from "@/components/permission/PermissionProjectSummary";
 import { ProjectOverview } from "@/components/home/ProjectOverview";
+import { ProjectEnvironmentStatus } from "@/components/home/ProjectEnvironmentStatus";
 import { HomeEmpty } from "@/components/home/HomeEmpty";
 import { AttentionCenter } from "@/components/home/AttentionCenter";
 import { isTaskExecuting } from "@/lib/taskStatus";
+import { agentLabel } from "@/copy/agents";
+import { STATUS_COPY } from "@/copy/status";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 export function TaskList() {
   const { projectId } = useParams();
@@ -27,30 +31,24 @@ export function TaskList() {
   const projects = useProjects();
   const tasks = useTasks(projectId);
   const openNewTask = useUiStore((s) => s.openNewTask);
+  const [homeView, setHomeView] = useState<HomeView>("attention");
   const [showDone, setShowDone] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const density = useUiStore((s) => s.densityMode);
+  const toggleDensity = useUiStore((s) => s.toggleDensity);
 
-  const project = projects.data?.find((p) => p.id === projectId);
+  const project = projects.data?.find((item) => item.id === projectId);
+  const filteredTasks = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    if (!normalized) return tasks.data ?? [];
+    return (tasks.data ?? []).filter((task) => [
+      taskCode(task.seq), task.title, agentLabel(task.developerAgent), agentLabel(task.reviewerAgent), STATUS_COPY[task.status].label,
+    ].some((value) => value.toLocaleLowerCase().includes(normalized)));
+  }, [tasks.data, query]);
+  const sections = useMemo(() => buildHomeTaskSections(filteredTasks), [filteredTasks]);
 
-  const grouped = useMemo(() => {
-    const g: Record<TaskGroup, TaskSummary[]> = { attention: [], active: [], done: [] };
-    for (const t of tasks.data ?? []) g[groupForStatus(t.status)].push(t);
-    const byTime = (a: TaskSummary, b: TaskSummary) =>
-      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-    g.attention.sort(byTime);
-    g.active.sort(byTime);
-    g.done.sort(byTime);
-    return g;
-  }, [tasks.data]);
-
-  const counts = {
-    total: tasks.data?.length ?? 0,
-    attention: grouped.attention.length,
-    active: grouped.active.length,
-    done: grouped.done.length,
-  };
-
-  const onRow = (t: TaskSummary) => navigate(`/p/${projectId}/t/${t.id}`);
+  const onRow = (task: TaskSummary) => navigate(`/p/${projectId}/t/${task.id}`);
   const newTask = () => projectId && openNewTask(projectId);
 
   return (
@@ -60,54 +58,51 @@ export function TaskList() {
           {projectId && (
             <ProjectOverview
               project={project}
-              counts={counts}
+              counts={sections.counts}
+              view={homeView}
+              onViewChange={setHomeView}
               onNew={newTask}
               onExport={() => setAuditOpen(true)}
+              environmentSlot={<ProjectEnvironmentStatus onOpen={() => navigate("/settings")} />}
               permissionSlot={<PermissionProjectSummary projectId={projectId} tasks={tasks.data} />}
-              showStats={counts.total > 0}
+              showStats={sections.counts.all > 0}
             />
+          )}
+
+          {(tasks.data?.length ?? 0) > 0 && (
+            <div className="flex items-center gap-2" role="search">
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-t3" aria-hidden />
+                <Input
+                  id="task-search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  className="pl-9"
+                  aria-label="搜索任务"
+                  placeholder="搜索 TASK、标题、Provider 或状态"
+                />
+              </div>
+              <Button variant="outline" onClick={toggleDensity} title="切换任务列表、执行轨道和日志的行距">
+                <ListFilter className="size-4" /> {density === "compact" ? "舒适" : "紧凑"}
+              </Button>
+            </div>
           )}
 
           {tasks.isLoading ? (
             <SkeletonRows rows={5} />
           ) : tasks.isError ? (
             <ErrorState error={tasks.error} onRetry={() => tasks.refetch()} />
-          ) : counts.total === 0 ? (
+          ) : sections.counts.all === 0 ? (
             <HomeEmpty onNew={newTask} />
           ) : (
-            <div className="flex flex-col gap-6">
-              <AttentionCenter tasks={grouped.attention} onOpen={onRow} />
-              <Group group="active" tasks={grouped.active} onRow={onRow} />
-              {grouped.done.length > 0 && (
-                <section>
-                  <button
-                    onClick={() => setShowDone((s) => !s)}
-                    className="mb-2 flex items-center gap-1.5 px-1 text-[12px] font-semibold uppercase tracking-wider text-t3 transition-colors hover:text-t2"
-                  >
-                    <ChevronRight className={cn("size-3.5 transition-transform duration-200", showDone && "rotate-90")} />
-                    {GROUP_LABEL.done}
-                    <Badge>{grouped.done.length}</Badge>
-                  </button>
-                  <AnimatePresence initial={false}>
-                    {showDone && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-                        className="overflow-hidden"
-                      >
-                        <div className="flex flex-col gap-1.5 pt-1">
-                          {grouped.done.map((t, i) => (
-                            <TaskRow key={t.id} task={t} onClick={() => onRow(t)} index={i} />
-                          ))}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </section>
-              )}
-            </div>
+            <HomeViewContent
+              view={homeView}
+              sections={sections}
+              showDone={showDone}
+              onToggleDone={() => setShowDone((current) => !current)}
+              onRow={onRow}
+              density={density}
+            />
           )}
         </div>
       </div>
@@ -124,37 +119,96 @@ export function TaskList() {
   );
 }
 
-function Group({
-  group,
+function HomeViewContent({
+  view,
+  sections,
+  showDone,
+  onToggleDone,
+  onRow,
+  density,
+}: {
+  view: HomeView;
+  sections: ReturnType<typeof buildHomeTaskSections>;
+  showDone: boolean;
+  onToggleDone: () => void;
+  onRow: (task: TaskSummary) => void;
+  density: "comfortable" | "compact";
+}) {
+  if (view === "attention") {
+    return <AttentionCenter tasks={sections.attention} onOpen={onRow} density={density} />;
+  }
+
+  if (view === "running") {
+    return (
+      <TaskGroup
+        title="运行中"
+        tasks={sections.running}
+        onRow={onRow}
+        emptyText="当前没有正在执行的任务。草稿和待开始任务不会计入运行中。"
+        density={density}
+      />
+    );
+  }
+
+  if (view === "done") {
+    return <TaskGroup title="已完结" tasks={sections.done} onRow={onRow} emptyText="还没有已完结的任务。" density={density} />;
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <AttentionCenter tasks={sections.attention} onOpen={onRow} density={density} />
+      <TaskGroup title="进行中与待开始" tasks={sections.open} onRow={onRow} emptyText="当前没有进行中或待开始的任务。" density={density} />
+      {sections.done.length > 0 && (
+        <section>
+          <button
+            type="button"
+            onClick={onToggleDone}
+            className="mb-2 flex items-center gap-1.5 px-1 text-meta font-semibold uppercase tracking-wider text-t3 transition-colors hover:text-t2"
+          >
+            <ChevronRight className={cn("size-3.5 transition-transform duration-200", showDone && "rotate-90")} />
+            最近完成
+            <Badge>{sections.done.length}</Badge>
+          </button>
+          {showDone && (
+            <div className="flex flex-col gap-1.5 pt-1">
+              {sections.done.slice(0, 5).map((task) => (
+                <TaskRow key={task.id} task={task} onClick={() => onRow(task)} density={density} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function TaskGroup({
+  title,
   tasks,
   onRow,
+  emptyText,
+  density,
 }: {
-  group: TaskGroup;
+  title: string;
   tasks: TaskSummary[];
-  onRow: (t: TaskSummary) => void;
+  onRow: (task: TaskSummary) => void;
+  emptyText: string;
+  density: "comfortable" | "compact";
 }) {
-  if (tasks.length === 0) return null;
-  const attention = group === "attention";
   return (
     <section>
-      <div
-        className={cn(
-          "mb-2.5 flex items-center gap-1.5 px-1 text-[12px] font-semibold uppercase tracking-wider",
-          attention ? "text-human" : "text-t3"
-        )}
-      >
-        {attention && <span className="size-1.5 animate-pulse-dot rounded-full bg-human shadow-[0_0_8px_-1px_var(--color-human)]" />}
-        {GROUP_LABEL[group]}
-        <Badge className={attention ? "bg-human-bg text-human" : ""}>{tasks.length}</Badge>
+      <div className="mb-2.5 flex items-center gap-1.5 px-1 text-meta font-semibold uppercase tracking-wider text-t3">
+        {title}
+        <Badge>{tasks.length}</Badge>
       </div>
       {tasks.length === 0 ? (
-        <div className="rounded-[var(--radius-panel)] border border-dashed border-line/60 bg-panel/40 px-4 py-5 text-center text-[13px] text-t3">
-          {attention ? "没有需要你处理的任务 ✦ 一切顺利" : "没有进行中的任务。"}
+        <div className="rounded-section border border-dashed border-line/60 bg-panel/40 px-4 py-5 text-center text-body text-t3">
+          {emptyText}
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
-          {tasks.map((t, i) => (
-            <TaskRow key={t.id} task={t} onClick={() => onRow(t)} index={i} attention={attention} />
+          {tasks.map((task) => (
+            <TaskRow key={task.id} task={task} onClick={() => onRow(task)} density={density} />
           ))}
         </div>
       )}
@@ -162,58 +216,26 @@ function Group({
   );
 }
 
-function TaskRow({
-  task,
-  onClick,
-  index = 0,
-  attention,
-}: {
-  task: TaskSummary;
-  onClick: () => void;
-  index?: number;
-  attention?: boolean;
-}) {
+function TaskRow({ task, onClick, density }: { task: TaskSummary; onClick: () => void; density: "comfortable" | "compact" }) {
   const active = isTaskExecuting(task.status);
   return (
-    <motion.button
+    <button
       type="button"
       onClick={onClick}
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: Math.min(index * 0.035, 0.28), duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-      whileHover={{ y: -2 }}
-      whileTap={{ scale: 0.995 }}
-      className={cn(
-        "group relative flex w-full items-center gap-3 overflow-hidden rounded-[12px] border px-3.5 py-2.5 text-left shadow-[0_1px_2px_rgba(90,68,42,0.04)] transition-[background,border-color,box-shadow]",
-        attention
-          ? "border-human/25 bg-human-bg/40 hover:border-human/45 hover:bg-human-bg/70 hover:shadow-[var(--shadow-raised)]"
-          : "border-line/70 bg-panel/70 hover:border-line-strong hover:bg-raised hover:shadow-[var(--shadow-raised)]"
-      )}
+      className={cn("group relative flex w-full items-center gap-3 overflow-hidden rounded-row border border-line/70 bg-panel/70 px-3.5 text-left transition-colors hover:border-line-strong hover:bg-raised", density === "compact" ? "py-1.5" : "py-2.5")}
     >
-      {/* 需要你：左侧一道橙色光带；其它：hover 时淡入的中性带 */}
-      <span
-        className={cn(
-          "pointer-events-none absolute inset-y-0 left-0 w-[3px] rounded-r",
-          attention ? "bg-human/70" : "bg-transparent group-hover:bg-line-strong"
-        )}
-        aria-hidden
-      />
+      <span className="pointer-events-none absolute inset-y-0 left-0 w-[3px] rounded-r bg-transparent group-hover:bg-line-strong" aria-hidden />
       <StateBadge status={task.status} size="sm" />
-      <span className="shrink-0 font-mono text-[12px] text-t3">{taskCode(task.seq)}</span>
-      <span className="min-w-0 flex-1 truncate font-medium text-t1 transition-transform group-hover:translate-x-0.5">
+      <span className="shrink-0 font-mono text-meta text-t3">{taskCode(task.seq)}</span>
+      <span className="min-w-0 flex-1 truncate font-medium text-t1">
         {task.title}
       </span>
-      {task.blockedReason === "permission_required" && (
-        <span className="flex shrink-0 items-center gap-1 rounded-full border border-human/60 bg-human-bg px-2 py-0.5 text-[11px] font-medium text-human">
-          <ShieldAlert className="size-3" aria-hidden /> 等待你授权
-        </span>
-      )}
-      <span className="flex shrink-0 items-center gap-2 text-[12px]">
+      <span className="flex shrink-0 items-center gap-2 text-meta">
         {active && <AgentMark kind={task.developerAgent} size={22} />}
         {task.currentRevision > 0 && <span className="font-mono text-t3">r{task.currentRevision}</span>}
         <span className="tabular-nums text-t3">{relativeTime(task.updatedAt)}</span>
         <ChevronRight className="size-4 text-t3/0 transition-colors group-hover:text-t3" aria-hidden />
       </span>
-    </motion.button>
+    </button>
   );
 }

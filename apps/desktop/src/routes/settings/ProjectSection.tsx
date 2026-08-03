@@ -108,12 +108,12 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
           {gitCompatibility.isError ? (
             <ErrorState error={gitCompatibility.error} onRetry={() => gitCompatibility.refetch()} compact />
           ) : gitCompatibility.data ? (
-            <div className={`rounded-[var(--radius-panel)] border p-3 ${gitCompatibility.data.blockers.length ? "border-danger/50 bg-danger/5" : "border-line bg-app"}`}>
+            <div className={`rounded-section border p-3 ${gitCompatibility.data.blockers.length ? "border-danger/50 bg-danger/5" : "border-line bg-app"}`}>
               <div className="flex items-center gap-2 font-semibold">
                 <GitBranch className="size-4" /> Git 兼容性预检
                 {gitCompatibility.data.blockers.length ? <ShieldAlert className="size-4 text-danger" /> : <ShieldCheck className="size-4 text-ok" />}
               </div>
-              <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-t3">
+              <div className="mt-2 flex flex-wrap gap-1.5 text-meta text-t3">
                 {gitCompatibility.data.shallow && <span className="rounded bg-raised px-2 py-1">shallow</span>}
                 {gitCompatibility.data.sparseCheckout && <span className="rounded bg-raised px-2 py-1">sparse</span>}
                 {!!gitCompatibility.data.submodules.length && <span className="rounded bg-raised px-2 py-1">submodule × {gitCompatibility.data.submodules.length}</span>}
@@ -122,16 +122,16 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
                 {gitCompatibility.data.sshRemote && <span className="rounded bg-raised px-2 py-1">SSH remote</span>}
                 {!gitCompatibility.data.shallow && !gitCompatibility.data.sparseCheckout && !gitCompatibility.data.submodules.length && !gitCompatibility.data.lfsTracked && <span>标准本地仓库</span>}
               </div>
-              <div className="mt-2 grid gap-1 text-[12px] sm:grid-cols-3">
+              <div className="mt-2 grid gap-1 text-meta sm:grid-cols-3">
                 <PermissionState label="项目可读" ready={gitCompatibility.data.repoReadable} />
                 <PermissionState label="项目可写" ready={gitCompatibility.data.repoWritable} />
                 <PermissionState label="隔离工作区可写" ready={gitCompatibility.data.worktreeRootWritable} />
               </div>
-              {gitCompatibility.data.blockers.map((message) => <p key={message} className="mt-2 text-[12px] text-danger">阻断：{message}</p>)}
-              {gitCompatibility.data.warnings.map((message) => <p key={message} className="mt-1 text-[12px] text-human">{message}</p>)}
+              {gitCompatibility.data.blockers.map((message) => <p key={message} className="mt-2 text-meta text-danger">阻断：{message}</p>)}
+              {gitCompatibility.data.warnings.map((message) => <p key={message} className="mt-1 text-meta text-caution">{message}</p>)}
               {gitCompatibility.data.prunableWorktrees.length > 0 && (
-                <div className="mt-3 rounded-md border border-human/40 bg-human-bg px-3 py-2 text-[12px]">
-                  <div className="font-medium text-human">失效 worktree 注册 × {gitCompatibility.data.prunableWorktrees.length}</div>
+                <div className="mt-3 rounded-control border border-caution/40 bg-caution-bg px-3 py-2 text-meta">
+                  <div className="font-medium text-caution">失效 worktree 注册 × {gitCompatibility.data.prunableWorktrees.length}</div>
                   <ul className="mt-1 list-inside list-disc break-all text-t3">
                     {gitCompatibility.data.prunableWorktrees.map((path) => <li key={path}>{path}</li>)}
                   </ul>
@@ -165,7 +165,7 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
             onToggle={(a) => toggleFallback("developerFallbacks", a)}
           />
 
-          <div className="rounded-[var(--radius-panel)] border border-line bg-app p-3">
+          <div className="rounded-section border border-line bg-app p-3">
             <Toggle
               label="启用多 Agent 审查委员会"
               checked={council.enabled}
@@ -234,7 +234,7 @@ export function SettingsProjectSection({ projects }: { projects: Project[] }) {
               onChange={(e) => patch({ envDenylist: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) })}
               placeholder={"每行一个变量名，例如\nAWS_SECRET_ACCESS_KEY"}
             />
-            <span className="text-[12px] text-t3">这些环境变量不会传给 Agent 运行。</span>
+            <span className="text-meta text-t3">这些环境变量不会传给 Agent 运行。</span>
           </div>
 
           <Toggle label="复用支持该能力的 Provider 会话（默认关闭）" checked={draft.resumeSessions ?? false} onChange={(v) => patch({ resumeSessions: v })} />
@@ -271,12 +271,12 @@ function FallbackPicker({ title, hint, options, selected, onToggle }: {
               type="button"
               onClick={() => onToggle(a)}
               className={cn(
-                "flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[12px] transition-colors",
-                on ? "border-run/60 bg-raised text-t1" : "border-line text-t2 hover:text-t1"
+                "flex items-center gap-1 rounded-pill border px-2.5 py-0.5 text-meta transition-colors",
+                on ? "border-selection/60 bg-raised text-t1" : "border-line text-t2 hover:text-t1"
               )}
             >
               {on && (
-                <span className="grid size-3.5 place-items-center rounded-full bg-run text-[9px] font-bold text-white">
+                <span className="grid size-3.5 place-items-center rounded-circle bg-selection text-micro font-bold text-white">
                   {idx + 1}
                 </span>
               )}
@@ -285,7 +285,7 @@ function FallbackPicker({ title, hint, options, selected, onToggle }: {
           );
         })}
       </div>
-      <span className="text-[12px] text-t3">{hint}</span>
+      <span className="text-meta text-t3">{hint}</span>
     </div>
   );
 }

@@ -65,7 +65,7 @@ export function ExecutionNodeSection() {
       <div className="mb-3 flex items-start justify-between gap-4">
         <div>
           <h2 className={sectionH + " !mb-0"}>远程执行节点</h2>
-          <p className="mt-0.5 text-[12px] text-t3">通过 SSH 连接；只保存私钥路径，不读取或存储私钥内容。仅发送固定 commit 的归档并运行项目验证。</p>
+          <p className="mt-0.5 text-meta text-t3">通过 SSH 连接；只保存私钥路径，不读取或存储私钥内容。仅发送固定 commit 的归档并运行项目验证。</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => setDraft({ ...EMPTY })}><Plus />添加节点</Button>
       </div>
@@ -75,14 +75,14 @@ export function ExecutionNodeSection() {
       ) : nodes.data?.length ? (
         <div className="flex flex-col gap-2">
           {nodes.data.map((node) => (
-            <div key={node.id} className="overflow-hidden rounded-lg border border-line bg-app/55">
+            <div key={node.id} className="overflow-hidden rounded-section border border-line bg-app/55">
               <div className="flex items-center justify-between gap-3 p-3">
                 <div className="flex min-w-0 items-start gap-3">
-                  <div className="relative grid size-9 shrink-0 place-items-center rounded-lg border border-line bg-raised"><Server className="size-4 text-t2" /><span className={`absolute -right-0.5 -top-0.5 size-2.5 rounded-full border-2 border-panel ${statusDot(node.status)}`} /></div>
+                  <div className="relative grid size-9 shrink-0 place-items-center rounded-section border border-line bg-raised"><Server className="size-4 text-t2" /><span className={`absolute -right-0.5 -top-0.5 size-2.5 rounded-circle border-2 border-panel ${statusDot(node.status)}`} /></div>
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2 text-[13px] font-medium"><span>{node.name}</span><span className="text-[11px] font-normal text-t3">{nodeStatusCopy(node.status)}</span>{!node.enabled && <span className="text-[11px] text-t3">已停用</span>}</div>
-                    <div className="mt-0.5 truncate text-[11px] text-t3">{node.username}@{node.host}:{node.port} · {node.workRoot}</div>
-                    <div className="mt-1 text-[11px] text-t2">{node.status === "online" ? `${node.platform ?? "远端"} · ${node.gitVersion ?? "Git 可用"}` : node.problem ?? "尚未检查连接"}</div>
+                    <div className="flex items-center gap-2 text-body font-medium"><span>{node.name}</span><span className="text-meta font-normal text-t3">{nodeStatusCopy(node.status)}</span>{!node.enabled && <span className="text-meta text-t3">已停用</span>}</div>
+                    <div className="mt-0.5 truncate text-meta text-t3">{node.username}@{node.host}:{node.port} · {node.workRoot}</div>
+                    <div className="mt-1 text-meta text-t2">{node.status === "online" ? `${node.platform ?? "远端"} · ${node.gitVersion ?? "Git 可用"}` : node.problem ?? "尚未检查连接"}</div>
                   </div>
                 </div>
                 <div className="flex shrink-0 gap-1">
@@ -96,11 +96,11 @@ export function ExecutionNodeSection() {
             </div>
           ))}
         </div>
-      ) : <p className="rounded-lg border border-dashed border-line p-4 text-center text-[12px] text-t3">还没有远程节点，任务会在本机执行验证。</p>}
+      ) : <p className="rounded-section border border-dashed border-line p-4 text-center text-meta text-t3">还没有远程节点，任务会在本机执行验证。</p>}
 
       <NodeDialog draft={draft} setDraft={setDraft} saving={mutations.upsert.isPending} onSave={save} />
       <Dialog open={!!deleting} onClose={() => setDeleting(null)} title="删除远程执行节点" footer={<><Button variant="outline" onClick={() => setDeleting(null)}>取消</Button><Button variant="danger" disabled={mutations.remove.isPending} onClick={remove}>确认删除</Button></>}>
-        <p className="text-[13px] text-t2">已被历史任务引用的节点不能删除，只能停用，避免破坏审计记录。</p>
+        <p className="text-body text-t2">已被历史任务引用的节点不能删除，只能停用，避免破坏审计记录。</p>
       </Dialog>
     </section>
   );
@@ -116,8 +116,8 @@ function NodeDialog({ draft, setDraft, saving, onSave }: { draft: Draft | null; 
       <Field label="SSH 端口"><Input type="number" min={1} max={65535} value={draft.port} onChange={(event) => update("port", Number(event.target.value))} /></Field>
       <div className="col-span-2"><Field label="远端工作根目录"><Input value={draft.workRoot} onChange={(event) => update("workRoot", event.target.value)} placeholder="/home/user/agentflow-runs" /></Field></div>
       <div className="col-span-2"><Field label="SSH 私钥路径（可选，仅保存路径）"><Input value={draft.identityFile ?? ""} onChange={(event) => update("identityFile", event.target.value || null)} placeholder="/Users/name/.lima/_config/user" /></Field></div>
-      <label className="col-span-2 flex items-center gap-2 text-[13px] text-t2"><Switch checked={draft.denyNetwork} onCheckedChange={(value) => update("denyNetwork", value)} />在 Linux network namespace 中断网执行验证</label>
-      <label className="col-span-2 flex items-center gap-2 text-[13px] text-t2"><Switch checked={draft.enabled} onCheckedChange={(value) => update("enabled", value)} />允许新任务使用此节点</label>
+      <label className="col-span-2 flex items-center gap-2 text-body text-t2"><Switch checked={draft.denyNetwork} onCheckedChange={(value) => update("denyNetwork", value)} />在 Linux network namespace 中断网执行验证</label>
+      <label className="col-span-2 flex items-center gap-2 text-body text-t2"><Switch checked={draft.enabled} onCheckedChange={(value) => update("enabled", value)} />允许新任务使用此节点</label>
     </div>}
   </Dialog>;
 }

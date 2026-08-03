@@ -53,21 +53,21 @@ export function RollbackPreflightDialog({
       }
     >
       {loading && (
-        <div className="flex items-center gap-2 py-8 text-[13px] text-t3">
+        <div className="flex items-center gap-2 py-8 text-body text-t3">
           <LoaderCircle className="size-4 animate-spin" /> 正在读取最新 Git 状态…
         </div>
       )}
       {error && !loading && (
-        <div className="rounded-lg border border-human/35 bg-human-bg p-3 text-[13px] text-t2">
+        <div className="rounded-section border border-caution/35 bg-caution-bg p-3 text-body text-t2">
           无法完成回滚预检，当前不会执行任何 Git 改动。
           <Button className="ml-2" size="sm" variant="outline" onClick={onRetry}>重试</Button>
         </div>
       )}
       {preflight && !loading && !error && (
-        <div className="space-y-4 text-[12px] text-t2">
-          <div className={`rounded-lg border p-3 ${allowed ? "border-ok/35 bg-ok/5" : "border-human/35 bg-human-bg"}`}>
+        <div className="space-y-4 text-meta text-t2">
+          <div className={`rounded-section border p-3 ${allowed ? "border-ok/35 bg-ok/5" : "border-caution/35 bg-caution-bg"}`}>
             <div className="flex items-start gap-2">
-              {allowed ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-ok" /> : <AlertTriangle className="mt-0.5 size-4 shrink-0 text-human" />}
+              {allowed ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-ok" /> : <AlertTriangle className="mt-0.5 size-4 shrink-0 text-caution" />}
               <div>
                 <div className="font-medium text-t1">{allowed ? "预检通过" : "当前策略不可执行"}</div>
                 <div className="mt-1 leading-relaxed">{rollbackRecommendation(preflight)}</div>
@@ -85,14 +85,14 @@ export function RollbackPreflightDialog({
           {blockers.length > 0 && (
             <div>
               <div className="mb-1.5 font-medium text-t1">需要先处理</div>
-              <ul className="space-y-1 text-human">{blockers.map((item) => <li key={item}>· {item}</li>)}</ul>
+              <ul className="space-y-1 text-caution">{blockers.map((item) => <li key={item}>· {item}</li>)}</ul>
             </div>
           )}
 
           <div>
             <div className="mb-1.5 font-medium text-t1">将影响 {preflight.affectedFileCount} 个文件</div>
             {preflight.affectedFiles.length > 0 ? (
-              <div className="max-h-32 overflow-y-auto rounded-md border border-line bg-app/45 p-2 font-mono text-[11px]">
+              <div className="max-h-32 overflow-y-auto rounded-control border border-line bg-app/45 p-2 font-mono text-meta">
                 {preflight.affectedFiles.map((path) => <div key={path}>{path}</div>)}
                 {preflight.affectedFilesTruncated && <div className="mt-1 text-t3">仅显示前 50 个文件</div>}
               </div>
@@ -102,11 +102,11 @@ export function RollbackPreflightDialog({
           {preflight.laterCommits.length > 0 && (
             <div>
               <div className="mb-1.5 font-medium text-t1">会被保护的后续提交</div>
-              <div className="space-y-1 rounded-md border border-line bg-app/45 p-2">
+              <div className="space-y-1 rounded-control border border-line bg-app/45 p-2">
                 {preflight.laterCommits.map((commit) => (
                   <div key={commit.sha} className="flex items-center gap-2">
                     <GitCommitHorizontal className="size-3.5 shrink-0 text-t3" />
-                    <span className="font-mono text-[11px]">{shortCommit(commit.sha)}</span>
+                    <span className="font-mono text-meta">{shortCommit(commit.sha)}</span>
                     <span className="truncate">{commit.subject}</span>
                   </div>
                 ))}
@@ -116,7 +116,7 @@ export function RollbackPreflightDialog({
               </div>
             </div>
           )}
-          <p className="text-[11px] leading-relaxed text-t3">
+          <p className="text-meta leading-relaxed text-t3">
             确认时会再次读取 Git 状态；如果分支、HEAD 或工作区在弹窗打开后发生变化，执行会被拒绝。
           </p>
         </div>
@@ -126,5 +126,5 @@ export function RollbackPreflightDialog({
 }
 
 function Fact({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-md border border-line bg-app/45 p-2"><div className="text-[11px] text-t3">{label}</div><div className="mt-0.5 truncate font-medium">{value}</div></div>;
+  return <div className="rounded-control border border-line bg-app/45 p-2"><div className="text-meta text-t3">{label}</div><div className="mt-0.5 truncate font-medium">{value}</div></div>;
 }

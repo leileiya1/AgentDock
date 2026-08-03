@@ -57,7 +57,7 @@ export function StorageSection() {
             <Stat label="加密备份" value={`${r.encryptedBackups} 份`} />
             <Stat label="运行日志" value={r.runLogsEncrypted ? "本地加密" : "未加密"} />
           </div>
-          <div className="truncate font-mono text-[12px] text-t3" title={r.dataDir}>{r.dataDir}</div>
+          <div className="truncate font-mono text-meta text-t3" title={r.dataDir}>{r.dataDir}</div>
           <div className={actionsCls}>
             <Button variant="outline" onClick={() => run(() => cleanup.mutateAsync(), "已按当前策略清理")} disabled={cleanup.isPending}>
               按策略清理（日志/缓存）
@@ -70,11 +70,11 @@ export function StorageSection() {
       ) : null}
 
       <div className="mt-4">
-        <h3 className="mb-2 text-[13px] font-semibold text-t2">数据库备份</h3>
+        <h3 className="mb-2 text-body font-semibold text-t2">数据库备份</h3>
         {(backups.data?.length ?? 0) === 0 ? <p className="text-t3">暂无备份。</p> : (
           <ul className="flex list-none flex-col gap-1">
             {backups.data!.map((backup) => (
-              <li key={backup.path} className="flex items-center gap-3 rounded-[var(--radius-control)] border border-line px-2 py-2 text-[13px]">
+              <li key={backup.path} className="flex items-center gap-3 rounded-control border border-line px-2 py-2 text-body">
                 <span className="min-w-0 flex-1 truncate font-mono" title={backup.path}>{relativeTime(backup.createdAt)}</span>
                 <span className="text-t3">{formatBytes(backup.bytes)}</span>
                 <Button variant="outline" size="sm" onClick={() => setRestorePath(backup.path)}>恢复…</Button>
@@ -85,7 +85,7 @@ export function StorageSection() {
       </div>
 
       <div className="mt-4">
-        <h3 className="mb-2 text-[13px] font-semibold text-t2">回收站</h3>
+        <h3 className="mb-2 text-body font-semibold text-t2">回收站</h3>
         {trash.isLoading ? (
           <SkeletonRows rows={2} />
         ) : (trash.data?.length ?? 0) === 0 ? (
@@ -94,7 +94,7 @@ export function StorageSection() {
           <>
             <ul className="flex list-none flex-col gap-1">
               {trash.data!.map((t) => (
-                <li key={t.taskId} className="flex items-center gap-3 rounded-[var(--radius-control)] border border-line px-2 py-2 text-[13px]">
+                <li key={t.taskId} className="flex items-center gap-3 rounded-control border border-line px-2 py-2 text-body">
                   <span className="min-w-0 flex-1 truncate">{t.title}</span>
                   <span className="text-t3">{formatBytes(t.bytes)}</span>
                   <span className="text-t3" title={`到期 ${t.purgeAfter}`}>删除于 {relativeTime(t.trashedAt)}</span>
@@ -122,7 +122,7 @@ export function StorageSection() {
           </>
         }
       >
-        <p className="text-[13px] text-t2">回收站中的任务将被永久删除，无法恢复。确定继续吗？</p>
+        <p className="text-body text-t2">回收站中的任务将被永久删除，无法恢复。确定继续吗？</p>
       </Dialog>
       <Dialog
         open={!!restorePath}
@@ -139,7 +139,7 @@ export function StorageSection() {
           </>
         }
       >
-        <p className="text-[13px] text-t2">恢复前会保留当前数据库副本。完成后必须重启 AgentFlow，正在运行的 Agent 会阻止恢复。</p>
+        <p className="text-body text-t2">恢复前会保留当前数据库副本。完成后必须重启 AgentFlow，正在运行的 Agent 会阻止恢复。</p>
       </Dialog>
     </section>
   );
@@ -147,9 +147,9 @@ export function StorageSection() {
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col gap-0.5 rounded-[var(--radius-control)] border border-line bg-app px-2 py-2">
-      <span className="text-[12px] text-t3">{label}</span>
-      <span className="font-mono text-[13px]">{value}</span>
+    <div className="flex flex-col gap-0.5 rounded-control border border-line bg-app px-2 py-2">
+      <span className="text-meta text-t3">{label}</span>
+      <span className="font-mono text-body">{value}</span>
     </div>
   );
 }

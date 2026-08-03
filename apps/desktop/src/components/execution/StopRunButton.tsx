@@ -49,7 +49,7 @@ export function StopConfirmDialog({
         </>
       }
     >
-      <div className="space-y-2 text-[13px] leading-relaxed text-t2">
+      <div className="space-y-2 text-body leading-relaxed text-t2">
         <p>停止后会保留：</p>
         <ul className="list-disc space-y-0.5 pl-5">
           {STOP_PRESERVED_ITEMS.map((item) => (

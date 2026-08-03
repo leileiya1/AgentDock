@@ -81,12 +81,12 @@ export function LogsTab({ taskId, tree, runs, revision, lastActivityAt }: Props)
       {showList && (
         <div className="w-64 shrink-0 overflow-y-auto border-r border-line/70">
           <div className="flex items-center justify-between px-2 pt-2">
-            <span className="text-[11px] text-t3">执行者</span>
+            <span className="text-meta text-t3">执行者</span>
             {layout !== "wide" && (
               <button
                 type="button"
                 onClick={() => setListOpen(false)}
-                className="rounded-md px-1.5 py-0.5 text-[11px] text-t3 hover:bg-raised hover:text-t1"
+                className="rounded-control px-1.5 py-0.5 text-meta text-t3 hover:bg-raised hover:text-t1"
               >
                 收起
               </button>
@@ -108,7 +108,7 @@ export function LogsTab({ taskId, tree, runs, revision, lastActivityAt }: Props)
           type="button"
           onClick={() => setListOpen(true)}
           aria-label="展开执行者列表"
-          className="flex shrink-0 items-center gap-1 border-r border-line/70 px-1.5 text-[11px] text-t3 transition-colors [writing-mode:vertical-rl] hover:bg-raised hover:text-t1"
+          className="flex shrink-0 items-center gap-1 border-r border-line/70 px-1.5 text-meta text-t3 transition-colors [writing-mode:vertical-rl] hover:bg-raised hover:text-t1"
         >
           <ListTree className="size-3.5 rotate-90" aria-hidden />
           执行者 {countRuns(tree, revision)}

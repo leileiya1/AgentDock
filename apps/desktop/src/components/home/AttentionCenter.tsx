@@ -1,116 +1,140 @@
-import { useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronRight, GitMerge, KeyRound, ShieldAlert, UserCheck } from "lucide-react";
+import { forwardRef, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { TaskSummary } from "@/generated/bindings";
-import { ATTENTION_META, buildAttentionItems, type AttentionKind } from "@/lib/attention";
+import { buildAttentionItems, groupAttentionItems, type AttentionItem, type AttentionSeverity } from "@/lib/attention";
+import { attentionNav } from "@/lib/attentionNav";
 import { relativeTime, taskCode } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { StateBadge } from "@/components/StateBadge";
 
-type Filter = "all" | AttentionKind;
+const DEFAULT_LIMIT = 8;
 
-const ICON = {
-  permission: ShieldAlert,
-  approval: UserCheck,
-  recovery: AlertTriangle,
-  conflict: GitMerge,
-  delivery: KeyRound,
-} satisfies Record<AttentionKind, typeof AlertTriangle>;
+const SEVERITY: Record<AttentionSeverity, { label: string; className: string; marker: string }> = {
+  high: { label: "高影响", className: "text-status-danger", marker: "bg-status-danger" },
+  medium: { label: "需尽快", className: "text-status-human", marker: "bg-status-human" },
+  normal: { label: "常规", className: "text-t3", marker: "bg-status-idle" },
+};
 
-export function AttentionCenter({ tasks, onOpen }: { tasks: TaskSummary[]; onOpen: (task: TaskSummary) => void }) {
+export function AttentionCenter({ tasks, onOpen, density = "comfortable" }: { tasks: TaskSummary[]; onOpen: (task: TaskSummary) => void; density?: "comfortable" | "compact" }) {
   const items = useMemo(() => buildAttentionItems(tasks), [tasks]);
-  const [filter, setFilter] = useState<Filter>("all");
-  const counts = useMemo(() => {
-    const result = new Map<AttentionKind, number>();
-    for (const item of items) result.set(item.kind, (result.get(item.kind) ?? 0) + 1);
-    return result;
-  }, [items]);
-  const visible = filter === "all" ? items : items.filter((item) => item.kind === filter);
+  const [showAll, setShowAll] = useState(false);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const rowRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const visible = showAll ? items : items.slice(0, DEFAULT_LIMIT);
+  const activeId = visible.some((item) => item.task.id === focusedId) ? focusedId : visible[0]?.task.id ?? null;
+  const grouped = showAll || items.length <= DEFAULT_LIMIT;
+  const groups = grouped
+    ? groupAttentionItems(visible)
+    : [{ key: "visible", label: "", items: visible }];
+
+  const onRowKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const result = attentionNav(event.key, index, visible.length);
+    if (!result) return;
+    event.preventDefault();
+    const item = visible[result.index];
+    if (!item) return;
+    if (result.type === "open") {
+      onOpen(item.task);
+      return;
+    }
+    setFocusedId(item.task.id);
+    rowRefs.current[result.index]?.focus();
+  };
 
   return (
-    <section className="rounded-[var(--radius-panel)] border border-human/25 bg-human-bg/20 p-3.5" aria-labelledby="attention-title">
-      <div className="flex flex-wrap items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="size-2 rounded-full bg-human shadow-[0_0_8px_-1px_var(--color-human)]" aria-hidden />
-            <h2 id="attention-title" className="text-[14px] font-semibold text-t1">需要你处理</h2>
-            <span className="rounded-full bg-human-bg px-2 py-0.5 text-[11px] font-semibold text-human">{items.length}</span>
-          </div>
-          <p className="mt-1 text-[12px] text-t3">只列出必须由你决定、授权或恢复的事项，并说明下一步。</p>
+    <section className="border-y border-line-strong/70" aria-labelledby="attention-title">
+      <div className="flex min-h-11 items-center justify-between gap-3 border-b border-line/70 px-2 py-2">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h2 id="attention-title" className="text-section font-semibold text-t1">需要你处理</h2>
+          <span className="tabular-nums text-meta text-t3">{items.length}</span>
         </div>
+        {items.length > 0 && <span className="text-meta text-t3">按影响和更新时间排序</span>}
       </div>
 
       {items.length === 0 ? (
-        <div className="mt-3 flex items-center gap-2 rounded-lg border border-dashed border-ok/30 bg-ok/5 px-3 py-3 text-[13px] text-t2">
-          <CheckCircle2 className="size-4 text-ok" aria-hidden /> 当前没有等待你处理的事项。
-        </div>
+        <div className="px-3 py-5 text-body text-t3">当前没有等待你处理的事项。</div>
       ) : (
-        <>
-          <div className="mt-3 flex gap-1 overflow-x-auto pb-0.5" role="tablist" aria-label="处理事项筛选">
-            <FilterButton label="全部" count={items.length} active={filter === "all"} onClick={() => setFilter("all")} />
-            {(Object.keys(ATTENTION_META) as AttentionKind[]).map((kind) => {
-              const count = counts.get(kind) ?? 0;
-              if (count === 0) return null;
-              return (
-                <FilterButton
-                  key={kind}
-                  label={ATTENTION_META[kind].label}
-                  count={count}
-                  active={filter === kind}
-                  onClick={() => setFilter(kind)}
-                />
-              );
-            })}
-          </div>
+        <div>
+          {groups.map((group) => (
+            <div key={group.key}>
+              {grouped && group.items.length > 1 && (
+                <div className="border-b border-line/60 bg-panel/45 px-3 py-1.5 text-meta font-medium text-t3">
+                  {group.label} · <span className="tabular-nums">{group.items.length}</span>
+                </div>
+              )}
+              {group.items.map((item) => {
+                const index = visible.findIndex((candidate) => candidate.task.id === item.task.id);
+                return (
+                  <AttentionRow
+                    key={item.task.id}
+                    item={item}
+                    tabIndex={item.task.id === activeId ? 0 : -1}
+                    ref={(node) => { rowRefs.current[index] = node; }}
+                    onFocus={() => setFocusedId(item.task.id)}
+                    onKeyDown={(event) => onRowKeyDown(event, index)}
+                    onOpen={() => onOpen(item.task)}
+                    density={density}
+                  />
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
 
-          <div className="mt-2.5 flex flex-col gap-2">
-            {visible.map((item) => {
-              const Icon = ICON[item.kind];
-              return (
-                <button
-                  key={item.task.id}
-                  type="button"
-                  onClick={() => onOpen(item.task)}
-                  className="group grid w-full grid-cols-[auto_minmax(0,1fr)_auto] gap-x-3 gap-y-1 rounded-[10px] border border-line/75 bg-panel/85 px-3 py-2.5 text-left transition-colors hover:border-human/45 hover:bg-raised"
-                >
-                  <span className="row-span-2 mt-0.5 grid size-8 place-items-center rounded-lg bg-human-bg text-human">
-                    <Icon className="size-4" aria-hidden />
-                  </span>
-                  <span className="flex min-w-0 flex-wrap items-center gap-2">
-                    <span className="font-mono text-[11px] text-t3">{taskCode(item.task.seq)}</span>
-                    <span className="min-w-0 truncate text-[13px] font-semibold text-t1">{item.task.title}</span>
-                    <StateBadge status={item.task.status} size="sm" />
-                  </span>
-                  <span className="row-span-2 flex items-center gap-2 self-center pl-2">
-                    <span className="hidden text-[12px] font-medium text-human sm:inline">{ATTENTION_META[item.kind].action}</span>
-                    <ChevronRight className="size-4 text-t3 transition-transform group-hover:translate-x-0.5 group-hover:text-human" aria-hidden />
-                  </span>
-                  <span className="min-w-0 text-[12px] leading-relaxed text-t2">
-                    {item.reason} <span className="text-t3">下一步：{item.nextStep}</span>
-                    <span className="ml-2 whitespace-nowrap text-[11px] text-t3">{relativeTime(item.task.updatedAt)}</span>
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </>
+      {items.length > DEFAULT_LIMIT && (
+        <div className="border-t border-line/70 px-3 py-2 text-right">
+          <button
+            type="button"
+            onClick={() => setShowAll((current) => !current)}
+            className="text-meta font-medium text-status-human hover:underline"
+          >
+            {showAll ? `收起到 ${DEFAULT_LIMIT} 项` : `查看全部 ${items.length} 项`}
+          </button>
+        </div>
       )}
     </section>
   );
 }
 
-function FilterButton({ label, count, active, onClick }: { label: string; count: number; active: boolean; onClick: () => void }) {
+const AttentionRow = forwardRef<
+  HTMLButtonElement,
+  {
+    item: AttentionItem;
+    tabIndex: number;
+    onFocus: () => void;
+    onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
+    onOpen: () => void;
+    density: "comfortable" | "compact";
+  }
+>(({ item, tabIndex, onFocus, onKeyDown, onOpen, density }, ref) => {
+  const severity = SEVERITY[item.severity];
   return (
     <button
+      ref={ref}
       type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={cn(
-        "shrink-0 rounded-full border px-2.5 py-1 text-[11px] transition-colors",
-        active ? "border-human/50 bg-human-bg text-human" : "border-line bg-panel text-t3 hover:text-t1"
-      )}
+      tabIndex={tabIndex}
+      onFocus={onFocus}
+      onKeyDown={onKeyDown}
+      onClick={onOpen}
+      className={cn("group grid w-full grid-cols-[54px_minmax(0,1fr)_auto] items-center gap-3 border-b border-line/60 px-3 text-left transition-colors last:border-b-0 hover:bg-raised/70 focus-visible:bg-raised/70", density === "compact" ? "py-1" : "py-2")}
     >
-      {label} {count}
+      <span className={cn("flex items-center gap-1.5 text-meta font-medium", severity.className)}>
+        <span className={cn("h-5 w-[3px] rounded-sm", severity.marker)} aria-hidden />
+        {severity.label}
+      </span>
+      <span className="min-w-0">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 font-mono text-meta text-t3">{taskCode(item.task.seq)}</span>
+          <span className="min-w-0 truncate text-body font-semibold text-t1">{item.task.title}</span>
+          <StateBadge status={item.task.status} size="sm" />
+        </span>
+        <span className="mt-0.5 flex min-w-0 items-center gap-2 text-meta">
+          <span className="min-w-0 truncate text-t2">{item.reason}</span>
+          <span className="shrink-0 whitespace-nowrap tabular-nums text-t3">更新于 {relativeTime(item.task.updatedAt)}</span>
+        </span>
+      </span>
+      <span className="shrink-0 text-meta font-medium text-status-human group-hover:underline">{item.action}</span>
     </button>
   );
-}
+});
+AttentionRow.displayName = "AttentionRow";

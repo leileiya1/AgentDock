@@ -8,16 +8,16 @@ export function PlanVersionComparison({ context }: { context: PlanReviewContext 
   return (
     <div className="space-y-3">
       {context.detectedDeviations.length > 0 && (
-        <div className="rounded-md border border-human/40 bg-human-bg p-3 text-[12px]">
-          <div className="flex items-center gap-1.5 font-medium text-human"><FileWarning className="size-4" /> 上轮检测到越界文件</div>
+        <div className="rounded-control border border-caution/40 bg-caution-bg p-3 text-meta">
+          <div className="flex items-center gap-1.5 font-medium text-caution"><FileWarning className="size-4" /> 上轮检测到越界文件</div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {context.detectedDeviations.map((path) => <code key={path} className="rounded bg-app/70 px-2 py-1 text-[11px] text-t1">{path}</code>)}
+            {context.detectedDeviations.map((path) => <code key={path} className="rounded bg-app/70 px-2 py-1 text-meta text-t1">{path}</code>)}
           </div>
-          <p className="mt-2 text-[11px] text-t2">上轮工作区已重置；批准前确认新计划是否确实覆盖这些文件。</p>
+          <p className="mt-2 text-meta text-t2">上轮工作区已重置；批准前确认新计划是否确实覆盖这些文件。</p>
         </div>
       )}
       {diff && previous && latest ? (
-        <div className="rounded-md border border-line bg-raised p-3 text-[12px]">
+        <div className="rounded-control border border-line bg-raised p-3 text-meta">
           <div className="flex items-center gap-2 font-medium text-t1">
             计划 v{diff.fromVersion} <ArrowRight className="size-3.5 text-t3" /> v{diff.toVersion}
           </div>
@@ -34,14 +34,14 @@ export function PlanVersionComparison({ context }: { context: PlanReviewContext 
           {!diff.summaryChanged && !hasListChanges(diff) && <p className="mt-2 text-t3">新版计划与上一版没有结构化差异。</p>}
         </div>
       ) : (
-        <div className="rounded-md border border-line bg-raised p-3 text-[12px] text-t3">这是首个计划版本，没有上一版可比较。</div>
+        <div className="rounded-control border border-line bg-raised p-3 text-meta text-t3">这是首个计划版本，没有上一版可比较。</div>
       )}
     </div>
   );
 }
 
 function PlanSummary({ label, value }: { label: string; value: string }) {
-  return <div className="rounded border border-line bg-app/50 p-2"><div className="text-[10px] font-medium text-t3">{label} 摘要</div><p className="mt-1 line-clamp-4 leading-relaxed text-t2">{value}</p></div>;
+  return <div className="rounded border border-line bg-app/50 p-2"><div className="text-micro font-medium text-t3">{label} 摘要</div><p className="mt-1 line-clamp-4 leading-relaxed text-t2">{value}</p></div>;
 }
 
 function ChangeRow({ label, added, removed, mono = false }: { label: string; added: string[]; removed: string[]; mono?: boolean }) {
@@ -49,9 +49,9 @@ function ChangeRow({ label, added, removed, mono = false }: { label: string; add
   return (
     <div className="grid grid-cols-[72px_1fr] gap-2">
       <span className="text-t3">{label}</span>
-      <div className={`space-y-1 ${mono ? "font-mono text-[11px]" : ""}`}>
+      <div className={`space-y-1 ${mono ? "font-mono text-meta" : ""}`}>
         {added.map((value) => <div key={`add-${value}`} className="flex items-start gap-1 text-ok"><Plus className="mt-0.5 size-3 shrink-0" />{value}</div>)}
-        {removed.map((value) => <div key={`remove-${value}`} className="flex items-start gap-1 text-human"><Minus className="mt-0.5 size-3 shrink-0" />{value}</div>)}
+        {removed.map((value) => <div key={`remove-${value}`} className="flex items-start gap-1 text-caution"><Minus className="mt-0.5 size-3 shrink-0" />{value}</div>)}
       </div>
     </div>
   );

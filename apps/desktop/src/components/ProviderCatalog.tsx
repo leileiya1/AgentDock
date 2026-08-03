@@ -107,10 +107,10 @@ export function ProviderCatalog({ env, providers = [] }: Props) {
           <Button variant="ghost" size="sm" className="px-1 text-t3" onClick={() => setShowMore((value) => !value)}>
             {showMore ? <ChevronUp /> : <ChevronDown />}
             更多 Provider
-            <span className="rounded-full bg-raised px-1.5 text-[11px]">{EXTRA_CLIS.length + EXTRA_APIS.length + external.length}</span>
+            <span className="rounded-pill bg-raised px-1.5 text-meta">{EXTRA_CLIS.length + EXTRA_APIS.length + external.length}</span>
           </Button>
           {showMore && (
-            <div className="mt-2 overflow-hidden rounded-[var(--radius-control)] border border-line bg-app">
+            <div className="mt-2 overflow-hidden rounded-control border border-line bg-app">
               {EXTRA_CLIS.map((item) => (
                 overrides.has(item.id)
                   ? <ExternalRow key={item.id} provider={overrides.get(item.id)!} />
@@ -141,14 +141,14 @@ export function ProviderCatalog({ env, providers = [] }: Props) {
 function ProviderGroup({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-t3">{title}</div>
-      <div className="overflow-hidden rounded-[var(--radius-control)] border border-line bg-app">{children}</div>
+      <div className="mb-1.5 text-meta font-semibold uppercase tracking-wider text-t3">{title}</div>
+      <div className="overflow-hidden rounded-control border border-line bg-app">{children}</div>
     </div>
   );
 }
 
 function StatusDot({ ready }: { ready: boolean }) {
-  return <span className={cn("size-2 shrink-0 rounded-full", ready ? "bg-ok shadow-[0_0_7px_-1px_var(--color-ok)]" : "bg-bad")} />;
+  return <span className={cn("size-2 shrink-0 rounded-circle", ready ? "bg-ok" : "bg-bad")} />;
 }
 
 function RowShell({ icon, title, ready, statusText, actions, details }: {
@@ -160,7 +160,7 @@ function RowShell({ icon, title, ready, statusText, actions, details }: {
         <ProviderIcon provider={icon} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2"><span className="font-medium">{title}</span><StatusDot ready={ready} /></div>
-          <div className={cn("mt-0.5 text-[12px]", ready ? "text-t3" : "text-bad")}>{statusText}</div>
+          <div className={cn("mt-0.5 text-meta", ready ? "text-t3" : "text-bad")}>{statusText}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1">{actions}</div>
       </div>
@@ -230,7 +230,7 @@ function CliRow({ item, status, onInstall, onConfigureCredential }: {
         </>
       }
       details={details && (
-        <div className="ml-[52px] mt-2 rounded-md bg-panel/70 px-3 py-2 text-[12px] text-t3">
+        <div className="ml-[52px] mt-2 rounded-control bg-panel/70 px-3 py-2 text-meta text-t3">
           {status.version && <div>版本 {status.version}</div>}
           <div>支持状态 {status.supportLevel === "verified" ? "已通过固定版本回归" : status.supportLevel === "compatible_untested" ? "参数兼容，创建任务时运行真实探针" : status.supportLevel === "unsupported" ? "不兼容" : "未纳入支持矩阵"}</div>
           {status.verifiedVersions.length > 0 && <div>已验证基线 {status.verifiedVersions.join("、")}</div>}
@@ -283,12 +283,12 @@ function CliCredentialDialog({ target, status, onClose }: {
       onConfirmKey={save}
       footer={<><Button variant="danger" onClick={remove} disabled={pending}>移除 AgentFlow 密钥</Button><span className="flex-1" /><Button variant="ghost" onClick={onClose}>取消</Button><Button variant="primary" onClick={save} disabled={pending || !key.trim()}>保存 API Key</Button></>}
     >
-      <p className="mb-3 text-[12px] text-t3">当前认证：{authMethodLabel(status?.authMethod ?? null) ?? "未认证"}。账号登录和 API Key 都受支持。</p>
-      <label className="flex flex-col gap-2 text-[13px]">
+      <p className="mb-3 text-meta text-t3">当前认证：{authMethodLabel(status?.authMethod ?? null) ?? "未认证"}。账号登录和 API Key 都受支持。</p>
+      <label className="flex flex-col gap-2 text-body">
         <span className="font-medium">{envKey}</span>
         <Input type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} placeholder="粘贴 CLI 专用 API Key" autoFocus />
       </label>
-      <p className="mt-3 text-[12px] text-t3">密钥只保存到 macOS 钥匙串，并仅注入 AgentFlow 启动的 {target?.label} 进程。配置后将按 API 用量计费，并优先于该 CLI 的账号登录。</p>
+      <p className="mt-3 text-meta text-t3">密钥只保存到 macOS 钥匙串，并仅注入 AgentFlow 启动的 {target?.label} 进程。配置后将按 API 用量计费，并优先于该 CLI 的账号登录。</p>
     </Dialog>
   );
 }
@@ -315,7 +315,7 @@ function ExternalRow({ provider }: { provider: ProviderDescriptor }) {
       statusText={provider.available ? "已连接 · 签名已验证" : provider.trust === "quarantined" ? "已隔离" : "不可用"}
       actions={<Button variant="ghost" size="sm" onClick={() => setDetails((value) => !value)}>{details ? "收起" : "详情"}</Button>}
       details={details && (
-        <div className="ml-[52px] mt-2 rounded-md bg-panel/70 px-3 py-2 text-[12px] text-t3">
+        <div className="ml-[52px] mt-2 rounded-control bg-panel/70 px-3 py-2 text-meta text-t3">
           <div>{provider.id} · 协议 v{provider.protocolVersion}</div>
           <div className="mt-1">
             {provider.executionLocation === "local" ? "本地执行" : provider.executionLocation === "remote" ? "远程执行" : "混合执行"}
@@ -349,11 +349,11 @@ function InstallDialog({ target, onClose }: { target: CliDefinition | null; onCl
       onConfirmKey={confirm}
       footer={<><Button variant="ghost" onClick={onClose}>取消</Button><Button variant="primary" onClick={confirm} disabled={install.isPending}>{install.isPending ? "安装中…" : "确认安装"}</Button></>}
     >
-      <div className="flex gap-3 text-[13px] text-t2">
-        <Info className="mt-0.5 size-4 shrink-0 text-run" />
+      <div className="flex gap-3 text-body text-t2">
+        <Info className="mt-0.5 size-4 shrink-0 text-link" />
         <div>
           <p>AgentFlow 将通过官方 npm 包安装到当前用户环境，完成后会自动重新检测。</p>
-          <code className="mt-2 block rounded-md bg-app px-3 py-2 font-mono text-[12px] text-t1">npm install -g {target?.packageName}</code>
+          <code className="mt-2 block rounded-control bg-app px-3 py-2 font-mono text-meta text-t1">npm install -g {target?.packageName}</code>
         </div>
       </div>
     </Dialog>
@@ -394,11 +394,11 @@ function ApiDialog({ target, status, onClose }: { target: ApiDefinition | null; 
       onConfirmKey={save}
       footer={<>{status?.available && <Button variant="danger" onClick={remove} disabled={pending}>移除密钥</Button>}<span className="flex-1" /><Button variant="ghost" onClick={onClose}>取消</Button><Button variant="primary" onClick={save} disabled={pending || !key.trim()}>保存并检测</Button></>}
     >
-      <label className="flex flex-col gap-2 text-[13px]">
+      <label className="flex flex-col gap-2 text-body">
         <span className="font-medium">API 密钥</span>
         <Input type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} placeholder="粘贴密钥" autoFocus />
       </label>
-      <p className="mt-3 text-[12px] text-t3">密钥仅保存到 macOS 钥匙串，不写入项目、数据库或日志。模型和 Base URL 可在项目设置的高级选项中调整。</p>
+      <p className="mt-3 text-meta text-t3">密钥仅保存到 macOS 钥匙串，不写入项目、数据库或日志。模型和 Base URL 可在项目设置的高级选项中调整。</p>
     </Dialog>
   );
 }

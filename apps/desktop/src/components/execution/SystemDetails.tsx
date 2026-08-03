@@ -19,7 +19,7 @@ export function SystemDetails({ events, onOpenRun }: { events: NormalizedEvent[]
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[12px] text-t3 transition-colors hover:bg-raised hover:text-t2"
+        className="flex w-full items-center gap-1.5 rounded-control px-2 py-1.5 text-left text-meta text-t3 transition-colors hover:bg-raised hover:text-t2"
       >
         <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} aria-hidden />
         系统详情
@@ -28,7 +28,7 @@ export function SystemDetails({ events, onOpenRun }: { events: NormalizedEvent[]
       {open && (
         <ul className="mt-1 list-none space-y-0.5 pl-6 pr-2">
           {events.map((event) => (
-            <li key={event.id} className="flex items-start gap-1.5 py-0.5 text-[12px] text-t3">
+            <li key={event.id} className="flex items-start gap-1.5 py-0.5 text-meta text-t3">
               <StateMark state={event.copy.state} iconOnly className="mt-px scale-90" />
               <span className="min-w-0 flex-1">
                 {event.copy.label}
@@ -40,7 +40,7 @@ export function SystemDetails({ events, onOpenRun }: { events: NormalizedEvent[]
               {event.runId && onOpenRun && (
                 <button
                   type="button"
-                  className="shrink-0 rounded p-0.5 text-run hover:bg-raised"
+                  className="shrink-0 rounded p-0.5 text-link hover:bg-raised"
                   aria-label="查看对应执行日志"
                   title="查看对应执行日志"
                   onClick={() => onOpenRun(event)}

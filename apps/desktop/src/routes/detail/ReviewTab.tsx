@@ -17,7 +17,7 @@ import { AcceptanceCriteriaPanel } from "@/components/AcceptanceCriteriaPanel";
 
 const DECISION: Record<ReviewDecision, { label: string; cls: string }> = {
   pass: { label: "通过", cls: "text-ok border-ok/50" },
-  request_changes: { label: "要求修改", cls: "text-human border-human/50" },
+  request_changes: { label: "要求修改", cls: "text-status-review border-status-review/50" },
   block: { label: "拦截", cls: "text-bad border-bad/50" },
 };
 
@@ -32,11 +32,11 @@ function ReviewSummary({ text }: { text: string }) {
   const long = text.length > limit;
   return (
     <div className="min-w-0">
-      <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-t2">
+      <p className="whitespace-pre-wrap text-body leading-relaxed text-t2">
         {expanded || !long ? text : `${text.slice(0, limit).trimEnd()}…`}
       </p>
       {long && (
-        <button type="button" onClick={() => setExpanded((v) => !v)} className="mt-1 text-[12px] text-run hover:underline">
+        <button type="button" onClick={() => setExpanded((v) => !v)} className="mt-1 text-meta text-link hover:underline">
           {expanded ? "收起完整点评" : "展开完整点评"}
         </button>
       )}
@@ -96,7 +96,7 @@ export function ReviewTab({ task, revision, events }: { task: TaskDetail; revisi
   return (
     <div className="mx-auto max-w-3xl overflow-y-auto px-6 py-5">
       <div className="mb-4 flex items-baseline gap-3">
-        <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[12px] font-semibold ${decision.cls}`}>
+        <span className={`shrink-0 rounded-pill border px-2.5 py-1 text-meta font-semibold ${decision.cls}`}>
           {decision.label}
         </span>
         {data.summary && <ReviewSummary text={data.summary} />}
@@ -112,10 +112,10 @@ export function ReviewTab({ task, revision, events }: { task: TaskDetail; revisi
       </div>
 
       {members.length > 0 && (
-        <div className="mb-4 flex flex-wrap items-center gap-2 text-[12px] text-t3">
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-meta text-t3">
           <span>审查成员 {members.length} 人</span>
           {members.map((agent) => (
-            <span key={agent} className="flex items-center gap-1 rounded-full border border-line px-1.5 py-0.5">
+            <span key={agent} className="flex items-center gap-1 rounded-pill border border-line px-1.5 py-0.5">
               <AgentMark kind={agent} size={22} />
               <span className="text-t2">{agentLabel(agent)}</span>
             </span>
@@ -155,9 +155,9 @@ export function ReviewTab({ task, revision, events }: { task: TaskDetail; revisi
             <div className="flex flex-col gap-4">
               {SEVERITY_ORDER.filter((s) => grouped.has(s)).map((severity) => (
                 <section key={severity}>
-                  <div className="mb-2 flex items-center gap-2 text-[12px] font-semibold uppercase tracking-wider text-t3">
+                  <div className="mb-2 flex items-center gap-2 text-meta font-semibold uppercase tracking-wider text-t3">
                     {SEVERITY_LABEL[severity]}
-                    <span className="rounded-full bg-raised px-1.5 py-0.5 tabular-nums">{grouped.get(severity)!.length}</span>
+                    <span className="rounded-pill bg-raised px-1.5 py-0.5 tabular-nums">{grouped.get(severity)!.length}</span>
                   </div>
                   {grouped.get(severity)!.map((issue) => (
                     <IssueCard
@@ -197,9 +197,9 @@ function FilterTab({
       aria-selected={active === id}
       onClick={() => onClick(id)}
       className={cn(
-        "rounded-full border px-2.5 py-0.5 text-[12px] transition-colors",
+        "rounded-pill border px-2.5 py-0.5 text-meta transition-colors",
         active === id ? "border-line-strong bg-raised text-t1" : "border-line text-t3 hover:text-t1",
-        tone === "attention" && active !== id && "border-human/50 text-human"
+        tone === "attention" && active !== id && "border-status-review/50 text-status-review"
       )}
     >
       {label}

@@ -93,18 +93,18 @@ function classify(
 }
 
 const TONE_TEXT: Record<NodeTone, string> = {
-  run: "text-run",
+  run: "text-status-running",
   ok: "text-ok",
   bad: "text-bad",
-  human: "text-human",
+  human: "text-status-human",
   review: "text-review",
   neutral: "text-t3",
 };
 const TONE_DOT: Record<NodeTone, string> = {
-  run: "bg-run border-run",
+  run: "bg-status-running border-status-running",
   ok: "bg-ok border-ok",
   bad: "bg-bad border-bad",
-  human: "bg-human border-human",
+  human: "bg-status-human border-status-human",
   review: "bg-review border-review",
   neutral: "bg-t3 border-t3",
 };
@@ -144,7 +144,7 @@ export function Timeline({ events, developerAgent, reviewerAgent, selectedRevisi
   return (
     <div className="py-2">
       {nodes.length > MAX_NODES && (
-        <div className="px-2 pb-2 text-center text-[12px] text-t3">
+        <div className="px-2 pb-2 text-center text-meta text-t3">
           已省略更早的 {nodes.length - MAX_NODES} 个节点
         </div>
       )}
@@ -164,11 +164,11 @@ export function Timeline({ events, developerAgent, reviewerAgent, selectedRevisi
                 {i > 0 && <span className="absolute left-1/2 top-0 h-3.5 w-px -translate-x-1/2 bg-line" />}
                 <span
                   className={cn(
-                    "absolute top-2 grid size-3 place-items-center rounded-full border-2",
+                    "absolute top-2 grid size-3 place-items-center rounded-circle border-2",
                     TONE_DOT[n.tone]
                   )}
                 >
-                  {n.glyph && <span className="text-[8px] font-bold leading-none text-white">{n.glyph}</span>}
+                  {n.glyph && <span className="text-micro font-bold leading-none text-white">{n.glyph}</span>}
                 </span>
                 {i < shown.length - 1 && <span className="absolute left-1/2 top-3.5 bottom-0 w-px -translate-x-1/2 bg-line" />}
               </span>
@@ -178,16 +178,16 @@ export function Timeline({ events, developerAgent, reviewerAgent, selectedRevisi
                 onClick={() => clickable && onSelectRevision(n.revision!)}
                 title={absoluteTime(n.ts)}
                 className={cn(
-                  "flex flex-1 items-center justify-between gap-2 rounded-md p-2 text-left transition-colors",
+                  "flex flex-1 items-center justify-between gap-2 rounded-control p-2 text-left transition-colors",
                   clickable && "hover:bg-raised",
                   active && "bg-raised ring-1 ring-line"
                 )}
               >
-                <span className={cn("flex min-w-0 items-center gap-1.5 text-[13px]", TONE_TEXT[n.tone])}>
+                <span className={cn("flex min-w-0 items-center gap-1.5 text-body", TONE_TEXT[n.tone])}>
                   {n.actor !== "system" && <ActorMark actor={n.actor} agent={n.agent} />}
                   <span className="truncate">{n.label}</span>
                 </span>
-                <span className="shrink-0 text-[11px] text-t3">{relativeTime(n.ts)}</span>
+                <span className="shrink-0 text-meta text-t3">{relativeTime(n.ts)}</span>
               </button>
             </motion.li>
           );

@@ -8,6 +8,8 @@ apps/desktop/src-tauri/binaries/agentflowd-*
 **/dist/
 **/.DS_Store
 *.log
+**/test-results/
+**/playwright-report/
 
 # Provider credentials belong in Keychain/environment variables, never Git.
 .env

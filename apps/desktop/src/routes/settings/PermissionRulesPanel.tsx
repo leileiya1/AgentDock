@@ -37,7 +37,7 @@ export function PermissionRulesPanel({ projectId }: { projectId: string }) {
   };
 
   return (
-    <div className="rounded-[var(--radius-panel)] border border-line bg-app p-3">
+    <div className="rounded-section border border-line bg-app p-3">
       <div className="mb-2 flex items-center gap-2 font-semibold">
         <ScrollText className="size-4 text-t2" /> 项目权限规则
       </div>
@@ -47,7 +47,7 @@ export function PermissionRulesPanel({ projectId }: { projectId: string }) {
       ) : rules.isLoading || !rules.data ? (
         <SkeletonRows rows={2} />
       ) : rules.data.length === 0 ? (
-        <p className="text-[12px] text-t3">还没有保存任何项目规则。授权时选择「保存项目规则」会在这里出现。</p>
+        <p className="text-meta text-t3">还没有保存任何项目规则。授权时选择「保存项目规则」会在这里出现。</p>
       ) : (
         <ul className="flex flex-col gap-2">
           {sortRules(rules.data).map((rule) => (
@@ -68,14 +68,14 @@ export function PermissionRulesPanel({ projectId }: { projectId: string }) {
           </>
         }
       >
-        <p className="text-[13px] text-t2">
+        <p className="text-body text-t2">
           撤销不会影响已经完成的动作，但下一次相同的请求会重新询问你。此操作不可撤销。
         </p>
         {confirm && (
-          <div className="mt-3 rounded-md border border-line bg-raised/40 p-2.5">
+          <div className="mt-3 rounded-control border border-line bg-raised/40 p-2.5">
             <dl className="flex flex-col gap-1">
               {rulePreview(confirm).slice(0, 4).map((line, i) => (
-                <div key={i} className="flex flex-wrap items-baseline gap-x-2 text-[12px]">
+                <div key={i} className="flex flex-wrap items-baseline gap-x-2 text-meta">
                   <dt className="shrink-0 text-t3">{line.label}</dt>
                   <dd className={line.mono ? "min-w-0 break-all font-mono text-t1" : "text-t1"}>{line.value}</dd>
                 </div>
@@ -96,11 +96,11 @@ export function RuleRow({ rule, onRevoke }: { rule: PermissionRule; onRevoke: ()
   const domains = rule.operation.networkDomains.join("、");
 
   return (
-    <li className="flex flex-col gap-1.5 rounded-md border border-line bg-raised/30 px-3 py-2">
+    <li className="flex flex-col gap-1.5 rounded-control border border-line bg-raised/30 px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-[13px] font-medium text-t1">{action.label}</span>
-          <span className="rounded bg-raised px-1.5 py-0.5 text-[10px] text-t3">
+          <span className="text-body font-medium text-t1">{action.label}</span>
+          <span className="rounded bg-raised px-1.5 py-0.5 text-micro text-t3">
             {agentLabel(rule.providerId)} · {roleLabel(rule.role)}
           </span>
           <PermissionPill tone={statusCopy.tone === "ok" ? "ok" : statusCopy.tone === "bad" ? "bad" : "idle"}>
@@ -111,9 +111,9 @@ export function RuleRow({ rule, onRevoke }: { rule: PermissionRule; onRevoke: ()
           <Button variant="danger" size="sm" onClick={onRevoke}>撤销</Button>
         )}
       </div>
-      {argv && <code className="block max-w-full overflow-x-auto whitespace-pre font-mono text-[11px] text-t2">{argv}</code>}
-      {domains && <span className="font-mono text-[11px] text-t2">{domains}</span>}
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-t3">
+      {argv && <code className="block max-w-full overflow-x-auto whitespace-pre font-mono text-meta text-t2">{argv}</code>}
+      {domains && <span className="font-mono text-meta text-t2">{domains}</span>}
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-meta text-t3">
         <span>最近命中：{rule.lastMatchedAt ? relativeTime(rule.lastMatchedAt) : "从未"}</span>
         <span>到期：{rule.expiresAt ? relativeTime(rule.expiresAt) : "长期有效"}</span>
         <span>创建：{relativeTime(rule.createdAt)}</span>

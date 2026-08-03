@@ -1,4 +1,4 @@
-import { LoaderCircle } from "lucide-react";
+import { Activity } from "lucide-react";
 import type { ReadableEvent } from "@/lib/logs/readable";
 import { formatElapsed } from "@/lib/execution/liveStatus";
 import { relativeTime } from "@/lib/format";
@@ -19,26 +19,26 @@ export function LiveProgress({
   stalled: boolean;
 }) {
   return (
-    <section className="rounded-[var(--radius-panel)] border border-run/30 bg-run/5 p-4">
+    <section className="rounded-section border border-status-running/30 bg-status-running/5 p-4">
       <div className="flex flex-wrap items-center gap-2">
-        <LoaderCircle className="size-4 shrink-0 animate-spin text-run" aria-hidden />
-        <h2 className="text-[13px] font-semibold text-t2">实时进展</h2>
+        <Activity className="size-4 shrink-0 text-status-running" aria-hidden />
+        <h2 className="text-body font-semibold text-t2">实时进展</h2>
         {elapsedSecs != null && (
-          <span className="text-[12px] tabular-nums text-t2">已运行 {formatElapsed(elapsedSecs)}</span>
+          <span className="text-meta tabular-nums text-t2">已运行 {formatElapsed(elapsedSecs)}</span>
         )}
         {stalled && lastActivityAt && (
-          <span className="text-[12px] text-t3">仍在运行，最近活动于 {relativeTime(lastActivityAt)}</span>
+          <span className="text-meta text-t3">仍在运行，最近活动于 {relativeTime(lastActivityAt)}</span>
         )}
       </div>
 
       {events.length === 0 ? (
-        <p className="mt-2 text-[13px] text-t3">Agent 已启动，还没有输出可读进展。</p>
+        <p className="mt-2 text-body text-t3">Agent 已启动，还没有输出可读进展。</p>
       ) : (
         <ol className="mt-2 list-none space-y-1.5">
           {events.map((event, index) => (
             <li
               key={`${event.original.ts}-${index}`}
-              className="flex gap-2 text-[13px] leading-relaxed text-t1"
+              className="flex gap-2 text-body leading-relaxed text-t1"
             >
               <span className="shrink-0 text-t3" aria-hidden>›</span>
               <span className="min-w-0 whitespace-pre-wrap">{event.text}</span>

@@ -20,12 +20,12 @@ export function ResultCard({
   if (!card) {
     // 提取失败时给出说明和出口，绝不把原始 JSON 塞回主要内容 (05 §4.2)。
     return (
-      <section className="rounded-[var(--radius-panel)] border border-line bg-panel/60 p-4">
+      <section className="rounded-section border border-line bg-panel/60 p-4">
         <div className="flex items-center gap-2 text-t2">
           <FileQuestion className="size-4 shrink-0" aria-hidden />
-          <span className="text-[13px]">未能提取可读总结</span>
+          <span className="text-body">未能提取可读总结</span>
         </div>
-        <p className="mt-1.5 text-[12px] text-t3">
+        <p className="mt-1.5 text-meta text-t3">
           这次运行没有留下结构化结果或可读文字。原始输出仍然完整保存在技术详情里。
         </p>
         <Button variant="outline" size="sm" className="mt-3" onClick={onOpenTechnical}>
@@ -46,11 +46,11 @@ export function ResultCard({
     .join("\n\n");
 
   return (
-    <section className="rounded-[var(--radius-panel)] border border-line bg-panel/60 p-4">
+    <section className="rounded-section border border-line bg-panel/60 p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-[13px] font-semibold text-t2">{title}</h2>
-          <p className="mt-1 whitespace-pre-wrap text-[14px] leading-relaxed text-t1">{card.conclusion}</p>
+          <h2 className="text-body font-semibold text-t2">{title}</h2>
+          <p className="mt-1 whitespace-pre-wrap text-section leading-relaxed text-t1">{card.conclusion}</p>
         </div>
         <Button
           variant="ghost"
@@ -70,13 +70,13 @@ export function ResultCard({
 
       {card.nextAction && (
         <div className="mt-3 border-t border-line/70 pt-3">
-          <h3 className="text-[12px] font-semibold text-t2">下一步</h3>
-          <p className="mt-1 text-[13px] text-t1">{card.nextAction}</p>
+          <h3 className="text-meta font-semibold text-t2">下一步</h3>
+          <p className="mt-1 text-body text-t1">{card.nextAction}</p>
         </div>
       )}
 
       {!card.structured && (
-        <p className="mt-3 text-[11px] text-t3">
+        <p className="mt-3 text-meta text-t3">
           这次运行没有返回结构化结果，以上是 Agent 最后一段自然语言总结。
         </p>
       )}
@@ -88,10 +88,10 @@ function Group({ label, items, tone }: { label: string; items: string[]; tone?: 
   if (items.length === 0) return null;
   return (
     <div className="mt-3">
-      <h3 className={`text-[12px] font-semibold ${tone === "attention" ? "text-human" : "text-t2"}`}>{label}</h3>
+      <h3 className={`text-meta font-semibold ${tone === "attention" ? "text-status-human" : "text-t2"}`}>{label}</h3>
       <ul className="mt-1 list-none space-y-1">
         {items.map((item, index) => (
-          <li key={`${label}-${index}`} className="flex gap-2 text-[13px] leading-relaxed text-t1">
+          <li key={`${label}-${index}`} className="flex gap-2 text-body leading-relaxed text-t1">
             <span className="text-t3" aria-hidden>•</span>
             <span className="min-w-0">{item}</span>
           </li>

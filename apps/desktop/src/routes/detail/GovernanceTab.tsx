@@ -66,11 +66,11 @@ export function GovernanceTab({ task, revision }: { task: TaskDetail; revision: 
         <BudgetPanel usage={budget} />
         <PermissionAuditPanel taskId={task.id} />
 
-        <section className="rounded-[var(--radius-panel)] border border-line bg-panel/60 p-4">
+        <section className="rounded-section border border-line bg-panel/60 p-4">
           <div className="flex items-center justify-between gap-4">
             <div>
               <h2 className="font-semibold">质量评估</h2>
-              <p className="mt-1 text-[12px] text-t3">在固定 revision commit 上重跑验证，不会再次调用开发 Agent。</p>
+              <p className="mt-1 text-meta text-t3">在固定 revision commit 上重跑验证，不会再次调用开发 Agent。</p>
             </div>
             <Button
               variant="outline"
@@ -84,38 +84,38 @@ export function GovernanceTab({ task, revision }: { task: TaskDetail; revision: 
           </div>
           {data.quality ? (
             <div className="mt-4 grid grid-cols-[120px_1fr] gap-4">
-              <div className={`grid h-24 place-items-center rounded-xl border ${data.quality.passed ? "border-ok/40 bg-ok/5" : "border-human/40 bg-human-bg"}`}>
+              <div className={`grid h-24 place-items-center rounded-section border ${data.quality.passed ? "border-ok/40 bg-ok/5" : "border-status-danger/40 bg-status-human-bg"}`}>
                 <div className="text-center">
                   <div className="text-3xl font-semibold">{data.quality.score}</div>
-                  <div className="text-[12px] text-t3">等级 {data.quality.grade}{data.quality.replay ? " · 复验" : ""}</div>
+                  <div className="text-meta text-t3">等级 {data.quality.grade}{data.quality.replay ? " · 复验" : ""}</div>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {data.quality.checks.map((check) => (
-                  <div key={check.name} className="flex items-start gap-2 rounded-md border border-line bg-app/50 p-2.5">
-                    {check.passed ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-ok" /> : <CircleAlert className="mt-0.5 size-4 shrink-0 text-human" />}
-                    <div><div className="text-[12px] font-medium">{qualityLabel(check.name)} · {check.weight} 分</div><div className="mt-0.5 text-[11px] text-t3">{check.detail}</div></div>
+                  <div key={check.name} className="flex items-start gap-2 rounded-control border border-line bg-app/50 p-2.5">
+                    {check.passed ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-ok" /> : <CircleAlert className="mt-0.5 size-4 shrink-0 text-status-danger" />}
+                    <div><div className="text-meta font-medium">{qualityLabel(check.name)} · {check.weight} 分</div><div className="mt-0.5 text-meta text-t3">{check.detail}</div></div>
                   </div>
                 ))}
               </div>
             </div>
-          ) : <p className="mt-4 text-[13px] text-t3">完成验证和独立审查后生成质量分。</p>}
+          ) : <p className="mt-4 text-body text-t3">完成验证和独立审查后生成质量分。</p>}
         </section>
 
         <ReproducibilityPanel manifest={data.manifest} originalQuality={data.originalQuality} latestReplay={data.latestReplay} />
 
-        <section className="rounded-[var(--radius-panel)] border border-line bg-panel/60 p-4">
+        <section className="rounded-section border border-line bg-panel/60 p-4">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="font-semibold">交付与回滚</h2>
-              <p className="mt-1 text-[12px] text-t3">{deliveryLabel(task.policy.deliveryMode)}；CI 未通过时不会标记合并完成。</p>
+              <p className="mt-1 text-meta text-t3">{deliveryLabel(task.policy.deliveryMode)}；CI 未通过时不会标记合并完成。</p>
             </div>
           </div>
           {data.delivery && (
-            <div className="mt-3 flex flex-wrap items-center gap-3 text-[12px] text-t2">
+            <div className="mt-3 flex flex-wrap items-center gap-3 text-meta text-t2">
               <span className="inline-flex items-center gap-1"><ShieldCheck className="size-4 text-ok" /> {data.delivery.state}</span>
               {data.delivery.ciStatus && <span>CI：{data.delivery.ciStatus}</span>}
-              {data.delivery.remoteUrl && <a className="text-run hover:underline" href={data.delivery.remoteUrl} target="_blank" rel="noreferrer">打开请求 #{data.delivery.number ?? ""}</a>}
+              {data.delivery.remoteUrl && <a className="text-link hover:underline" href={data.delivery.remoteUrl} target="_blank" rel="noreferrer">打开请求 #{data.delivery.number ?? ""}</a>}
               {data.delivery.mergeCommit && <CopyText value={data.delivery.mergeCommit}>merge {data.delivery.mergeCommit.slice(0, 8)}</CopyText>}
             </div>
           )}

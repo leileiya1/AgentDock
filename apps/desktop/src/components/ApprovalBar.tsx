@@ -70,9 +70,8 @@ export function ApprovalBar({ task }: Props) {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 8, scale: 0.98 }}
               transition={{ type: "spring", stiffness: 380, damping: 30 }}
-              className="relative flex max-h-[calc(100vh-2.5rem)] w-full max-w-2xl flex-col overflow-y-auto rounded-[var(--radius-panel)] border border-human bg-human-bg/95 p-5 shadow-[var(--shadow-float)]"
+              className="relative flex max-h-[calc(100vh-2.5rem)] w-full max-w-2xl flex-col overflow-y-auto rounded-overlay border border-status-human bg-status-human-bg/95 p-5 shadow-[var(--shadow-float)]"
             >
-              <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-human/60 to-transparent" />
               <BlockedBar task={task} />
             </motion.div>
           </motion.div>
@@ -92,9 +91,8 @@ export function ApprovalBar({ task }: Props) {
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: "100%", opacity: 0 }}
           transition={{ type: "spring", stiffness: 380, damping: 34 }}
-          className="relative shrink-0 border-t border-human bg-human-bg/90 px-6 py-3 backdrop-blur"
+          className="relative shrink-0 border-t border-status-human bg-status-human-bg/90 px-6 py-3 backdrop-blur"
         >
-          <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-human/60 to-transparent" />
           {task.status === "DRAFT" && <DraftBar task={task} />}
           {task.status === "WAITING_FOR_PLAN_APPROVAL" && <PlanApprovalBar task={task} />}
           {task.status === "WAITING_FOR_HUMAN_APPROVAL" && <WaitingBar task={task} />}
@@ -108,7 +106,7 @@ export function ApprovalBar({ task }: Props) {
 }
 
 const rowCls = "flex flex-wrap items-center justify-between gap-x-4 gap-y-2";
-const leadCls = "font-semibold text-human";
+const leadCls = "font-semibold text-status-human";
 
 /* ---- DRAFT ---------------------------------------------------------- */
 function DraftBar({ task }: Props) {
@@ -127,7 +125,7 @@ function DraftBar({ task }: Props) {
     <div className={rowCls}>
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className={leadCls}>草稿尚未启动</span>
-        <span className="text-[13px] text-t2">启动后会创建隔离工作树，并交给开发 Agent 运行。</span>
+        <span className="text-body text-t2">启动后会创建隔离工作树，并交给开发 Agent 运行。</span>
       </div>
       <div className="flex shrink-0 gap-2">
         <Button variant="outline" disabled={cancel.isPending || start.isPending} onClick={() => run(() => cancel.mutateAsync(task.id))}>
@@ -223,23 +221,23 @@ function WaitingBar({ task }: Props) {
                 <span className="text-bad">−{del}</span>
               </span>
               {risk.counts.control_plane > 0 && (
-                <span className="text-[12px] text-human">⚠ {risk.counts.control_plane} 个控制面文件</span>
+                <span className="text-meta text-status-human">⚠ {risk.counts.control_plane} 个控制面文件</span>
               )}
               {risk.removedTests.length > 0 && (
-                <span className="text-[12px] text-human">⚠ 删除 {risk.removedTests.length} 个测试</span>
+                <span className="text-meta text-status-human">⚠ 删除 {risk.removedTests.length} 个测试</span>
               )}
               {isMassDeletion(deletedFiles) && (
-                <span className="text-[12px] text-human">⚠ 删除 {deletedFiles} 个文件</span>
+                <span className="text-meta text-status-human">⚠ 删除 {deletedFiles} 个文件</span>
               )}
             </>
           )}
           {review.data?.summary && (
-            <span className="max-w-md truncate text-[13px] text-t2">{review.data.summary}</span>
+            <span className="max-w-md truncate text-body text-t2">{review.data.summary}</span>
           )}
         </div>
         <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
           {unresolved.requiresExtraConfirmation && (
-            <span className="text-[12px] font-medium text-human">
+            <span className="text-meta font-medium text-status-human">
               {unresolved.critical > 0 && `${unresolved.critical} 个严重`}
               {unresolved.critical > 0 && unresolved.high > 0 && " · "}
               {unresolved.high > 0 && `${unresolved.high} 个高风险`}
@@ -281,7 +279,7 @@ function WaitingBar({ task }: Props) {
         }
       >
         {payload && (
-          <div className="flex flex-col gap-2 text-[13px]">
+          <div className="flex flex-col gap-2 text-body">
             <div className="flex gap-3">
               <span className="w-12 shrink-0 text-t2">commit</span>
               <CopyText value={payload.commitSha}>{shortSha(payload.commitSha)}</CopyText>
@@ -295,25 +293,25 @@ function WaitingBar({ task }: Props) {
               </span>
             </div>
             {needsAcknowledgement && (
-              <div className="rounded-md border border-human bg-human-bg px-3 py-2">
-                <div className="flex items-center gap-2 font-medium text-human">
+              <div className="rounded-control border border-status-human bg-status-human-bg px-3 py-2">
+                <div className="flex items-center gap-2 font-medium text-status-human">
                   <AlertTriangle className="size-4 shrink-0" />
                   这次批准包含高风险内容
                 </div>
-                <ul className="mt-1.5 list-none space-y-1 text-[13px] text-t1">
+                <ul className="mt-1.5 list-none space-y-1 text-body text-t1">
                   {confirmations.map((line) => (
                     <li key={line} className="flex gap-2">
-                      <span className="text-human" aria-hidden>•</span>
+                      <span className="text-status-human" aria-hidden>•</span>
                       <span className="min-w-0">{line}</span>
                     </li>
                   ))}
                 </ul>
-                <label className="mt-2.5 flex items-start gap-2 text-[13px] text-t1">
+                <label className="mt-2.5 flex items-start gap-2 text-body text-t1">
                   <input
                     type="checkbox"
                     checked={riskAcknowledged}
                     onChange={(e) => setRiskAcknowledged(e.target.checked)}
-                    className="mt-1 accent-[var(--color-human)]"
+                    className="mt-1 accent-[var(--color-status-human)]"
                   />
                   我已逐条确认上述风险，仍要批准这一轮改动。
                 </label>
@@ -332,9 +330,9 @@ function WaitingBar({ task }: Props) {
               })}
             />
             {!manualReady && (
-              <p className="text-[12px] text-human">请逐条确认所有人工验收条件后再批准。</p>
+              <p className="text-meta text-status-human">请逐条确认所有人工验收条件后再批准。</p>
             )}
-            <p className="text-[12px] text-t2">批准后任务将进入合并流程。</p>
+            <p className="text-meta text-t2">批准后任务将进入合并流程。</p>
           </div>
         )}
       </Dialog>
@@ -363,7 +361,7 @@ function WaitingBar({ task }: Props) {
           </>
         }
       >
-        <p className="text-[13px] leading-relaxed text-t2">
+        <p className="text-body leading-relaxed text-t2">
           任务将停止，不会进入合并。已有分支、运行记录和审查结论仍会保留，便于稍后追溯或清理。
         </p>
       </Dialog>
@@ -414,7 +412,7 @@ function ApprovedBar({ task }: Props) {
     <div className={rowCls}>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className={leadCls}>已批准 · 待合并</span>
-        <span className="text-[13px] text-t2">{remoteOpen ? "PR / MR 已创建，等待远端 CI 与合并状态。" : "选择由 AgentFlow 交付，或你自己合并后标记完成。"}</span>
+        <span className="text-body text-t2">{remoteOpen ? "PR / MR 已创建，等待远端 CI 与合并状态。" : "选择由 AgentFlow 交付，或你自己合并后标记完成。"}</span>
       </div>
       <div className="flex shrink-0 gap-2">
         {task.policy.deliveryMode === "local_merge" && <Button variant="outline" disabled={markExternal.isPending} onClick={() => run(() => markExternal.mutateAsync(task.id))}>
@@ -443,7 +441,7 @@ function ConflictBar({ task }: Props) {
     <div className={rowCls}>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className={leadCls}>合并冲突</span>
-        <span className="text-[13px] text-t2">
+        <span className="text-body text-t2">
           {task.blockedDetail ?? "自动合并遇到冲突。你可以重试，或在本地手动解决后标记完成。"}
         </span>
       </div>
@@ -564,9 +562,9 @@ function BlockedBar({ task }: Props) {
       <div className="flex flex-col gap-5">
         <div className="flex min-w-0 flex-col gap-1">
           <span className={leadCls}>{copy?.title ?? "需要你处理"}</span>
-          <span className="text-[13px] text-t2">{copy?.explanation ?? task.blockedDetail ?? ""}</span>
+          <span className="text-body text-t2">{copy?.explanation ?? task.blockedDetail ?? ""}</span>
           {copy?.detailIsQuestion && task.blockedDetail && (
-            <blockquote className="mt-1 rounded-r-md border-l-2 border-human bg-app/60 px-3 py-2 text-[13px] text-t1">
+            <blockquote className="mt-1 rounded-r-control border-l-2 border-status-human bg-app/60 px-3 py-2 text-body text-t1">
               {task.blockedDetail}
             </blockquote>
           )}
@@ -590,7 +588,7 @@ function BlockedBar({ task }: Props) {
         }
       >
         {asAnswer && task.blockedDetail && (
-          <blockquote className="mb-3 rounded-r-md border-l-2 border-human bg-app/60 px-3 py-2 text-[13px] text-t1">
+          <blockquote className="mb-3 rounded-r-control border-l-2 border-status-human bg-app/60 px-3 py-2 text-body text-t1">
             {task.blockedDetail}
           </blockquote>
         )}
@@ -613,16 +611,16 @@ function BlockedBar({ task }: Props) {
         footer={<Button variant="outline" onClick={() => setRepairOpen(false)}>关闭</Button>}
       >
         {repair.isLoading ? (
-          <p className="text-[13px] text-t2">正在检查工作树和检查点…</p>
+          <p className="text-body text-t2">正在检查工作树和检查点…</p>
         ) : repair.isError ? (
-          <p className="text-[13px] text-bad">{errorLine(repair.error)}</p>
+          <p className="text-body text-bad">{errorLine(repair.error)}</p>
         ) : repair.data ? (
-          <div className="flex flex-col gap-3 text-[13px]">
+          <div className="flex flex-col gap-3 text-body">
             <p className="text-t2">
               工作树：{repair.data.worktreeExists ? "存在" : "缺失"} · 残留改动：{repair.data.residualChanges ? "有" : "无"}
             </p>
             {repair.data.latestCheckpoint && (
-              <p className="rounded-md bg-app px-3 py-2 text-t2">
+              <p className="rounded-control bg-app px-3 py-2 text-t2">
                 最近检查点 r{repair.data.latestCheckpoint.revision} · {repair.data.latestCheckpoint.phase} · {shortSha(repair.data.latestCheckpoint.commitSha)}
               </p>
             )}

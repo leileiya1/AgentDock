@@ -9,7 +9,7 @@ import {
   siMinimax,
   siQwen,
   type SimpleIcon,
-} from "simple-icons/icons";
+} from "simple-icons";
 import grokLogoUrl from "@/assets/provider-icons/grok.svg";
 import openAiLogoUrl from "@/assets/provider-icons/openai.svg";
 import { cn } from "@/lib/utils";
@@ -39,21 +39,21 @@ const OFFICIAL_ASSETS: Record<string, { src: string; tileClassName: string }> = 
 };
 
 const BRAND_COLORS: Record<string, string> = {
-  git: "#F05032",
-  claude_code: "#D97757",
+  git: "var(--color-provider-git)",
+  claude_code: "var(--color-provider-claude)",
   codex: "var(--color-t1)",
-  gemini_cli: "#8E75FF",
-  qwen_code: "#7C6CFF",
-  qoder_cli: "#7C6CFF",
+  gemini_cli: "var(--color-provider-gemini)",
+  qwen_code: "var(--color-provider-qwen)",
+  qoder_cli: "var(--color-provider-qwen)",
   grok_cli: "var(--color-t1)",
   grok_api: "var(--color-t1)",
   kimi_cli: "var(--color-t1)",
   kimi_api: "var(--color-t1)",
-  minimax_cli: "#F04B5F",
-  minimax_api: "#F04B5F",
+  minimax_cli: "var(--color-provider-minimax)",
+  minimax_api: "var(--color-provider-minimax)",
   openai_api: "var(--color-t1)",
-  anthropic_api: "#D97757",
-  deepseek_api: "#4D6BFE",
+  anthropic_api: "var(--color-provider-claude)",
+  deepseek_api: "var(--color-provider-deepseek)",
 };
 
 interface Props {
@@ -72,7 +72,7 @@ export function ProviderIcon({ provider, size = 40, className }: Props) {
   return (
     <span
       className={cn(
-        "grid shrink-0 place-items-center rounded-lg border border-line bg-raised/70",
+        "grid shrink-0 place-items-center rounded-section border border-line bg-raised/70",
         officialAsset?.tileClassName,
         className,
       )}

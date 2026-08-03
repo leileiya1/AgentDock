@@ -81,3 +81,21 @@ jobs:
         working-directory: apps/desktop
       - run: bun test
         working-directory: apps/desktop
+
+  desktop-visual-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - run: bun install --frozen-lockfile
+        working-directory: apps/desktop
+      - run: bunx playwright install chromium
+        working-directory: apps/desktop
+      - run: bun run test:visual
+        working-directory: apps/desktop
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: desktop-visual-report
+          path: apps/desktop/playwright-report

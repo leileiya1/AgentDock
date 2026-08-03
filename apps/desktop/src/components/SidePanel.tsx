@@ -86,11 +86,11 @@ export function SidePanel({ open, onClose, drawer, title, width, children }: Pro
             style={{ width }}
           >
             <div className="flex shrink-0 items-center justify-between border-b border-line/70 px-3 py-2.5">
-              <h2 className="text-[13px] font-semibold">{title}</h2>
+              <h2 className="text-body font-semibold">{title}</h2>
               <button
                 onClick={onClose}
                 aria-label="关闭"
-                className="grid size-6 place-items-center rounded-md text-t3 transition-colors hover:bg-raised hover:text-t1"
+                className="grid size-6 place-items-center rounded-control text-t3 transition-colors hover:bg-raised hover:text-t1"
               >
                 <X className="size-4" />
               </button>

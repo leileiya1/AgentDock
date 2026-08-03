@@ -37,7 +37,7 @@ export function CloseGuardDialog({
         </>
       }
     >
-      <p className="text-[13px] leading-relaxed text-t2">
+      <p className="text-body leading-relaxed text-t2">
         当前有 {activeCount} 个任务正在运行。后台服务会保持运行，关闭窗口后它们会继续执行，稍后重新打开
         AgentFlow 即可查看进度，不会丢失已完成的工作。
       </p>

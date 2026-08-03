@@ -19,8 +19,8 @@ export function ValidationReportCard({ report }: { report: TestReport }) {
   const primaryError = failing.find((s) => s.stderrTail.trim());
 
   return (
-    <div className="rounded-[var(--radius-panel)] border border-line bg-panel p-3">
-      <div className="mb-2 flex items-center gap-2 text-[13px]">
+    <div className="rounded-section border border-line bg-panel p-3">
+      <div className="mb-2 flex items-center gap-2 text-body">
         {report.passed ? (
           <span className="flex items-center gap-1.5 font-semibold text-ok">
             <CheckCircle2 className="size-4" aria-hidden /> 验证通过
@@ -43,8 +43,8 @@ export function ValidationReportCard({ report }: { report: TestReport }) {
 
       {primaryError && (
         <div className="mt-2">
-          <div className="mb-1 text-[12px] text-t3">主要错误（{primaryError.name}）</div>
-          <pre className="max-h-40 overflow-auto rounded-md bg-app/70 px-3 py-2 font-mono text-[12px] leading-relaxed text-t1">
+          <div className="mb-1 text-meta text-t3">主要错误（{primaryError.name}）</div>
+          <pre className="max-h-40 overflow-auto rounded-control bg-app/70 px-3 py-2 font-mono text-meta leading-relaxed text-t1">
             {primaryError.stderrTail.trim().slice(-2000)}
           </pre>
         </div>
@@ -59,11 +59,11 @@ function StepRow({ step }: { step: TestStepReport }) {
     outcome === "passed"
       ? { icon: CheckCircle2, color: "text-ok", note: durationText(step.durationMs) }
       : outcome === "timeout"
-        ? { icon: Clock, color: "text-human", note: `超时 · ${durationText(step.durationMs)}` }
+        ? { icon: Clock, color: "text-caution", note: `超时 · ${durationText(step.durationMs)}` }
         : { icon: XCircle, color: "text-bad", note: `退出码 ${step.exitCode} · ${durationText(step.durationMs)}` };
   const Icon = meta.icon;
   return (
-    <li className="flex items-center gap-2 text-[13px]">
+    <li className="flex items-center gap-2 text-body">
       <Icon className={`size-3.5 shrink-0 ${meta.color}`} aria-hidden />
       <span className="min-w-0 truncate text-t1">{step.name}</span>
       <span className="ml-auto shrink-0 tabular-nums text-t3">{meta.note}</span>

@@ -54,7 +54,7 @@ export function EnvSection() {
             />
           </div>
 
-          <div className="grid gap-x-4 gap-y-2 rounded-[var(--radius-control)] border border-line bg-app px-3 py-3 text-[12px] sm:grid-cols-2">
+          <div className="grid gap-x-4 gap-y-2 rounded-control border border-line bg-app px-3 py-3 text-meta sm:grid-cols-2">
             <EnvFact label="操作系统" value={`${env.data.system.os}${env.data.system.osVersion ? ` · ${env.data.system.osVersion}` : ""}`} />
             <EnvFact label="架构" value={env.data.system.architecture} />
             <EnvFact label="AgentFlow" value={env.data.system.agentflowVersion} />
@@ -66,15 +66,15 @@ export function EnvSection() {
             <EnvFact label="系统钥匙串" value={env.data.system.keychain.detail ?? env.data.system.keychain.problem ?? "未检测"} ok={env.data.system.keychain.available} />
           </div>
 
-          <div className="rounded-[var(--radius-control)] border border-line bg-app px-3 py-2.5">
+          <div className="rounded-control border border-line bg-app px-3 py-2.5">
           <div className="flex items-center gap-3">
             <ProviderIcon provider="git" />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 font-medium">
                 Git
-                <span className={cn("size-2 rounded-full", env.data.git.compatible ? "bg-ok" : "bg-bad")} />
+                <span className={cn("size-2 rounded-circle", env.data.git.compatible ? "bg-ok" : "bg-bad")} />
               </div>
-              <div className={cn("text-[12px]", env.data.git.compatible ? "text-t3" : "text-bad")}>
+              <div className={cn("text-meta", env.data.git.compatible ? "text-t3" : "text-bad")}>
                 {env.data.git.compatible ? "已就绪" : "需要处理"}
               </div>
             </div>
@@ -84,7 +84,7 @@ export function EnvSection() {
             }}>{details ? "收起" : "详情"}</Button>
           </div>
           {details && (
-            <div className="ml-[52px] mt-2 rounded-md bg-panel/70 px-3 py-2 text-[12px] text-t3">
+            <div className="ml-[52px] mt-2 rounded-control bg-panel/70 px-3 py-2 text-meta text-t3">
               {env.data.git.version && <div className="mb-2">版本 {env.data.git.version}</div>}
               <PathField value={path} onChange={setPathValue} onDetect={save} detecting={setPath.isPending} />
             </div>
@@ -98,11 +98,11 @@ export function EnvSection() {
 
 function ReadinessCard({ title, ready, detail }: { title: string; ready: boolean; detail: string }) {
   return (
-    <div className={cn("rounded-[var(--radius-control)] border px-3 py-2", ready ? "border-ok/30 bg-ok/5" : "border-human/40 bg-human-bg")}>
-      <div className="flex items-center gap-2 text-[13px] font-medium">
-        <span className={cn("size-2 rounded-full", ready ? "bg-ok" : "bg-human")} /> {title}
+    <div className={cn("rounded-control border px-3 py-2", ready ? "border-ok/30 bg-ok/5" : "border-caution/40 bg-caution-bg")}>
+      <div className="flex items-center gap-2 text-body font-medium">
+        <span className={cn("size-2 rounded-circle", ready ? "bg-ok" : "bg-caution")} /> {title}
       </div>
-      <p className="mt-1 text-[12px] text-t3">{detail}</p>
+      <p className="mt-1 text-meta text-t3">{detail}</p>
     </div>
   );
 }
@@ -111,7 +111,7 @@ function EnvFact({ label, value, ok = true }: { label: string; value: string; ok
   return (
     <div className="grid grid-cols-[6.5rem_1fr] gap-2">
       <span className="text-t3">{label}</span>
-      <span className={cn("min-w-0 break-words", ok ? "text-t1" : "text-human")}>{value}</span>
+      <span className={cn("min-w-0 break-words", ok ? "text-t1" : "text-caution")}>{value}</span>
     </div>
   );
 }

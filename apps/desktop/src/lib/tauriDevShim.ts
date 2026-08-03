@@ -169,6 +169,8 @@ const SUMMARIES: TaskSummary[] = [
   summary(14, "升级依赖到 React 18", "MERGE_CONFLICT", null, 1, -20 * MIN),
   summary(13, "给结算页加骨架屏", "DEVELOPING", null, 1, -10_000),
   summary(15, "补充搜索接口单测", "REVIEWING", null, 1, -3 * MIN),
+  summary(16, "修复结算舍入误差", "READY_FOR_REVISION", null, 2, -6 * MIN),
+  summary(17, "恢复 Provider 降级链", "DEVELOPING", null, 1, -90_000),
   summary(7, "统一日期格式化工具", "MERGED", null, 2, -1 * DAY),
   summary(5, "移除废弃的 feature flag", "CANCELLED", null, 1, -3 * DAY),
 ];
@@ -244,14 +246,38 @@ const DETAILS = new Map(SUMMARIES.map((s) => [s.id, detail(s)]));
  * Provider failure, and a daemon reconnect that adopts a live run.
  */
 function events(taskId: string): TaskEvent[] {
-  const rows: Array<{
+  type EventRow = {
     type: string;
     actor: TaskEvent["actor"];
     revision: number | null;
     min: number;
     runId?: string;
     payload?: unknown;
-  }> = [
+  };
+  const rows: EventRow[] = taskId === "t17" ? [
+    { type: "user:start", actor: "human", revision: 0, min: -8 },
+    { type: "provider:fallback", actor: "orchestrator", revision: 1, min: -6, payload: { role: "developer", from: "codex", to: "claude_code", reason: "配额不足" } },
+    { type: "provider:fallback", actor: "orchestrator", revision: 1, min: -4, payload: { role: "developer", from: "claude_code", to: "qoder_cli", reason: "登录已过期" } },
+    { type: "provider:started", actor: "agent", revision: 1, min: -2, runId: `run-${taskId}-1-developer-2`, payload: { agent: "qoder_cli", role: "developer" } },
+  ] : taskId === "t13" ? [
+    { type: "user:start", actor: "human", revision: 0, min: -3 },
+    { type: "provider:started", actor: "agent", revision: 1, min: -2, runId: `run-${taskId}-1-developer-0`, payload: { agent: "qoder_cli", role: "developer" } },
+  ] : taskId === "t15" ? [
+    { type: "user:start", actor: "human", revision: 0, min: -18 },
+    { type: "run:succeeded", actor: "agent", revision: 1, min: -12, runId: `run-${taskId}-1-developer-0`, payload: { summary: "搜索接口单测已补齐。" } },
+    { type: "scheduler:council_slot", actor: "orchestrator", revision: 1, min: -3 },
+    { type: "provider:started", actor: "agent", revision: 1, min: -2, runId: `run-${taskId}-1-reviewer-2`, payload: { agent: "codex", role: "reviewer" } },
+  ] : taskId === "t16" ? [
+    { type: "user:start", actor: "human", revision: 0, min: -18 },
+    { type: "run:succeeded", actor: "agent", revision: 2, min: -14, runId: `run-${taskId}-2-developer-0`, payload: { summary: "修正金额舍入实现。" } },
+    { type: "validation:failed", actor: "orchestrator", revision: 2, min: -11, payload: { passed: false, steps: [{ name: "金额边界单测", argv: ["bun", "test", "money.test.ts"], exit_code: 1, duration_ms: 2410, stdout_tail: "18 passed, 1 failed", stderr_tail: "expected 0.30, received 0.29" }] } },
+  ] : taskId === "t7" ? [
+    { type: "user:start", actor: "human", revision: 0, min: -45 },
+    { type: "run:succeeded", actor: "agent", revision: 2, min: -24, runId: `run-${taskId}-2-developer-0`, payload: { summary: "统一日期格式化并补充测试。" } },
+    { type: "review:pass", actor: "agent", revision: 2, min: -18 },
+    { type: "human:approve", actor: "human", revision: 2, min: -12 },
+    { type: "merge:succeeded", actor: "orchestrator", revision: 2, min: -10 },
+  ] : [
     { type: "user:start", actor: "human", revision: 0, min: -62 },
     // 系统详情：不应出现在主执行树。
     { type: "scheduler:slot", actor: "orchestrator", revision: 1, min: -61, payload: { revision: 1, operation_id: "op-1" } },
@@ -310,6 +336,31 @@ function runs(taskId: string): RunSummary[] {
     startedAt: iso(min * MIN),
     finishedAt: status === "RUNNING" ? null : iso((min + 3) * MIN),
   });
+
+  if (taskId === "t16") {
+    return [
+      mk(2, "developer", "qoder_cli", "SUCCEEDED", -18),
+      mk(2, "validator", null, "FAILED", -14),
+    ];
+  }
+  if (taskId === "t17") return [
+    mk(1, "developer", "codex", "FAILED", -8, 0),
+    mk(1, "developer", "claude_code", "FAILED", -6, 1),
+    mk(1, "developer", "qoder_cli", "RUNNING", -2, 2),
+  ];
+  if (taskId === "t13") return [mk(1, "developer", "qoder_cli", "RUNNING", -2)];
+  if (taskId === "t15") return [
+    mk(1, "developer", "qoder_cli", "SUCCEEDED", -16),
+    mk(1, "validator", null, "SUCCEEDED", -12),
+    mk(1, "reviewer", "qoder_cli", "SUCCEEDED", -4, 0),
+    mk(1, "reviewer", "grok_cli", "SUCCEEDED", -4, 1),
+    mk(1, "reviewer", "codex", "RUNNING", -3, 2),
+  ];
+  if (taskId === "t7") return [
+    mk(2, "developer", "qoder_cli", "SUCCEEDED", -24),
+    mk(2, "validator", null, "SUCCEEDED", -21),
+    mk(2, "reviewer", "grok_cli", "SUCCEEDED", -18),
+  ];
 
   return [
     mk(1, "developer", "codex", "SUCCEEDED", -55),
@@ -785,6 +836,7 @@ function permissionDecide(input: PermissionDecisionInput): PermissionDecision {
 
 function handle(cmd: string, payload: any): unknown {
   const args = payload?.args ?? {};
+  const visual = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("visual");
   switch (cmd) {
     case "env_check":
     case "env_set_cli_path":
@@ -806,6 +858,17 @@ function handle(cmd: string, payload: any): unknown {
     case "project_prune_stale_worktrees":
       return GIT_COMPATIBILITY;
     case "task_list":
+      if (visual === "empty") return [];
+      if (visual === "attention-13") {
+        return Array.from({ length: 13 }, (_, index) => summary(
+          30 + index,
+          ["修复登录边界", "核对质量门禁", "处理依赖权限", "解决合并冲突"][index % 4],
+          index % 3 === 0 ? "MERGE_CONFLICT" : index % 3 === 1 ? "BLOCKED" : "WAITING_FOR_HUMAN_APPROVAL",
+          index % 3 === 1 ? "permission_required" : null,
+          1 + index % 3,
+          -(index + 1) * 9 * MIN,
+        ));
+      }
       return SUMMARIES;
     case "task_get":
     case "task_start":
@@ -851,6 +914,8 @@ function handle(cmd: string, payload: any): unknown {
     case "diff_get":
       return DIFF;
     case "review_get":
+      if (["t13", "t15", "t16", "t17"].includes(args.taskId)) return null;
+      if (args.taskId === "t7") return { ...REVIEW, decision: "pass", summary: "独立审查通过。", issues: [] };
       return REVIEW;
     case "task_governance_get":
       return GOVERNANCE;

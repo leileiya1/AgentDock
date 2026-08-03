@@ -46,8 +46,8 @@ export function PlanApprovalBar({ task }: { task: TaskDetail }) {
     <>
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
-          <div className="font-semibold text-human">编码前计划等你审批</div>
-          <div className="max-w-2xl truncate text-[13px] text-t2">
+          <div className="font-semibold text-status-human">编码前计划等你审批</div>
+          <div className="max-w-2xl truncate text-body text-t2">
             {plan?.summary ?? "计划正在同步…"}{plan ? ` · ${plan.steps.length} 个步骤` : ""}
           </div>
         </div>
@@ -74,32 +74,32 @@ export function PlanApprovalBar({ task }: { task: TaskDetail }) {
         }
       >
         {plan && (
-          <div className="flex flex-col gap-4 text-[13px]">
-            {reviewContext.isLoading && <div className="rounded-md border border-line bg-raised p-3 text-[12px] text-t3">正在读取计划版本和越界记录…</div>}
-            {reviewContext.isError && <div className="rounded-md border border-human/40 bg-human-bg p-3 text-[12px] text-human">计划历史读取失败；请关闭后重试，批准操作仍会执行后端计划封印检查。</div>}
+          <div className="flex flex-col gap-4 text-body">
+            {reviewContext.isLoading && <div className="rounded-control border border-line bg-raised p-3 text-meta text-t3">正在读取计划版本和越界记录…</div>}
+            {reviewContext.isError && <div className="rounded-control border border-status-human/40 bg-status-human-bg p-3 text-meta text-status-human">计划历史读取失败；请关闭后重试，批准操作仍会执行后端计划封印检查。</div>}
             {reviewContext.data && <PlanVersionComparison context={reviewContext.data} />}
             <p className="leading-relaxed text-t1">{plan.summary}</p>
             <ol className="flex flex-col gap-2">
               {plan.steps.map((step, index) => (
-                <li key={`${step.title}-${index}`} className="rounded-md border border-line bg-app/60 p-3">
+                <li key={`${step.title}-${index}`} className="rounded-control border border-line bg-app/60 p-3">
                   <div className="font-medium text-t1">{index + 1}. {step.title}</div>
                   <div className="mt-1 leading-relaxed text-t2">{step.detail}</div>
-                  {step.validation && <div className="mt-1 text-[12px] text-ok">验证：{step.validation}</div>}
+                  {step.validation && <div className="mt-1 text-meta text-ok">验证：{step.validation}</div>}
                 </li>
               ))}
             </ol>
-            <div className="rounded-md border border-line bg-raised p-3">
+            <div className="rounded-control border border-line bg-raised p-3">
               <div className="font-medium text-t1">允许修改的路径</div>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {plan.allowedPaths.map((path) => (
-                  <span key={path} className="rounded bg-app px-2 py-1 font-mono text-[11px] text-t2">{path}</span>
+                  <span key={path} className="rounded bg-app px-2 py-1 font-mono text-meta text-t2">{path}</span>
                 ))}
               </div>
-              <p className="mt-2 text-[11px] text-t3">Agent 修改范围超出这些路径时，本轮会被重置并重新请求你的计划审批。</p>
+              <p className="mt-2 text-meta text-t3">Agent 修改范围超出这些路径时，本轮会被重置并重新请求你的计划审批。</p>
             </div>
             {plan.risks.length > 0 && (
-              <div className="rounded-md border border-human/40 bg-human-bg p-3">
-                <div className="font-medium text-human">计划风险</div>
+              <div className="rounded-control border border-status-human/40 bg-status-human-bg p-3">
+                <div className="font-medium text-status-human">计划风险</div>
                 <ul className="mt-1 list-disc space-y-1 pl-5 text-t2">
                   {plan.risks.map((risk) => <li key={risk}>{risk}</li>)}
                 </ul>
@@ -141,7 +141,7 @@ export function PlanApprovalBar({ task }: { task: TaskDetail }) {
           </>
         }
       >
-        <p className="text-[13px] text-t2">任务不会进入编码，计划和审计记录仍会保留。</p>
+        <p className="text-body text-t2">任务不会进入编码，计划和审计记录仍会保留。</p>
       </Dialog>
     </>
   );

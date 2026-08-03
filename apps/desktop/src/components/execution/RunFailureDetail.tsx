@@ -25,7 +25,7 @@ export function RunFailureDetail({ failure }: { failure: RunFailureSummary }) {
       : "本轮改动已回滚，项目保持在这一轮开始前的状态，未受影响；运行日志已保留可查看。";
 
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-[var(--radius-panel)] border border-line bg-app/50 px-3 py-2 text-[13px]">
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-section border border-line bg-app/50 px-3 py-2 text-body">
       <dt className="text-t3">Agent</dt>
       <dd className="text-t1">{who}</dd>
       <dt className="text-t3">结束方式</dt>

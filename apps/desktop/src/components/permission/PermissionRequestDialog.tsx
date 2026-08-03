@@ -159,18 +159,18 @@ export function PermissionRequestDialog({ taskId, projectId, requests, open, onC
       footer={footer}
     >
       {groups.length > 1 && (
-        <div className="mb-3 flex items-center gap-1.5 rounded-md border border-line bg-app px-2.5 py-1.5 text-[12px] text-t2">
+        <div className="mb-3 flex items-center gap-1.5 rounded-control border border-line bg-app px-2.5 py-1.5 text-meta text-t2">
           <Layers className="size-3.5 shrink-0 text-t3" aria-hidden />
           还有 {groups.length - 1} 组不同的请求待处理，将逐个确认。
         </div>
       )}
 
       {stale ? (
-        <div className="flex flex-col items-start gap-2 rounded-md border border-human/60 bg-human-bg px-3 py-2.5 text-[13px] text-human">
+        <div className="flex flex-col items-start gap-2 rounded-control border border-status-human/60 bg-status-human-bg px-3 py-2.5 text-body text-status-human">
           <div className="flex items-center gap-1.5 font-medium">
             <AlertTriangle className="size-4 shrink-0" aria-hidden /> 请求内容已变化
           </div>
-          <p className="text-[12px]">打开弹窗后操作、策略或任务已改变，原来的批准按钮已作废。请重新加载后再决定。</p>
+          <p className="text-meta">打开弹窗后操作、策略或任务已改变，原来的批准按钮已作废。请重新加载后再决定。</p>
           <Button variant="human" size="sm" onClick={reload}>
             <RotateCcw className="size-3.5" aria-hidden /> 重新加载
           </Button>
@@ -178,17 +178,17 @@ export function PermissionRequestDialog({ taskId, projectId, requests, open, onC
       ) : (
         <>
           {expiry.expired && (
-            <div className="mb-3 flex items-center gap-1.5 rounded-md border border-line bg-app px-2.5 py-1.5 text-[12px] text-t2">
+            <div className="mb-3 flex items-center gap-1.5 rounded-control border border-line bg-app px-2.5 py-1.5 text-meta text-t2">
               <Clock className="size-3.5 shrink-0" aria-hidden /> 该请求已过期，需 Agent 重新发起后才能授权。
             </div>
           )}
           {!expiry.expired && expiry.remainingLabel && (
-            <div className="mb-3 flex items-center gap-1.5 text-[12px] text-t3">
+            <div className="mb-3 flex items-center gap-1.5 text-meta text-t3">
               <Clock className="size-3.5 shrink-0" aria-hidden /> 剩余有效期 {expiry.remainingLabel}，到期前会停在动作之前。
             </div>
           )}
           {mergedNote && (
-            <div className="mb-3 flex items-center gap-1.5 rounded-md border border-line bg-app px-2.5 py-1.5 text-[12px] text-t2">
+            <div className="mb-3 flex items-center gap-1.5 rounded-control border border-line bg-app px-2.5 py-1.5 text-meta text-t2">
               <Info className="size-3.5 shrink-0 text-t3" aria-hidden />
               这组包含 {active.requests.length} 个完全相同的请求，将一并处理（每次执行仍单独审计）。
             </div>
@@ -198,7 +198,7 @@ export function PermissionRequestDialog({ taskId, projectId, requests, open, onC
             <PermissionRuleForm request={request} />
           ) : sub.kind === "deny" ? (
             <div className="flex flex-col gap-2">
-              <p className="text-[13px] text-t2">拒绝不会让任务直接失败。补充一句指引，Agent 会尝试换用安全方案。</p>
+              <p className="text-body text-t2">拒绝不会让任务直接失败。补充一句指引，Agent 会尝试换用安全方案。</p>
               <Textarea
                 autoFocus
                 value={guidance}
@@ -211,7 +211,7 @@ export function PermissionRequestDialog({ taskId, projectId, requests, open, onC
             <>
               <PermissionRequestCard request={request} />
               {isProjectRuleRestricted(request) && (
-                <p className="mt-3 flex items-center gap-1.5 text-[12px] text-t3">
+                <p className="mt-3 flex items-center gap-1.5 text-meta text-t3">
                   <Info className="size-3.5 shrink-0" aria-hidden />
                   高风险请求只提供「允许一次 / 本任务允许」，不能保存为项目规则。
                 </p>

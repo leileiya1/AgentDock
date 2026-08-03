@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { EnvReport, ProviderStatus, ToolStatus } from "@/generated/bindings";
-import { buildDots, toolDot } from "@/lib/envDots";
+import type { EnvReport, OnboardingReport, ProviderStatus, ToolStatus } from "@/generated/bindings";
+import { buildDots, summarizeEnvironment, toolDot } from "@/lib/envDots";
 
 function tool(partial: Partial<ToolStatus>): ToolStatus {
   return {
@@ -20,6 +20,34 @@ function tool(partial: Partial<ToolStatus>): ToolStatus {
 
 function api(): ProviderStatus {
   return { configured: false, available: false, model: "m", baseUrl: "https://x", keyEnv: "K", problem: null };
+}
+
+function envReport(claude: ToolStatus = tool({ authenticated: true })): EnvReport {
+  return {
+    system: {
+      os: "macos", osVersion: "15.5", architecture: "aarch64", agentflowVersion: "0.1.0",
+      shell: "/bin/zsh", diskAvailableBytes: 1024 ** 3,
+      network: { available: true, detail: "ok", problem: null },
+      keychain: { available: true, detail: "login", problem: null },
+    },
+    git: tool({}),
+    node: tool({}),
+    bun: tool({}),
+    claudeCode: claude,
+    codex: tool({ authenticated: true }),
+    geminiCli: tool({ found: false, compatible: false }),
+    qwenCode: tool({ found: false, compatible: false }),
+    qoderCli: tool({ found: false, compatible: false }),
+    grokCli: tool({}),
+    kimiCli: tool({}),
+    minimaxCli: tool({}),
+    openaiApi: api(),
+    anthropicApi: api(),
+    deepseekApi: api(),
+    grokApi: api(),
+    minimaxApi: api(),
+    kimiApi: api(),
+  };
 }
 
 describe("toolDot", () => {
@@ -57,34 +85,39 @@ describe("toolDot", () => {
 
 describe("buildDots", () => {
   it("marks the environment blocked when a required CLI is unauthenticated", () => {
-    const env: EnvReport = {
-      system: {
-        os: "macos", osVersion: "15.5", architecture: "aarch64", agentflowVersion: "0.1.0",
-        shell: "/bin/zsh", diskAvailableBytes: 1024 ** 3,
-        network: { available: true, detail: "ok", problem: null },
-        keychain: { available: true, detail: "login", problem: null },
-      },
-      git: tool({}),
-      node: tool({}),
-      bun: tool({}),
-      claudeCode: tool({ authenticated: false, authProblem: "尚未登录" }),
-      codex: tool({ authenticated: true }),
-      geminiCli: tool({ found: false, compatible: false }),
-      qwenCode: tool({ found: false, compatible: false }),
-      qoderCli: tool({ found: false, compatible: false }),
-      grokCli: tool({}),
-      kimiCli: tool({}),
-      minimaxCli: tool({}),
-      openaiApi: api(),
-      anthropicApi: api(),
-      deepseekApi: api(),
-      grokApi: api(),
-      minimaxApi: api(),
-      kimiApi: api(),
-    };
+    const env = envReport(tool({ authenticated: false, authProblem: "尚未登录" }));
     const dots = buildDots(env, true);
     const claude = dots.find((d) => d.key === "claude");
     expect(claude?.blocking).toBe(true);
     expect(dots.some((d) => d.blocking)).toBe(true);
+  });
+});
+
+describe("summarizeEnvironment", () => {
+  it("reports the end-to-end environment only when the workflow and required tools are ready", () => {
+    const summary = summarizeEnvironment({
+      workflowReady: true,
+      daemonRunning: true,
+      appReady: true,
+      env: envReport(),
+      notices: [],
+    } as unknown as OnboardingReport);
+
+    expect(summary.blocking).toBe(false);
+    expect(summary.label).toBe("端到端环境就绪");
+  });
+
+  it("surfaces the first blocking fact instead of claiming readiness", () => {
+    const summary = summarizeEnvironment({
+      workflowReady: false,
+      daemonRunning: true,
+      appReady: true,
+      env: envReport(tool({ authenticated: false, authProblem: "尚未登录" })),
+      notices: [],
+    } as unknown as OnboardingReport);
+
+    expect(summary.blocking).toBe(true);
+    expect(summary.label).toBe("应用可用 · 工作流未就绪");
+    expect(summary.detail).toContain("尚未登录");
   });
 });

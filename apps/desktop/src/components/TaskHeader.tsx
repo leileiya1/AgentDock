@@ -53,17 +53,17 @@ export function TaskHeader({
       <div className="flex min-w-0 items-center gap-3">
         <Link
           to={`/p/${projectId}`}
-          className="flex h-7 items-center gap-1 rounded-md px-2 text-[13px] text-t3 transition-colors hover:bg-raised hover:text-t1"
+          className="flex h-7 items-center gap-1 rounded-control px-2 text-body text-t3 transition-colors hover:bg-raised hover:text-t1"
           title="返回任务列表"
         >
           <ChevronLeft className="size-4" /> 返回
         </Link>
-        <span className="shrink-0 font-mono text-[13px] text-t3">{taskCode(task.seq)}</span>
-        <h1 className="min-w-0 flex-1 truncate text-[16px] font-semibold">{task.title}</h1>
+        <span className="shrink-0 font-mono text-body text-t3">{taskCode(task.seq)}</span>
+        <h1 className="min-w-0 flex-1 truncate text-section font-semibold">{task.title}</h1>
         <StateBadge status={task.status} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px]">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-meta">
         {/* 谁在做什么——图标 30 px (05 §5.4)。 */}
         <span className="flex items-center gap-1.5" title="开发与审查的 Agent 分工">
           <AgentMark kind={task.developerAgent} size={30} />
@@ -90,7 +90,7 @@ export function TaskHeader({
           className={cn(
             "text-t2",
             budget.level === "blocked" && "text-bad",
-            budget.level === "warn" && "text-human"
+            budget.level === "warn" && "text-caution"
           )}
           title="详细预算在治理页"
         >
@@ -119,7 +119,7 @@ export function TaskHeader({
       </div>
 
       <Dialog open={infoOpen} onClose={() => setInfoOpen(false)} title="任务信息" width={520}>
-        <dl className="grid grid-cols-[92px_1fr] gap-x-4 gap-y-2.5 text-[13px]">
+        <dl className="grid grid-cols-[92px_1fr] gap-x-4 gap-y-2.5 text-body">
           <InfoRow label="目标分支">{task.targetBranch}</InfoRow>
           {task.branch && <InfoRow label="工作分支">{task.branch}</InfoRow>}
           {task.baseCommit && (

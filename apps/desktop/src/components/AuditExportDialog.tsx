@@ -57,16 +57,16 @@ export function AuditExportDialog({ open, onClose, projectId, tasks }: Props) {
         </>
       }
     >
-      <div className="rounded-[var(--radius-control)] border border-ok/30 bg-ok/5 p-3">
-        <div className="flex items-center gap-2 text-[13px] font-semibold text-t1">
+      <div className="rounded-control border border-ok/30 bg-ok/5 p-3">
+        <div className="flex items-center gap-2 text-body font-semibold text-t1">
           <ShieldCheck className="size-4 text-ok" /> 本地 JSONL · 已应用秘密字段脱敏
         </div>
-        <p className="mt-1 text-[12px] leading-5 text-t3">
+        <p className="mt-1 text-meta leading-5 text-t3">
           仅导出所选项目或任务的事件。全局事件只有明确绑定当前项目时才会包含，避免混入其他项目数据。
         </p>
       </div>
 
-      <label className="mt-4 block text-[12px] font-semibold text-t2" htmlFor="audit-export-target">
+      <label className="mt-4 block text-meta font-semibold text-t2" htmlFor="audit-export-target">
         导出范围
       </label>
       <select
@@ -76,7 +76,7 @@ export function AuditExportDialog({ open, onClose, projectId, tasks }: Props) {
           setTarget(event.target.value);
           setResult(null);
         }}
-        className="mt-1.5 h-9 w-full rounded-[var(--radius-control)] border border-line bg-app px-3 text-[13px] text-t1 outline-none focus:border-run"
+        className="mt-1.5 h-9 w-full rounded-control border border-line bg-app px-3 text-body text-t1 outline-none focus:border-focus"
       >
         <option value="">整个项目（包含所有任务）</option>
         {tasks.map((task) => (
@@ -99,17 +99,17 @@ export function AuditExportSummary({
   onCopyPath?: () => void;
 }) {
   return (
-    <div className="mt-4 rounded-[var(--radius-panel)] border border-ok/40 bg-app p-3">
-      <div className="flex items-center gap-2 text-[13px] font-semibold text-ok">
+    <div className="mt-4 rounded-section border border-ok/40 bg-app p-3">
+      <div className="flex items-center gap-2 text-body font-semibold text-ok">
         <CheckCircle2 className="size-4" /> 导出完成
       </div>
-      <div className="mt-2 grid grid-cols-3 gap-2 text-[12px] text-t2">
+      <div className="mt-2 grid grid-cols-3 gap-2 text-meta text-t2">
         <span>{result.eventCount} 条事件</span>
         <span>{result.taskCount} 个任务</span>
         <span>{formatBytes(result.bytes)}</span>
       </div>
       <div className="mt-3 flex items-start gap-2">
-        <code className="min-w-0 flex-1 select-all break-all rounded bg-raised px-2 py-1.5 text-[11px] text-t2">
+        <code className="min-w-0 flex-1 select-all break-all rounded bg-raised px-2 py-1.5 text-meta text-t2">
           {result.path}
         </code>
         {onCopyPath && (

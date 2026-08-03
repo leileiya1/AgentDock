@@ -18,7 +18,7 @@ export function Toaster() {
             onClick={() => dismiss(t.id)}
             title="点击关闭"
             className={cn(
-              "pointer-events-auto flex items-center gap-2 rounded-[var(--radius-control)] border px-3 py-2 text-left text-[13px] shadow-[var(--shadow-float)] glass",
+              "pointer-events-auto flex items-center gap-2 rounded-overlay border px-3 py-2 text-left text-body shadow-[var(--shadow-float)] glass",
               t.kind === "error" ? "border-bad/60 text-bad" : "border-line text-t1"
             )}
             initial={{ opacity: 0, x: 24, scale: 0.96 }}

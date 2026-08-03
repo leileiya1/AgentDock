@@ -24,24 +24,24 @@ export function RiskSummaryCard({
   return (
     <section
       className={cn(
-        "rounded-[var(--radius-panel)] border p-4",
-        clean ? "border-line bg-panel/60" : "border-human/50 bg-human-bg"
+        "rounded-section border p-4",
+        clean ? "border-line bg-panel/60" : "border-caution/50 bg-caution-bg"
       )}
     >
       <div className="flex items-center gap-2">
         {clean ? (
           <ShieldCheck className="size-4 shrink-0 text-ok" aria-hidden />
         ) : (
-          <TriangleAlert className="size-4 shrink-0 text-human" aria-hidden />
+          <TriangleAlert className="size-4 shrink-0 text-caution" aria-hidden />
         )}
-        <h2 className="text-[13px] font-semibold">安全与完整性</h2>
-        <span className="text-[12px] text-t2">
+        <h2 className="text-body font-semibold">安全与完整性</h2>
+        <span className="text-meta text-t2">
           {clean ? "没有发现需要额外确认的风险" : "以下内容需要你确认后才适合批准"}
         </span>
       </div>
 
       {!clean && (
-        <ul className="mt-3 list-none space-y-2 text-[13px]">
+        <ul className="mt-3 list-none space-y-2 text-body">
           {issues.critical + issues.high > 0 && (
             <Row label="未解决的高风险问题">
               {issues.critical > 0 && `${issues.critical} 个严重`}
@@ -75,7 +75,7 @@ export function RiskSummaryCard({
       )}
 
       {!clean && onFilterRisk && risk.byFile.size > 0 && (
-        <button type="button" onClick={onFilterRisk} className="mt-3 text-[12px] text-run hover:underline">
+        <button type="button" onClick={onFilterRisk} className="mt-3 text-meta text-link hover:underline">
           在 Diff 中只看风险文件
         </button>
       )}
@@ -86,7 +86,7 @@ export function RiskSummaryCard({
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <li className="flex gap-2">
-      <span className="w-24 shrink-0 text-[12px] text-t3">{label}</span>
+      <span className="w-24 shrink-0 text-meta text-t3">{label}</span>
       <span className="min-w-0 flex-1 text-t1">{children}</span>
     </li>
   );

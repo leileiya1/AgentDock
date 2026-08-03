@@ -100,11 +100,11 @@ function Banner({
   return (
     <div
       role="status"
-      className={`flex shrink-0 items-center gap-2 border-b px-4 py-2 text-[13px] ${
-        tone === "attention" ? "border-human/50 bg-human-bg text-t1" : "border-line bg-panel/70 text-t2"
+      className={`flex shrink-0 items-center gap-2 border-b px-4 py-2 text-body ${
+        tone === "attention" ? "border-status-human/50 bg-status-human-bg text-t1" : "border-line bg-panel/70 text-t2"
       }`}
     >
-      <span className={tone === "attention" ? "text-human" : "text-t3"}>{icon}</span>
+      <span className={tone === "attention" ? "text-status-human" : "text-t3"}>{icon}</span>
       <span className="min-w-0 flex-1">{children}</span>
       {action}
     </div>

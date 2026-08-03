@@ -25,15 +25,15 @@ export function ExecutionPermissionSection({ projectId }: { projectId: string })
   };
 
   return (
-    <div className="rounded-[var(--radius-panel)] border border-line bg-app p-3">
+    <div className="rounded-section border border-line bg-app p-3">
       <div className="mb-2 flex items-center gap-2 font-semibold">
         <ShieldCheck className="size-4 text-ok" /> 执行权限
       </div>
-      <div className="flex items-start gap-2 rounded-md border border-ok/40 bg-ok/5 px-3 py-2 text-[13px]">
+      <div className="flex items-start gap-2 rounded-control border border-ok/40 bg-ok/5 px-3 py-2 text-body">
         <ShieldCheck className="mt-0.5 size-4 shrink-0 text-ok" aria-hidden />
         <div>
           <p className="font-medium text-t1">自动执行，受限沙箱</p>
-          <p className="mt-1 text-[12px] text-t2">
+          <p className="mt-1 text-meta text-t2">
             安全动作（读写任务文件、已批准的命令）自动执行；越界动作会被 AgentFlow 统一暂停、解释并请你逐项授权。
             CLI 不再自己弹出终端确认，主机其它文件、密钥与网络默认不可达。
           </p>
@@ -41,12 +41,12 @@ export function ExecutionPermissionSection({ projectId }: { projectId: string })
       </div>
 
       {legacyFullAccess && (
-        <div className="mt-3 flex items-start justify-between gap-3 rounded-md border border-human/60 bg-human-bg px-3 py-2 text-[13px] text-human">
+        <div className="mt-3 flex items-start justify-between gap-3 rounded-control border border-status-human/60 bg-status-human-bg px-3 py-2 text-body text-status-human">
           <div className="flex items-start gap-2">
             <ShieldX className="mt-0.5 size-4 shrink-0" aria-hidden />
             <div>
               <p className="font-medium">检测到旧的永久完全放权设置</p>
-              <p className="mt-1 text-[12px]">
+              <p className="mt-1 text-meta">
                 升级后永久「关闭所有沙箱」已不再受支持，必须重新确认。确认后该项目将改用受限沙箱执行。
               </p>
             </div>
@@ -57,7 +57,7 @@ export function ExecutionPermissionSection({ projectId }: { projectId: string })
         </div>
       )}
 
-      <p className="mt-2 text-[11px] text-t3">
+      <p className="mt-2 text-meta text-t3">
         完全放权仅保留为单任务、限时的高级应急能力，不再作为永久项目开关。
       </p>
     </div>

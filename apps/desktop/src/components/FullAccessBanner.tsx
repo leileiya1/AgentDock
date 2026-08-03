@@ -22,7 +22,7 @@ export function FullAccessBanner() {
           initial={{ height: 0, opacity: 0 }}
           animate={{ height: "auto", opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}
-          className="flex shrink-0 items-center justify-center gap-1.5 overflow-hidden border-b border-human bg-human-bg py-1.5 text-[12px] font-medium text-human"
+          className="flex shrink-0 items-center justify-center gap-1.5 overflow-hidden border-b border-caution bg-caution-bg py-1.5 text-meta font-medium text-caution"
         >
           <ShieldX className="size-3.5" />
           检测到旧的永久完全放权设置，已失效——请在项目设置中重新确认改用受限沙箱

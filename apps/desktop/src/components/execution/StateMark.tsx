@@ -1,4 +1,5 @@
 import {
+  Activity,
   CircleCheck,
   CircleDashed,
   CircleX,
@@ -6,7 +7,6 @@ import {
   CodeXml,
   GitMerge,
   Info,
-  LoaderCircle,
   Scale,
   ShieldCheck,
   TriangleAlert,
@@ -20,12 +20,12 @@ import { cn } from "@/lib/utils";
  * 执行结果通道 (05 §3.2). 颜色不是唯一信号——每个状态同时给出图标和文字，
  * 所以黑白截图和色弱模式下仍然可区分。
  */
-const STATE: Record<NodeState, { icon: LucideIcon; label: string; text: string; spin?: boolean; pulse?: boolean }> = {
-  pending: { icon: CircleDashed, label: "未开始", text: "text-t3" },
-  running: { icon: LoaderCircle, label: "进行中", text: "text-run", spin: true },
-  ok: { icon: CircleCheck, label: "通过", text: "text-ok" },
-  attention: { icon: TriangleAlert, label: "等待你", text: "text-human" },
-  failed: { icon: CircleX, label: "失败", text: "text-bad" },
+const STATE: Record<NodeState, { icon: LucideIcon; label: string; text: string }> = {
+  pending: { icon: CircleDashed, label: "未开始", text: "text-status-idle" },
+  running: { icon: Activity, label: "进行中", text: "text-status-running" },
+  ok: { icon: CircleCheck, label: "通过", text: "text-status-success" },
+  attention: { icon: TriangleAlert, label: "等待你", text: "text-status-human" },
+  failed: { icon: CircleX, label: "失败", text: "text-status-danger" },
   info: { icon: Info, label: "已记录", text: "text-t2" },
 };
 
@@ -52,8 +52,8 @@ export function StateMark({ state, label, iconOnly, className }: StateMarkProps)
   const text = label ?? meta.label;
   return (
     <span className={cn("inline-flex shrink-0 items-center gap-1", meta.text, className)} title={text}>
-      <Icon className={cn("size-4", meta.spin && "animate-spin")} aria-hidden />
-      {iconOnly ? <span className="sr-only">{text}</span> : <span className="text-[12px] font-medium">{text}</span>}
+      <Icon className="size-4" aria-hidden />
+      {iconOnly ? <span className="sr-only">{text}</span> : <span className="text-meta font-medium">{text}</span>}
     </span>
   );
 }

@@ -57,7 +57,7 @@ export function RunLogViewer({ run, preferredCard, lastActivityAt }: Props) {
           onClick={() => setTechnicalOpen(!technicalOpen)}
           aria-expanded={technicalOpen}
           className={cn(
-            "flex items-center gap-1 rounded-md px-2 py-1 text-[12px] transition-colors",
+            "flex items-center gap-1 rounded-control px-2 py-1 text-meta transition-colors",
             technicalOpen ? "bg-raised text-t2" : "text-t3 hover:bg-raised hover:text-t1"
           )}
         >

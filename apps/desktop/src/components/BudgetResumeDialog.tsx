@@ -71,12 +71,12 @@ export function BudgetResumeDialog({ task, open, onClose }: Props) {
         </>
       }
     >
-      <p className="mb-3 text-[12px] leading-relaxed text-t3">
+      <p className="mb-3 text-meta leading-relaxed text-t3">
         新上限必须高于已用量；留空表示该项不设上限。
         任务会从预算中断前保存的检查点继续，已完成的开发和验证不会重跑。
       </p>
       {view.hasUnknown && (
-        <p className="mb-3 rounded-md border border-human/50 bg-human-bg px-3 py-2 text-[12px] leading-relaxed text-t1">
+        <p className="mb-3 rounded-control border border-caution/50 bg-caution-bg px-3 py-2 text-meta leading-relaxed text-t1">
           有维度的用量 Provider 没有提供，无法据此推算新上限，请自行填写。
         </p>
       )}

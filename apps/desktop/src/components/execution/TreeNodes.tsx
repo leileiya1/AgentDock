@@ -45,15 +45,15 @@ function elapsedOf(attempt: AttemptNode, now: number): number | null {
 }
 
 /** 当前节点可以轻微脉冲；全局 `prefers-reduced-motion` 已在 theme.css 里关闭动画。 */
-const runningRing = (state: NodeState) => state === "running" && "ring-1 ring-run/40";
+const runningRing = (state: NodeState) => state === "running" && "ring-1 ring-status-running/40";
 
 function EventLine({ event }: { event: NormalizedEvent }) {
   return (
-    <li className="flex items-start gap-1.5 py-0.5 text-[12px]">
+    <li className="flex items-start gap-1.5 py-0.5 text-meta">
       <StateMark state={event.copy.state} iconOnly className="mt-px scale-90" />
       <span className="min-w-0 flex-1 text-t2">
         {event.copy.label}
-        {event.copy.detail && <span className="mt-0.5 block text-[11px] text-t3">{event.copy.detail}</span>}
+        {event.copy.detail && <span className="mt-0.5 block text-meta text-t3">{event.copy.detail}</span>}
       </span>
     </li>
   );
@@ -91,7 +91,7 @@ function AttemptRow({
         onClick={onSelect}
         title={attempt.startedAt ? absoluteTime(attempt.startedAt) : undefined}
         className={cn(
-          "flex w-full min-h-12 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-raised",
+          "flex w-full min-h-12 items-center gap-2 rounded-control px-2 py-1.5 text-left transition-colors hover:bg-raised",
           selected && "bg-raised ring-1 ring-line-strong",
           !selected && runningRing(attempt.state)
         )}
@@ -100,26 +100,26 @@ function AttemptRow({
           <AgentMark kind={attempt.agent} size={28} />
         ) : (
           // 验证节点不伪装成某个 AI Provider (05 §3.2)。
-          <span className="grid size-7 shrink-0 place-items-center rounded-lg border border-line bg-raised/70 text-t2">
+          <span className="grid size-7 shrink-0 place-items-center rounded-section border border-line bg-raised/70 text-t2">
             <PhaseIcon phase="validate" className="size-4" />
           </span>
         )}
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-[13px]">{attempt.agent ? agentLabel(attempt.agent) : "本机"}</span>
+            <span className="truncate text-body">{attempt.agent ? agentLabel(attempt.agent) : "本机"}</span>
             {showAttemptLabel && (
-              <span className="shrink-0 rounded-full border border-line px-1.5 text-[11px] text-t3">
+              <span className="shrink-0 rounded-pill border border-line px-1.5 text-meta text-t3">
                 {attempt.attemptLabel}
               </span>
             )}
           </span>
           {attempt.fallbackReason && (
-            <span className="truncate text-[11px] text-t3">降级原因：{attempt.fallbackReason}</span>
+            <span className="truncate text-meta text-t3">降级原因：{attempt.fallbackReason}</span>
           )}
         </span>
         <span className="flex shrink-0 flex-col items-end gap-0.5">
           <StateMark state={attempt.state} label={RUN_STATUS_LABEL[attempt.status]} />
-          {elapsed != null && <span className="text-[11px] tabular-nums text-t3">{formatElapsed(elapsed)}</span>}
+          {elapsed != null && <span className="text-meta tabular-nums text-t3">{formatElapsed(elapsed)}</span>}
         </span>
       </button>
 
@@ -157,7 +157,7 @@ function RunGroupRow({
   return (
     <li role="none">
       {group.memberTotal != null && (
-        <div className="px-2 pt-1 text-[11px] text-t3">
+        <div className="px-2 pt-1 text-meta text-t3">
           成员 {group.memberIndex}/{group.memberTotal}
         </div>
       )}
@@ -225,7 +225,7 @@ export function PhaseRow({
           else if (hasChildren && selected) onToggle();
         }}
         className={cn(
-          "flex w-full items-center gap-1 rounded-md pr-2 text-left transition-colors hover:bg-raised",
+          "flex w-full items-center gap-1 rounded-control pr-2 text-left transition-colors hover:bg-raised",
           selected && "bg-raised ring-1 ring-line"
         )}
       >
@@ -237,10 +237,10 @@ export function PhaseRow({
         <PhaseIcon phase={phase.phase} />
         <span className="min-w-0 flex-1 py-1.5">
           <span className="flex items-center gap-1.5">
-            <span className="text-[13px] font-medium">{phase.label}</span>
-            {roles.length > 1 && <span className="text-[11px] text-t3">{roles.join(" · ")}</span>}
+            <span className="text-body font-medium">{phase.label}</span>
+            {roles.length > 1 && <span className="text-meta text-t3">{roles.join(" · ")}</span>}
           </span>
-          {phase.summary && <span className="mt-0.5 block truncate text-[11px] text-t3">{phase.summary}</span>}
+          {phase.summary && <span className="mt-0.5 block truncate text-meta text-t3">{phase.summary}</span>}
         </span>
         <StateMark state={phase.state} />
       </button>
@@ -306,16 +306,16 @@ export function CollapsedRevisionRow({
         tabIndex={tabbable ? 0 : -1}
         onFocus={onFocusNode}
         onClick={onExpand}
-        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-raised"
+        className="flex w-full items-center gap-2 rounded-control px-2 py-2 text-left transition-colors hover:bg-raised"
       >
         <ChevronRight className="size-3.5 shrink-0 text-t3" aria-hidden />
-        <span className="shrink-0 font-mono text-[12px] text-t2">r{revision}</span>
-        <span className="min-w-0 flex-1 truncate text-[12px] text-t3">
+        <span className="shrink-0 font-mono text-meta text-t2">r{revision}</span>
+        <span className="min-w-0 flex-1 truncate text-meta text-t3">
           {conclusion}
           {stat && ` · ${stat}`}
         </span>
         {durationSecs != null && (
-          <span className="shrink-0 text-[11px] tabular-nums text-t3">{formatElapsed(durationSecs)}</span>
+          <span className="shrink-0 text-meta tabular-nums text-t3">{formatElapsed(durationSecs)}</span>
         )}
         <StateMark state={state} iconOnly />
       </button>
@@ -356,13 +356,13 @@ export function RevisionHeader({
       tabIndex={tabbable ? 0 : -1}
       onFocus={onFocusNode}
       onClick={onToggle}
-      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-raised"
+      className="flex w-full items-center gap-2 rounded-control px-2 py-2 text-left transition-colors hover:bg-raised"
     >
       <ChevronRight className={cn("size-3.5 shrink-0 text-t3 transition-transform", expanded && "rotate-90")} aria-hidden />
-      <span className="font-mono text-[13px] font-semibold">r{revision}</span>
-      <span className="text-[12px] text-t2">{conclusion}</span>
+      <span className="font-mono text-body font-semibold">r{revision}</span>
+      <span className="text-meta text-t2">{conclusion}</span>
       {!isCurrent && startedAt && (
-        <span className="ml-auto shrink-0 text-[11px] text-t3" title={absoluteTime(startedAt)}>
+        <span className="ml-auto shrink-0 text-meta text-t3" title={absoluteTime(startedAt)}>
           {relativeTime(startedAt)}
         </span>
       )}

@@ -7,6 +7,7 @@ import { formatElapsed } from "@/lib/execution/liveStatus";
 import { AgentMark } from "@/components/AgentMark";
 import { PhaseIcon, StateMark } from "@/components/execution/StateMark";
 import { cn } from "@/lib/utils";
+import { useUiStore } from "@/stores/uiStore";
 
 const ROLE_LABEL: Record<RunRole, string> = {
   planner: "计划",
@@ -45,6 +46,7 @@ export function RunList({
   selectedRunId: string | null;
   onSelect: (row: RunRow) => void;
 }) {
+  const density = useUiStore((state) => state.densityMode);
   const phases = useMemo(
     () => tree.revisions.find((r) => r.revision === revision)?.phases.filter((p) => p.groups.length > 0) ?? [],
     [tree, revision]
@@ -52,10 +54,10 @@ export function RunList({
 
   return (
     <div className="flex flex-col gap-3 p-2">
-      <div className="px-1 text-[11px] text-t3">r{revision} 的执行者</div>
+      <div className="px-1 text-meta text-t3">r{revision} 的执行者</div>
       {phases.map((phase) => (
         <section key={phase.phase}>
-          <h3 className="mb-1 flex items-center gap-1.5 px-1 text-[11px] font-medium uppercase tracking-wider text-t3">
+          <h3 className="mb-1 flex items-center gap-1.5 px-1 text-meta font-medium uppercase tracking-wider text-t3">
             <PhaseIcon phase={phase.phase} className="size-3.5" />
             {PHASE_LABEL[phase.phase]}
           </h3>
@@ -82,38 +84,39 @@ export function RunList({
                       aria-current={selected ? "true" : undefined}
                       className={cn(
                         // 每行 48–56 px，容得下 28 px 图标、名称和一行结果 (05 §5.3)。
-                        "flex min-h-[52px] w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors",
+                        "flex w-full items-center gap-2 rounded-control border px-2 text-left transition-colors",
+                        density === "compact" ? "min-h-10 py-1" : "min-h-[52px] py-1.5",
                         selected
                           ? "border-line-strong bg-raised"
                           : "border-transparent hover:border-line hover:bg-raised/70",
-                        !selected && attempt.state === "running" && "border-run/40"
+                        !selected && attempt.state === "running" && "border-status-running/40"
                       )}
                     >
                       {attempt.agent ? (
                         <AgentMark kind={attempt.agent} size={28} />
                       ) : (
-                        <span className="grid size-7 shrink-0 place-items-center rounded-lg border border-line bg-raised/70">
+                        <span className="grid size-7 shrink-0 place-items-center rounded-section border border-line bg-raised/70">
                           <PhaseIcon phase="validate" className="size-4" />
                         </span>
                       )}
                       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                         <span className="flex min-w-0 items-center gap-1.5">
-                          <span className="shrink-0 text-[12px] text-t3">{ROLE_LABEL[group.role]}</span>
-                          <span className="truncate text-[13px]">
+                          <span className="shrink-0 text-meta text-t3">{ROLE_LABEL[group.role]}</span>
+                          <span className="truncate text-body">
                             {attempt.agent ? agentLabel(attempt.agent) : "本机"}
                           </span>
                           {group.attempts.length > 1 && (
-                            <span className="shrink-0 rounded-full border border-line px-1.5 text-[11px] text-t3">
+                            <span className="shrink-0 rounded-pill border border-line px-1.5 text-meta text-t3">
                               {attempt.attemptLabel}
                             </span>
                           )}
                           {group.memberTotal != null && (
-                            <span className="shrink-0 rounded-full border border-line px-1.5 text-[11px] text-t3">
+                            <span className="shrink-0 rounded-pill border border-line px-1.5 text-meta text-t3">
                               成员 {group.memberIndex}/{group.memberTotal}
                             </span>
                           )}
                         </span>
-                        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-t3">
+                        <span className="flex min-w-0 items-center gap-1.5 text-meta text-t3">
                           {elapsed != null && <span className="tabular-nums">{formatElapsed(elapsed)}</span>}
                           {attempt.fallbackReason && <span className="truncate">· {attempt.fallbackReason}</span>}
                         </span>

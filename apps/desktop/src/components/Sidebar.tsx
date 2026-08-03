@@ -1,11 +1,10 @@
 import { NavLink, useNavigate, useParams } from "react-router-dom";
-import { motion } from "motion/react";
 import { ChevronsLeft, ChevronsRight, Plus } from "lucide-react";
 import { useProjects } from "@/hooks/useProjects";
 import { useOnboarding } from "@/hooks/useEnv";
 import { useUiStore } from "@/stores/uiStore";
 import { useLayout } from "@/hooks/useBreakpoint";
-import { buildDots, type DotTone } from "@/lib/envDots";
+import { buildDots, summarizeEnvironment, type DotTone } from "@/lib/envDots";
 import { cn } from "@/lib/utils";
 
 const DOT_COLOR: Record<DotTone, string> = { ok: "bg-ok", bad: "bg-bad", idle: "bg-idle" };
@@ -23,31 +22,26 @@ export function Sidebar() {
   const collapsed = userCollapsed || layout === "compact";
 
   const dots = buildDots(onboarding.data?.env, onboarding.data?.daemonRunning);
-  const blocked = onboarding.data ? !onboarding.data.workflowReady || !onboarding.data.daemonRunning : dots.some((d) => d.blocking);
-  const environmentLabel = onboarding.data?.workflowReady
-    ? "端到端环境就绪"
-    : onboarding.data?.appReady
-      ? "应用可用 · 工作流未就绪"
-      : "环境有阻塞项";
+  const environment = summarizeEnvironment(onboarding.data);
+  const blocked = environment.blocking;
 
   return (
-    <motion.aside
-      animate={{ width: collapsed ? 56 : 220 }}
-      transition={{ type: "spring", stiffness: 400, damping: 34 }}
-      className="relative flex shrink-0 flex-col border-r border-line/70 bg-panel/70 glass"
+    <aside
+      className={cn(
+        "relative flex shrink-0 flex-col border-r border-line/70 bg-panel transition-[width] duration-150 motion-reduce:transition-none",
+        collapsed ? "w-14" : "w-[220px]"
+      )}
     >
-      <span className="pointer-events-none absolute inset-y-0 right-0 w-px bg-gradient-to-b from-transparent via-black/[0.04] to-transparent" />
-
       <div className="flex items-center gap-2 border-b border-line/70 px-3 py-3">
         <button onClick={() => navigate("/")} className="flex min-w-0 flex-1 items-center gap-2" title="AgentFlow">
-          <span className="grid size-7 shrink-0 place-items-center rounded-md border border-line bg-gradient-to-br from-run/25 to-panel font-mono text-[12px] font-semibold text-t1 shadow-[var(--shadow-glow-run)]">
+          <span className="grid size-7 shrink-0 place-items-center rounded-control border border-line bg-brand/10 font-mono text-meta font-semibold text-brand">
             AF
           </span>
           {!collapsed && <span className="truncate text-sm font-semibold tracking-tight">AgentFlow</span>}
         </button>
         <button
           onClick={toggle}
-          className="grid size-6 shrink-0 place-items-center rounded-md text-t3 transition-colors hover:bg-raised hover:text-t1"
+          className="grid size-6 shrink-0 place-items-center rounded-control text-t3 transition-colors hover:bg-raised hover:text-t1"
           title={collapsed ? "展开" : "折叠"}
           aria-label={collapsed ? "展开侧栏" : "折叠侧栏"}
         >
@@ -63,28 +57,24 @@ export function Sidebar() {
             title={p.name}
             className={({ isActive }) =>
               cn(
-                "group relative flex items-center gap-2 rounded-md px-2 py-2 text-t2 transition-colors hover:bg-raised hover:text-t1",
+                "group relative flex items-center gap-2 rounded-control px-2 py-2 text-t2 transition-colors hover:bg-raised hover:text-t1",
                 (isActive || p.id === projectId) && "bg-raised text-t1"
               )
             }
           >
             {(p.id === projectId) && (
-              <motion.span
-                layoutId="proj-active"
-                className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-run shadow-[var(--shadow-glow-run)]"
-                transition={{ type: "spring", stiffness: 500, damping: 34 }}
-              />
+              <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-pill bg-selection" />
             )}
-            <span className="grid size-6 shrink-0 place-items-center rounded-md border border-line bg-app text-[11px] font-semibold">
+            <span className="grid size-6 shrink-0 place-items-center rounded-control border border-line bg-app text-meta font-semibold">
               {p.name.slice(0, 1).toUpperCase()}
             </span>
-            {!collapsed && <span className="truncate text-[13px]">{p.name}</span>}
+            {!collapsed && <span className="truncate text-body">{p.name}</span>}
           </NavLink>
         ))}
         {!collapsed && (projects.data?.length ?? 0) === 0 && (
           <button
             onClick={() => navigate("/onboarding")}
-            className="mt-2 flex items-center gap-2 rounded-md border border-dashed border-line px-2 py-2 text-left text-[13px] text-t2 transition-colors hover:border-run/60 hover:text-t1"
+            className="mt-2 flex items-center gap-2 rounded-control border border-dashed border-line px-2 py-2 text-left text-body text-t2 transition-colors hover:border-selection/60 hover:text-t1"
           >
             <Plus className="size-4" /> 导入项目
           </button>
@@ -95,19 +85,19 @@ export function Sidebar() {
         onClick={() => navigate("/settings")}
         title={blocked ? "有阻塞项，点击进入设置处理" : "环境状态，点击进入设置"}
         className={cn(
-          "m-2 flex items-center gap-2 rounded-md border px-3 py-2 transition-colors",
+          "m-2 flex items-center gap-2 rounded-control border px-3 py-2 transition-colors",
           blocked
-            ? "border-human/70 bg-human-bg text-human shadow-[var(--shadow-glow-human)]"
+            ? "border-caution/60 bg-caution-bg text-caution"
             : "border-line bg-app/60 text-t2 hover:border-line-strong"
         )}
       >
         <span className="flex flex-wrap gap-[3px]">
           {dots.map((d) => (
-            <span key={d.key} className={cn("size-[7px] rounded-full", DOT_COLOR[d.tone], d.tone === "ok" && "shadow-[0_0_6px_-1px_currentColor]")} title={d.label} />
+            <span key={d.key} className={cn("size-[7px] rounded-circle", DOT_COLOR[d.tone])} title={d.label} />
           ))}
         </span>
-        {!collapsed && <span className="text-[12px]">{environmentLabel}</span>}
+        {!collapsed && <span className="text-meta">{environment.label}</span>}
       </button>
-    </motion.aside>
+    </aside>
   );
 }

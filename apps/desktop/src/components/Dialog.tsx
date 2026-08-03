@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
@@ -32,7 +32,7 @@ export function shouldDeferDialogEscape(root: DialogEscapeRoot): boolean {
   return root.activeElement?.closest?.(DIALOG_CHILD_TRIGGER_SELECTOR) != null || dialogChildClosedRecently();
 }
 
-/** Glass modal with Motion enter/exit + spring; Escape / explicit controls dismiss. */
+/** Modal with short fade/translate motion; Escape and explicit controls dismiss. */
 export function Dialog({ open, onClose, title, children, footer, width = 480, onConfirmKey }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   // Keep the latest callbacks without restarting the focus-trap effect. Dialog
@@ -102,21 +102,19 @@ export function Dialog({ open, onClose, title, children, footer, width = 480, on
             aria-modal="true"
             aria-label={title}
             tabIndex={-1}
-            style={{ width }}
-            className="relative flex max-h-[90vh] max-w-full flex-col overflow-hidden rounded-[var(--radius-panel)] border border-line/80 glass shadow-[var(--shadow-float)] outline-none"
+            style={{ "--dialog-width": `${width}px` } as CSSProperties}
+            className="relative flex max-h-[90vh] w-[min(var(--dialog-width),calc(100vw-2.5rem))] flex-col overflow-hidden rounded-overlay border border-line/80 glass shadow-[var(--shadow-float)] outline-none max-sm:h-full max-sm:max-h-full max-sm:w-full max-sm:rounded-none"
             onMouseDown={(e) => e.stopPropagation()}
-            initial={{ opacity: 0, y: 12, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.98 }}
-            transition={{ type: "spring", stiffness: 380, damping: 30 }}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            transition={{ duration: 0.16, ease: [0.2, 0, 0, 1] }}
           >
-            {/* top light seam for depth */}
-            <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-run/25 to-transparent" />
             <div className="flex items-center justify-between border-b border-line/70 px-4 py-3">
-              <h2 className="text-[15px] font-semibold text-t1">{title}</h2>
+              <h2 className="text-section font-semibold text-t1">{title}</h2>
               <button
                 onClick={onClose}
-                className="grid size-6 place-items-center rounded-md text-t3 transition-colors hover:bg-raised hover:text-t1"
+                className="grid size-6 place-items-center rounded-control text-t3 transition-colors hover:bg-raised hover:text-t1"
                 aria-label="关闭"
               >
                 <X className="size-4" />

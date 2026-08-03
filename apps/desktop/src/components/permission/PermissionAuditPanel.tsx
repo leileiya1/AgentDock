@@ -43,7 +43,7 @@ export function PermissionAuditPanel({ taskId }: { taskId: string }) {
   const rows = useMemo(() => filterRequests(all, filter), [all, filter]);
 
   return (
-    <section className="rounded-[var(--radius-panel)] border border-line bg-panel/60 p-4">
+    <section className="rounded-section border border-line bg-panel/60 p-4">
       <div className="mb-3 flex items-center gap-2">
         <ClipboardList className="size-4 text-t2" aria-hidden />
         <h2 className="font-semibold">权限审计</h2>
@@ -54,7 +54,7 @@ export function PermissionAuditPanel({ taskId }: { taskId: string }) {
       ) : requests.isLoading ? (
         <SkeletonRows rows={3} />
       ) : all.length === 0 ? (
-        <p className="text-[12px] text-t3">这个任务还没有权限请求记录。</p>
+        <p className="text-meta text-t3">这个任务还没有权限请求记录。</p>
       ) : (
         <>
           <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -95,13 +95,13 @@ export function PermissionAuditPanel({ taskId }: { taskId: string }) {
                 清除筛选
               </Button>
             )}
-            <span className="ml-auto text-[11px] text-t3 tabular-nums">
+            <span className="ml-auto text-meta text-t3 tabular-nums">
               {rows.length} / {all.length} 条
             </span>
           </div>
 
           {rows.length === 0 ? (
-            <p className="text-[12px] text-t3">没有符合筛选条件的记录。</p>
+            <p className="text-meta text-t3">没有符合筛选条件的记录。</p>
           ) : (
             <ul className="flex flex-col gap-1.5">
               {rows.map((r) => (
@@ -130,7 +130,7 @@ function FacetSelect<T extends string>({
 }) {
   return (
     <Select value={value} onValueChange={(v) => onChange(v as T | "all")}>
-      <SelectTrigger className="h-7 w-auto gap-1 text-[12px]" aria-label={label}>
+      <SelectTrigger className="h-7 w-auto gap-1 text-meta" aria-label={label}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -147,22 +147,22 @@ function FacetSelect<T extends string>({
 
 export function AuditRow({ request }: { request: PermissionRequest }) {
   return (
-    <li className="rounded-md border border-line bg-app px-3 py-2">
+    <li className="rounded-control border border-line bg-app px-3 py-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <RequestStatusBadge status={request.status} />
-        <span className="min-w-0 flex-1 truncate text-[13px] text-t1">{auditLine(request)}</span>
-        <span className="shrink-0 text-[11px] text-t3">
+        <span className="min-w-0 flex-1 truncate text-body text-t1">{auditLine(request)}</span>
+        <span className="shrink-0 text-meta text-t3">
           {agentLabel(request.providerId)} · {roleLabel(request.role)}
         </span>
-        <span className="shrink-0 text-[11px] text-t3">{relativeTime(request.decidedAt ?? request.requestedAt)}</span>
+        <span className="shrink-0 text-meta text-t3">{relativeTime(request.decidedAt ?? request.requestedAt)}</span>
       </div>
       {/* 技术 JSON 放高级详情，默认视图保持简短 (§9 第 21 条)；details 原生键盘/读屏可达。 */}
       <details className="mt-1 group">
-        <summary className="cursor-pointer list-none text-[11px] text-t3 hover:text-t2">
+        <summary className="cursor-pointer list-none text-meta text-t3 hover:text-t2">
           <span className="group-open:hidden">▸ 高级详情</span>
           <span className="hidden group-open:inline">▾ 高级详情</span>
         </summary>
-        <div className="mt-1.5 flex flex-col gap-1 text-[11px] text-t3">
+        <div className="mt-1.5 flex flex-col gap-1 text-meta text-t3">
           <div className="flex flex-wrap gap-x-3">
             <span>operation_sha256：<span className="font-mono">{request.operationSha256}</span></span>
             <span>policy_sha256：<span className="font-mono">{request.policySha256}</span></span>
@@ -172,7 +172,7 @@ export function AuditRow({ request }: { request: PermissionRequest }) {
             <span>命中规则：{request.matchedRuleId ?? "无"}</span>
             <span>请求次数：{request.requestCount}</span>
           </div>
-          <pre className="max-w-full overflow-x-auto rounded bg-raised/50 p-2 font-mono text-[11px] text-t2">
+          <pre className="max-w-full overflow-x-auto rounded bg-raised/50 p-2 font-mono text-meta text-t2">
             {JSON.stringify(request.operation, null, 2)}
           </pre>
         </div>

@@ -48,7 +48,7 @@ function summariesByRevision(events: TaskEvent[]): Map<number, string> {
   return out;
 }
 
-const sectionH = "mb-3 text-[13px] font-semibold uppercase tracking-wider text-t2";
+const sectionH = "mb-3 text-body font-semibold uppercase tracking-wider text-t2";
 
 interface ProgressMeta {
   label: string;
@@ -59,13 +59,13 @@ interface ProgressMeta {
 
 function currentProgress(status: TaskStatus): ProgressMeta {
   const label = STATUS_COPY[status].label;
-  if (isTaskExecuting(status)) return { label, icon: LoaderCircle, color: "text-run", spinning: true };
+  if (isTaskExecuting(status)) return { label, icon: LoaderCircle, color: "text-status-running", spinning: true };
   if (isTaskQueued(status)) return { label, icon: CircleDashed, color: "text-t3" };
   if (status === "WAITING_FOR_HUMAN_APPROVAL") {
-    return { label, icon: CircleAlert, color: "text-human" };
+    return { label, icon: CircleAlert, color: "text-status-human" };
   }
   if (status === "BLOCKED" || status === "MERGE_CONFLICT") {
-    return { label, icon: CircleAlert, color: "text-human" };
+    return { label, icon: CircleAlert, color: "text-status-human" };
   }
   if (status === "CANCELLED") return { label, icon: XCircle, color: "text-t3" };
   if (status === "DRAFT") return { label: "尚未启动", icon: CircleDashed, color: "text-t3" };
@@ -78,7 +78,7 @@ function RevisionProgress({ meta }: { meta: ProgressMeta }) {
   return (
     <span className={`flex items-center gap-1 ${meta.color}`} title={meta.label}>
       <Icon className={`size-4 ${meta.spinning ? "animate-spin" : ""}`} aria-hidden />
-      <span className="text-[11px] font-medium">{meta.label}</span>
+      <span className="text-meta font-medium">{meta.label}</span>
     </span>
   );
 }
@@ -89,11 +89,11 @@ function RevisionSummary({ text }: { text: string }) {
   const long = text.length > limit;
   return (
     <div className="mt-2">
-      <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-t2">
+      <p className="whitespace-pre-wrap text-body leading-relaxed text-t2">
         {expanded || !long ? text : `${text.slice(0, limit).trimEnd()}…`}
       </p>
       {long && (
-        <button type="button" onClick={() => setExpanded((value) => !value)} className="mt-1 text-[12px] text-run hover:underline">
+        <button type="button" onClick={() => setExpanded((value) => !value)} className="mt-1 text-meta text-link hover:underline">
           {expanded ? "收起" : "展开详情"}
         </button>
       )}
@@ -139,31 +139,31 @@ export function OverviewTab({ task, events }: Props) {
         : "尚无结果";
   const headlineTone = {
     ok: "border-ok/35 bg-ok/5",
-    human: "border-human/40 bg-human-bg/35",
-    run: "border-run/35 bg-run/5",
+    human: "border-status-human/40 bg-status-human-bg/35",
+    run: "border-status-running/35 bg-status-running/5",
     idle: "border-line bg-panel",
   }[headline.tone];
 
   return (
     <div className="mx-auto max-w-4xl overflow-y-auto px-6 py-5">
-      <section className={cn("mb-5 rounded-[var(--radius-panel)] border px-4 py-4", headlineTone)}>
+      <section className={cn("mb-5 rounded-section border px-4 py-4", headlineTone)}>
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 flex-1">
             <div className="mb-1 flex items-center gap-2">
               <RevisionProgress meta={currentMeta} />
-              <span className="font-mono text-[11px] text-t3">r{task.currentRevision}</span>
-              <span className="text-[11px] text-t3">更新于 {relativeTime(task.updatedAt)}</span>
+              <span className="font-mono text-meta text-t3">r{task.currentRevision}</span>
+              <span className="text-meta text-t3">更新于 {relativeTime(task.updatedAt)}</span>
             </div>
-            <h1 className="text-[18px] font-semibold tracking-tight text-t1">{headline.title}</h1>
-            <p className="mt-1 text-[13px] leading-relaxed text-t2">{headline.detail}</p>
+            <h1 className="text-page font-semibold tracking-tight text-t1">{headline.title}</h1>
+            <p className="mt-1 text-body leading-relaxed text-t2">{headline.detail}</p>
             {latestSummary && <RevisionSummary text={latestSummary} />}
           </div>
           {counts.total > 0 && (
-            <div className="min-w-32 rounded-lg border border-line/70 bg-panel/65 px-3 py-2 text-right">
-              <div className="text-[20px] font-semibold tabular-nums text-t1">{counts.passed}/{counts.total}</div>
-              <div className="text-[11px] text-t3">验收条件已有证据通过</div>
+            <div className="min-w-32 rounded-section border border-line/70 bg-panel/65 px-3 py-2 text-right">
+              <div className="text-page font-semibold tabular-nums text-t1">{counts.passed}/{counts.total}</div>
+              <div className="text-meta text-t3">验收条件已有证据通过</div>
               {(counts.failed + counts.unverified + counts.manual + counts.pending) > 0 && (
-                <div className="mt-1 text-[11px] text-human">
+                <div className="mt-1 text-meta text-status-human">
                   还有 {counts.failed + counts.unverified + counts.manual + counts.pending} 项未闭环
                 </div>
               )}
@@ -173,17 +173,17 @@ export function OverviewTab({ task, events }: Props) {
       </section>
 
       {task.status === "BLOCKED" && blockedCopy && (
-        <div className="mb-5 rounded-[var(--radius-panel)] border border-human bg-human-bg px-4 py-3">
-          <div className="mb-2 flex items-center gap-2 font-semibold text-human">
+        <div className="mb-5 rounded-section border border-status-human bg-status-human-bg px-4 py-3">
+          <div className="mb-2 flex items-center gap-2 font-semibold text-status-human">
             <AlertTriangle className="size-4" /> {blockedCopy.title}
           </div>
-          <p className="text-[13px] text-t1">{blockedCopy.explanation}</p>
+          <p className="text-body text-t1">{blockedCopy.explanation}</p>
           {task.blockedDetail && blockedCopy.detailIsQuestion && (
-            <blockquote className="mt-2 rounded-r-md border-l-2 border-human bg-app/60 px-3 py-2 text-[13px] text-t1">
+            <blockquote className="mt-2 rounded-r-control border-l-2 border-status-human bg-app/60 px-3 py-2 text-body text-t1">
               {task.blockedDetail}
             </blockquote>
           )}
-          <p className="mt-2 text-[12px] text-t3">请在居中的处理窗口中选择下一步。</p>
+          <p className="mt-2 text-meta text-t3">请在居中的处理窗口中选择下一步。</p>
         </div>
       )}
 
@@ -239,37 +239,39 @@ export function OverviewTab({ task, events }: Props) {
       {validationOutcome === "skipped" && (
         <section className="mb-6">
           <h2 className={sectionH}>验证结果（r{task.currentRevision}）</h2>
-          <div className="rounded-[var(--radius-panel)] border border-human bg-human-bg px-3 py-2 text-[13px] text-t1">
+          <div className="rounded-section border border-status-human bg-status-human-bg px-3 py-2 text-body text-t1">
             ⚠ 本轮未运行任何验证：这个项目还没有配置测试或构建命令，代码没有被自动验证过。
-            在项目设置里配置 <span className="font-mono text-[12px]">.agentflow/project.toml</span> 的
+            在项目设置里配置 <span className="font-mono text-meta">.agentflow/project.toml</span> 的
             验证命令后重跑，即可启用自动验证；若这个项目确实无需验证，可放心批准。
           </div>
         </section>
       )}
 
-      <section className="mb-6 rounded-[var(--radius-panel)] border border-line bg-panel/55 p-4">
+      <details className="mb-6 rounded-section border border-line bg-panel/55 p-4">
+        <summary className="cursor-pointer text-body font-semibold text-t2">历史与任务信息</summary>
+        <section className="mt-4 border-t border-line/70 pt-4">
         <h2 className={sectionH}>原始目标</h2>
         {task.description.trim() ? (
-          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-t1">{task.description}</p>
+          <p className="whitespace-pre-wrap text-body leading-relaxed text-t1">{task.description}</p>
         ) : (
-          <p className="text-[13px] text-t3">没有填写任务描述。</p>
+          <p className="text-body text-t3">没有填写任务描述。</p>
         )}
-      </section>
+        </section>
 
-      <section className="mb-6">
+        <section className="mt-5">
         <h2 className={sectionH}>版本记录</h2>
-        <p className="mb-3 text-[12px] text-t3">
+        <p className="mb-3 text-meta text-t3">
           开发总结只用来说明改了什么；验收结论仍以上面的验证与独立审查证据为准。
         </p>
         <div className="flex flex-col gap-2">
           {!hasCurrentRevision && (
-            <div className="rounded-[var(--radius-panel)] border border-run/30 bg-run/5 p-3">
+            <div className="rounded-section border border-status-running/30 bg-status-running/5 p-3">
               <div className="flex items-center gap-2">
-                <span className="font-mono text-[12px]">{task.currentRevision > 0 ? `r${task.currentRevision}` : "首轮"}</span>
+                <span className="font-mono text-meta">{task.currentRevision > 0 ? `r${task.currentRevision}` : "首轮"}</span>
                 <RevisionProgress meta={currentMeta} />
-                <span className="ml-auto text-[11px] text-t3">{relativeTime(task.updatedAt)}</span>
+                <span className="ml-auto text-meta text-t3">{relativeTime(task.updatedAt)}</span>
               </div>
-              <p className="mt-2 text-[13px] text-t2">
+              <p className="mt-2 text-body text-t2">
                 {task.status === "DRAFT"
                   ? "任务已经创建，点击开始后这里会持续显示当前进展。"
                   : "任务已经启动；首个提交完成后，这里会显示本轮改动总结。"}
@@ -280,8 +282,8 @@ export function OverviewTab({ task, events }: Props) {
             .slice()
             .reverse()
             .map((r) => (
-              <div key={r.revision} className="rounded-[var(--radius-panel)] border border-line bg-panel p-3">
-                <div className="flex items-center gap-2 text-[12px]">
+              <div key={r.revision} className="rounded-section border border-line bg-panel p-3">
+                <div className="flex items-center gap-2 text-meta">
                   <span className="font-mono">r{r.revision}</span>
                   <RevisionProgress
                     meta={
@@ -302,18 +304,19 @@ export function OverviewTab({ task, events }: Props) {
                 </div>
                 <RevisionSummary text={summaries.get(r.revision) ?? "（本轮没有自述总结）"} />
                 {r.stat && r.stat.flagged.length > 0 && (
-                  <div className="mt-2 text-[12px] text-human">⚠ 触及控制面文件：{r.stat.flagged.join("、")}</div>
+                  <div className="mt-2 text-meta text-status-human">⚠ 触及控制面文件：{r.stat.flagged.join("、")}</div>
                 )}
                 {/* §45 大规模删除属于高风险操作，合并前必须让用户注意到 */}
                 {r.stat && isMassDeletion(r.stat.deletedFiles) && (
-                  <div className="mt-2 text-[12px] text-human">
+                  <div className="mt-2 text-meta text-status-human">
                     ⚠ 本轮删除了 {r.stat.deletedFiles} 个文件，合并前请确认这是预期操作
                   </div>
                 )}
               </div>
             ))}
         </div>
-      </section>
+        </section>
+      </details>
     </div>
   );
 }
@@ -337,13 +340,13 @@ function EvidenceCard({
     <button
       type="button"
       onClick={onClick}
-      className="rounded-[var(--radius-panel)] border border-line bg-panel/70 p-3 text-left transition-colors hover:border-line-strong hover:bg-raised"
+      className="rounded-section border border-line bg-panel/70 p-3 text-left transition-colors hover:border-line-strong hover:bg-raised"
     >
-      <span className="flex items-center gap-2 text-[12px] text-t3">
+      <span className="flex items-center gap-2 text-meta text-t3">
         <Icon className="size-4" aria-hidden /> {title}
       </span>
-      <span className={cn("mt-2 block text-[15px] font-semibold", tone === "ok" ? "text-ok" : tone === "human" ? "text-human" : "text-t1")}>{value}</span>
-      <span className="mt-1 block text-[11px] leading-relaxed text-t3">{detail}</span>
+      <span className={cn("mt-2 block text-section font-semibold", tone === "ok" ? "text-ok" : tone === "human" ? "text-status-human" : "text-t1")}>{value}</span>
+      <span className="mt-1 block text-meta leading-relaxed text-t3">{detail}</span>
     </button>
   );
 }

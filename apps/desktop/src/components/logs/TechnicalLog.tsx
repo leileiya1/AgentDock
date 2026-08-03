@@ -122,7 +122,7 @@ export function TechnicalLog({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索日志"
             aria-label="搜索技术日志"
-            className="h-7 w-44 pl-7 text-[12px]"
+            className="h-7 w-44 pl-7 text-meta"
           />
         </div>
         <div className="flex flex-wrap gap-1" role="tablist" aria-label="日志类型">
@@ -133,7 +133,7 @@ export function TechnicalLog({
               aria-selected={filter === item.id}
               onClick={() => setFilter(item.id)}
               className={cn(
-                "rounded-full border px-2 py-0.5 text-[12px] transition-colors",
+                "rounded-pill border px-2 py-0.5 text-meta transition-colors",
                 filter === item.id ? "border-line-strong bg-raised text-t1" : "border-line text-t3 hover:text-t1"
               )}
             >
@@ -141,16 +141,16 @@ export function TechnicalLog({
             </button>
           ))}
         </div>
-        <label className="flex items-center gap-1 text-[12px] text-t3">
+        <label className="flex items-center gap-1 text-meta text-t3">
           <input
             type="checkbox"
             checked={showTimestamps}
             onChange={(e) => setShowTimestamps(e.target.checked)}
-            className="accent-[var(--color-run)]"
+            className="accent-[var(--color-action)]"
           />
           时间戳
         </label>
-        <label className="flex items-center gap-1 text-[12px] text-t3">
+        <label className="flex items-center gap-1 text-meta text-t3">
           <input
             type="checkbox"
             checked={follow}
@@ -158,12 +158,12 @@ export function TechnicalLog({
               followRef.current = e.target.checked;
               setFollow(e.target.checked);
             }}
-            className="accent-[var(--color-run)]"
+            className="accent-[var(--color-action)]"
           />
           跟随最新
         </label>
         <span className="ml-auto flex items-center gap-1">
-          <span className="text-[12px] tabular-nums text-t3">{filtered.length} 条</span>
+          <span className="text-meta tabular-nums text-t3">{filtered.length} 条</span>
           <Button
             variant="ghost"
             size="sm"
@@ -185,7 +185,7 @@ export function TechnicalLog({
           <button
             onClick={onLoadMore}
             disabled={loading}
-            className="block w-full border-b border-line/70 py-2 text-center text-[12px] text-t3 hover:text-t1"
+            className="block w-full border-b border-line/70 py-2 text-center text-meta text-t3 hover:text-t1"
           >
             {loading ? "加载中…" : "已省略更早输出，点击加载"}
           </button>
@@ -224,7 +224,7 @@ export function TechnicalLog({
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
-            className="absolute bottom-3 right-3 flex items-center gap-1 rounded-full bg-run px-3 py-1.5 text-[12px] font-semibold text-white shadow-[var(--shadow-float)]"
+            className="absolute bottom-3 right-3 flex items-center gap-1 rounded-pill bg-action px-3 py-1.5 text-meta font-semibold text-white shadow-[var(--shadow-float)]"
           >
             回到最新 <ArrowDown className="size-3.5" />
           </motion.button>
@@ -240,7 +240,7 @@ function LogRow({ event, showTimestamp }: { event: AgentEvent; showTimestamp: bo
   const stderr = event.stream === "stderr";
 
   return (
-    <div className="px-3 font-mono text-[12px] leading-relaxed">
+    <div className="px-3 font-mono text-meta leading-relaxed">
       <button
         type="button"
         onClick={() => canExpand && setOpen((o) => !o)}
@@ -250,14 +250,14 @@ function LogRow({ event, showTimestamp }: { event: AgentEvent; showTimestamp: bo
         {showTimestamp && (
           <span className="w-36 shrink-0 tabular-nums text-t3">{absoluteTime(event.ts)}</span>
         )}
-        <span className="w-8 shrink-0 text-[11px] uppercase text-t3">{KIND_LABEL[event.kind]}</span>
+        <span className="w-8 shrink-0 text-meta uppercase text-t3">{KIND_LABEL[event.kind]}</span>
         <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", stderr ? "text-bad" : "text-t2")}>
           {event.summary}
         </span>
         {canExpand && <span className="shrink-0 text-t3">{open ? "▾" : "▸"}</span>}
       </button>
       {open && event.text && (
-        <pre className="mb-2 ml-10 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-app px-2 py-2 text-t2">
+        <pre className="mb-2 ml-10 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-line bg-app px-2 py-2 text-t2">
           {event.text}
         </pre>
       )}

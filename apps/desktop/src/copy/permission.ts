@@ -66,7 +66,7 @@ export function actionCopy(action: PermissionActionType): ActionCopy {
   );
 }
 
-export type RiskTone = "ok" | "run" | "human" | "bad";
+export type RiskTone = "ok" | "caution" | "human" | "bad";
 
 export interface RiskCopy {
   label: string;
@@ -78,7 +78,7 @@ export interface RiskCopy {
 
 export const RISK_COPY: Record<PermissionRiskLevel, RiskCopy> = {
   low: { label: "低风险", tone: "ok", why: "影响范围限于当前任务，可放心处理。" },
-  medium: { label: "中风险", tone: "run", why: "会触及依赖、网络或配置，请核对具体内容。" },
+  medium: { label: "中风险", tone: "caution", why: "会触及依赖、网络或配置，请核对具体内容。" },
   high: { label: "高风险", tone: "human", why: "可能影响工作树外、密钥或不可逆操作，仅提供一次/本任务授权。" },
   forbidden: { label: "不可授权", tone: "bad", why: "属于系统级越界能力，AgentFlow 不会为其提供允许按钮。" },
 };

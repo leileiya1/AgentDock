@@ -32,9 +32,9 @@ export function LiveStatusBar({ status }: { status: LiveStatus | null }) {
       role="status"
       aria-live="polite"
       className={cn(
-        "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[var(--radius-panel)] border px-3 py-2 text-[13px]",
-        running && "border-run/40 bg-run/5",
-        status.tone === "attention" && "border-human/50 bg-human-bg",
+        "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-section border px-3 py-2 text-body",
+        running && "border-status-running/40 bg-status-running/5",
+        status.tone === "attention" && "border-status-human/50 bg-status-human-bg",
         status.tone === "pending" && "border-line bg-panel/60"
       )}
     >

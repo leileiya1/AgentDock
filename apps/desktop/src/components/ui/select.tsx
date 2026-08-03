@@ -26,7 +26,7 @@ export const SelectTrigger = React.forwardRef<
     ref={ref}
     data-slot="select-trigger"
     className={cn(
-      "flex h-8 w-full items-center justify-between gap-2 rounded-[var(--radius-control)] border border-line bg-app/80 px-3 text-[13px] text-t1 outline-none transition-colors data-[placeholder]:text-t3 hover:border-line-strong focus-visible:border-run/60 focus-visible:ring-2 focus-visible:ring-run/40 disabled:opacity-50 [&>span]:truncate",
+      "flex h-8 w-full items-center justify-between gap-2 rounded-control border border-line bg-app/80 px-3 text-body text-t1 outline-none transition-colors data-[placeholder]:text-t3 hover:border-line-strong focus-visible:border-focus/60 focus-visible:ring-2 focus-visible:ring-focus/40 disabled:opacity-50 [&>span]:truncate",
       className
     )}
     {...props}
@@ -49,7 +49,7 @@ export const SelectContent = React.forwardRef<
       data-slot="select-content"
       position={position}
       className={cn(
-        "relative z-50 max-h-72 min-w-[8rem] overflow-hidden rounded-[var(--radius-panel)] border border-line glass text-t1 shadow-[var(--shadow-float)]",
+        "relative z-50 max-h-72 min-w-[8rem] overflow-hidden rounded-overlay border border-line glass text-t1 shadow-[var(--shadow-float)]",
         "data-[state=open]:[animation:content-in_150ms_var(--ease-out-expo)] data-[state=closed]:[animation:content-out_110ms_ease]",
         position === "popper" && "data-[side=bottom]:translate-y-1 data-[side=top]:-translate-y-1",
         className
@@ -76,7 +76,7 @@ export const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex w-full cursor-default select-none items-center rounded-[var(--radius-control)] py-1.5 pl-2 pr-8 text-[13px] outline-none data-[highlighted]:bg-raised data-[highlighted]:text-t1 data-[state=checked]:text-run",
+      "relative flex w-full cursor-default select-none items-center rounded-control py-1.5 pl-2 pr-8 text-body outline-none data-[highlighted]:bg-raised data-[highlighted]:text-t1 data-[state=checked]:text-selection",
       className
     )}
     {...props}

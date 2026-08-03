@@ -2,18 +2,13 @@ import type { TaskStatus } from "@/generated/bindings";
 import { STATUS_COPY, type StatusTone } from "@/copy/status";
 import { cn } from "@/lib/utils";
 
-const TONE: Record<StatusTone, { text: string; ring: string; dot: string; glow?: string }> = {
-  idle: { text: "text-idle", ring: "border-line", dot: "bg-idle" },
-  run: { text: "text-run", ring: "border-run/40", dot: "bg-run" },
-  review: { text: "text-review", ring: "border-review/40", dot: "bg-review" },
-  ok: { text: "text-ok", ring: "border-ok/40", dot: "bg-ok" },
-  bad: { text: "text-bad", ring: "border-bad/40", dot: "bg-bad" },
-  human: {
-    text: "text-human",
-    ring: "border-human/60",
-    dot: "bg-human",
-    glow: "bg-human-bg shadow-[0_0_16px_-4px_rgba(232,163,61,0.5)]",
-  },
+const TONE: Record<StatusTone, { text: string; ring: string; dot: string; wash?: string }> = {
+  idle: { text: "text-status-idle", ring: "border-line", dot: "bg-status-idle" },
+  run: { text: "text-status-running", ring: "border-status-running/45", dot: "bg-status-running", wash: "bg-status-running-bg/70" },
+  review: { text: "text-status-review", ring: "border-status-review/45", dot: "bg-status-review" },
+  ok: { text: "text-status-success", ring: "border-status-success/45", dot: "bg-status-success" },
+  bad: { text: "text-status-danger", ring: "border-status-danger/45", dot: "bg-status-danger" },
+  human: { text: "text-status-human", ring: "border-status-human/55", dot: "bg-status-human", wash: "bg-status-human-bg/80" },
 };
 
 interface Props {
@@ -21,27 +16,20 @@ interface Props {
   size?: "sm" | "md";
 }
 
-/** status → {label, color, pulse}. "需要你" family is always amber (02 §6). */
 export function StateBadge({ status, size = "md" }: Props) {
   const copy = STATUS_COPY[status];
   const tone = TONE[copy.tone];
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border font-medium leading-none",
-        size === "sm" ? "px-2 py-1 text-[11px]" : "px-2.5 py-1 text-[12px]",
+        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-pill border font-medium leading-none",
+        size === "sm" ? "px-2 py-1 text-meta" : "px-2.5 py-1 text-meta",
         tone.text,
         tone.ring,
-        tone.glow ?? "bg-transparent"
+        tone.wash ?? "bg-transparent"
       )}
     >
-      <span
-        className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          tone.dot,
-          copy.pulse && "animate-pulse-dot"
-        )}
-      />
+      <span className={cn("size-1.5 shrink-0 rounded-circle", tone.dot, copy.pulse && "animate-pulse-dot")} />
       {copy.label}
     </span>
   );

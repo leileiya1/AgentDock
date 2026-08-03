@@ -25,14 +25,14 @@ export function PermissionProjectSummary({
 
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
-      <span className="inline-flex items-center gap-1 rounded-full border border-ok/30 bg-ok/5 px-2 py-0.5 text-[11px] font-medium text-ok">
-        <ShieldCheck className="size-3" aria-hidden /> 自动执行 · 受限沙箱
+      <span className="inline-flex items-center gap-1 rounded-pill border border-ok/30 bg-ok/5 px-2 py-0.5 text-meta font-medium text-ok">
+        <ShieldCheck className="size-3" aria-hidden /> 受限沙箱
       </span>
-      <span className="inline-flex items-center gap-1 rounded-full border border-line bg-panel/70 px-2 py-0.5 text-[11px] text-t2">
+      <span className="inline-flex items-center gap-1 rounded-pill border border-line bg-panel/70 px-2 py-0.5 text-meta text-t2">
         <ScrollText className="size-3" aria-hidden /> 规则 <span className="font-medium tabular-nums text-t1">{summary.active}</span>
       </span>
       {latestBreach && (
-        <span className="inline-flex items-center gap-1 rounded-full border border-human/40 bg-human-bg px-2 py-0.5 text-[11px] font-medium text-human">
+        <span className="inline-flex items-center gap-1 rounded-pill border border-status-human/40 bg-status-human-bg px-2 py-0.5 text-meta font-medium text-status-human">
           <ShieldAlert className="size-3" aria-hidden /> 越界 {relativeTime(latestBreach.updatedAt)}
         </span>
       )}

@@ -11,7 +11,7 @@ export function ValidationSkipNotice({ taskId, revision }: { taskId: string; rev
   const events = useEvents(taskId);
   if (latestValidationOutcome(events.data ?? [], revision) !== "skipped") return null;
   return (
-    <div className="mb-2 rounded-[var(--radius-panel)] border border-human bg-human-bg px-3 py-2 text-[12px] leading-relaxed text-t1">
+    <div className="mb-2 rounded-section border border-caution bg-caution-bg px-3 py-2 text-meta leading-relaxed text-t1">
       ⚠ 本轮未运行验证：项目没有配置测试/构建命令，代码没有被自动验证过。批准前请确认这是可接受的。
     </div>
   );
