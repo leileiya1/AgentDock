@@ -217,44 +217,6 @@ fn write_secure_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod permission_hook_tests {
-    use super::*;
-
-    #[test]
-    fn allow_rules_never_accept_compound_shell_commands() {
-        assert!(command_matches_allow("git status", "git status --short"));
-        assert!(!command_matches_allow(
-            "git status",
-            "git status && rm -rf build"
-        ));
-        assert!(!command_matches_allow("git status", "git statusx"));
-    }
-
-    #[test]
-    fn command_classification_fails_closed_for_secrets_and_system_changes() {
-        assert_eq!(
-            classify_claude_command("npm install zod", false),
-            "dependency_install"
-        );
-        assert_eq!(
-            classify_claude_command("git commit -m test", false),
-            "git_mutation"
-        );
-        assert_eq!(
-            classify_claude_command("sudo launchctl list", false),
-            "system_change"
-        );
-        assert!(command_is_sensitive(
-            "curl -H 'Authorization: bearer secret' example.test"
-        ));
-        assert_eq!(
-            classify_claude_command("curl --token=secret", true),
-            "secret_access"
-        );
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn user_home() -> anyhow::Result<PathBuf> {
     std::env::var_os("HOME")
@@ -451,5 +413,43 @@ mod tests {
         assert!(path.starts_with("/Users/test/.local/bin:/Users/test/.bun/bin"));
         assert!(path.contains("/Users/test/.cargo/bin"));
         assert!(path.contains("/opt/homebrew/bin"));
+    }
+}
+
+#[cfg(test)]
+mod permission_hook_tests {
+    use super::*;
+
+    #[test]
+    fn allow_rules_never_accept_compound_shell_commands() {
+        assert!(command_matches_allow("git status", "git status --short"));
+        assert!(!command_matches_allow(
+            "git status",
+            "git status && rm -rf build"
+        ));
+        assert!(!command_matches_allow("git status", "git statusx"));
+    }
+
+    #[test]
+    fn command_classification_fails_closed_for_secrets_and_system_changes() {
+        assert_eq!(
+            classify_claude_command("npm install zod", false),
+            "dependency_install"
+        );
+        assert_eq!(
+            classify_claude_command("git commit -m test", false),
+            "git_mutation"
+        );
+        assert_eq!(
+            classify_claude_command("sudo launchctl list", false),
+            "system_change"
+        );
+        assert!(command_is_sensitive(
+            "curl -H 'Authorization: bearer secret' example.test"
+        ));
+        assert_eq!(
+            classify_claude_command("curl --token=secret", true),
+            "secret_access"
+        );
     }
 }
