@@ -66,7 +66,9 @@ mod tests {
         let (qoder, qoder_versions) =
             support_level("qodercli", Some("1.1.3"), true, &matrix);
         assert_eq!(qoder, CliSupportLevel::Verified);
-        assert_eq!(qoder_versions, vec!["1.1.3"]);
+        assert_eq!(qoder_versions, vec!["1.1.3", "1.1.12"]);
+        let (qoder_ci, _) = support_level("qodercli", Some("1.1.12"), true, &matrix);
+        assert_eq!(qoder_ci, CliSupportLevel::Verified);
         let (grok, grok_versions) =
             support_level("grok", Some("grok 0.2.111 (build)"), true, &matrix);
         assert_eq!(grok, CliSupportLevel::Verified);
