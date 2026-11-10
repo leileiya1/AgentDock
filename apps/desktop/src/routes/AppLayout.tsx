@@ -9,6 +9,11 @@ import { FullAccessBanner } from "@/components/FullAccessBanner";
 import { SchedulerBanner } from "@/components/SchedulerBanner";
 import { useGlobalEvents } from "@/hooks/useGlobalEvents";
 import { useUiStore } from "@/stores/uiStore";
+import { CommandPalette } from "@/components/palette/CommandPalette";
+import { AwayRecap } from "@/components/recap/AwayRecap";
+import { Fireworks } from "@/components/celebrate/Fireworks";
+import { ShortcutSheet } from "@/components/ShortcutSheet";
+import { WeeklyReportDialog } from "@/components/weekly/WeeklyReportDialog";
 
 export function AppLayout() {
   const location = useLocation();
@@ -16,6 +21,9 @@ export function AppLayout() {
   const detailMatch = useMatch("/p/:projectId/t/:taskId");
   const openNewTask = useUiStore((s) => s.openNewTask);
   const navigate = useNavigate();
+  const paletteOpen = useUiStore((s) => s.paletteOpen);
+  const setPaletteOpen = useUiStore((s) => s.setPaletteOpen);
+  const currentProjectId = listMatch?.params.projectId ?? detailMatch?.params.projectId;
 
   useGlobalEvents();
 
@@ -31,8 +39,7 @@ export function AppLayout() {
       }
       if (mod && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
-        if (!listMatch?.params.projectId) navigate(projectId ? `/p/${projectId}` : "/");
-        requestAnimationFrame(() => document.getElementById("task-search")?.focus());
+        setPaletteOpen((o) => !o);
         return;
       }
       if (mod && e.key === "[") {
@@ -49,7 +56,7 @@ export function AppLayout() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [listMatch, detailMatch, openNewTask, navigate]);
+  }, [listMatch, detailMatch, openNewTask, navigate, setPaletteOpen]);
 
   return (
     <div className="flex h-dvh min-h-0 w-full overflow-hidden">
@@ -64,6 +71,11 @@ export function AppLayout() {
       <NewTaskDialog />
       <CloseGuard />
       <Toaster />
+      <AwayRecap />
+      <Fireworks />
+      <ShortcutSheet />
+      <WeeklyReportDialog />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} currentProjectId={currentProjectId} />
     </div>
   );
 }

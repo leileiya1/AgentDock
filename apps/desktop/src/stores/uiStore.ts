@@ -3,6 +3,17 @@ import type { TreeSelection } from "@/components/execution/TreeNodes";
 
 export type DetailTab = "overview" | "logs" | "diff" | "review" | "governance";
 export type DensityMode = "comfortable" | "compact";
+export type HomeMode = "list" | "studio";
+
+const HOME_MODE_KEY = "agentflow.homeMode";
+
+function readHomeMode(): HomeMode {
+  try {
+    return globalThis.localStorage?.getItem(HOME_MODE_KEY) === "studio" ? "studio" : "list";
+  } catch {
+    return "list";
+  }
+}
 
 interface UiState {
   sidebarCollapsed: boolean;
@@ -40,15 +51,32 @@ interface UiState {
   requestDiffJump: (taskId: string, file: string, line: number | null) => void;
   clearDiffJump: () => void;
 
+  /** 首页看任务的方式：清单，或像素小屋。记住用户的选择。 */
+  homeMode: HomeMode;
+  setHomeMode: (mode: HomeMode) => void;
+
   /** new-task dialog (global, so Cmd/Ctrl+N can open it from any page) */
   newTaskProjectId: string | null;
   openNewTask: (projectId: string) => void;
   closeNewTask: () => void;
+
+  /** ⌘K 传送门 */
+  paletteOpen: boolean;
+  setPaletteOpen: (open: boolean | ((open: boolean) => boolean)) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
   sidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  homeMode: readHomeMode(),
+  setHomeMode: (mode) => {
+    try {
+      globalThis.localStorage?.setItem(HOME_MODE_KEY, mode);
+    } catch {
+      // storage may be unavailable (private mode); the choice just isn't remembered
+    }
+    set({ homeMode: mode });
+  },
   densityMode: "comfortable",
   toggleDensity: () => set((s) => ({ densityMode: s.densityMode === "comfortable" ? "compact" : "comfortable" })),
 
@@ -91,4 +119,6 @@ export const useUiStore = create<UiState>((set) => ({
   newTaskProjectId: null,
   openNewTask: (projectId) => set({ newTaskProjectId: projectId }),
   closeNewTask: () => set({ newTaskProjectId: null }),
+  paletteOpen: false,
+  setPaletteOpen: (open) => set((s) => ({ paletteOpen: typeof open === "function" ? open(s.paletteOpen) : open })),
 }));

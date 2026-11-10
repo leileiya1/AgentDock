@@ -218,6 +218,22 @@ async fn resolve_cli(name: &str, path: &Path) -> Result<PathBuf, AdapterError> {
     if let Ok(found) = which::which(path) {
         return Ok(found);
     }
+    // Finder/LaunchServices may omit SHELL and expose only /usr/bin:/bin. Discover the same
+    // standard user/package-manager installs used by the daemon, without importing shell output.
+    #[cfg(unix)]
+    if path == Path::new(name) {
+        let mut directories = Vec::new();
+        if let Some(user_home) = std::env::var_os("HOME") {
+            let user_home = PathBuf::from(user_home);
+            directories.extend([user_home.join(".local/bin"), user_home.join(".bun/bin")]);
+        }
+        directories.extend([PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")]);
+        if let Ok(search_path) = std::env::join_paths(directories)
+            && let Ok(found) = which::which_in(path, Some(search_path), "/")
+        {
+            return Ok(found);
+        }
+    }
     #[cfg(unix)]
     {
         if let Ok(shell) = std::env::var("SHELL") {
@@ -917,7 +933,7 @@ fn classify_runtime_probe_failure(text: &str, exit_code: Option<i32>) -> String 
 /// disallows writes/tools, and returns only a categorized verdict so provider output is never
 /// surfaced to the desktop or persisted in the task database.
 pub async fn probe_cli_runtime(name: &str, program: &Path) -> CliRuntimeProbe {
-    probe_cli_runtime_in(name, program, None).await
+    probe_cli_runtime_in(name, program, None, None).await
 }
 
 /// Same safe probe with an explicitly authorized working directory. The desktop uses the
@@ -928,13 +944,24 @@ pub async fn probe_cli_runtime_at(
     program: &Path,
     authorized_cwd: &Path,
 ) -> CliRuntimeProbe {
-    probe_cli_runtime_in(name, program, Some(authorized_cwd)).await
+    probe_cli_runtime_in(name, program, Some(authorized_cwd), None).await
+}
+
+/// Task-owned probe: its durable lease/logs and cancellation live under the attempt directory.
+pub async fn probe_cli_runtime_managed(
+    name: &str, program: &Path, authorized_cwd: &Path, run_dir: &Path, cancel: CancellationToken,
+) -> CliRuntimeProbe {
+    if !matches!(name, "claude" | "codex") {
+        return CliRuntimeProbe { passed:false, problem:Some("managed probe is unavailable for this Provider".into()) };
+    }
+    probe_cli_runtime_in(name, program, Some(authorized_cwd), Some((run_dir,cancel))).await
 }
 
 async fn probe_cli_runtime_in(
     name: &str,
     program: &Path,
     authorized_cwd: Option<&Path>,
+    managed: Option<(&Path, CancellationToken)>,
 ) -> CliRuntimeProbe {
     let strategy = compatibility_matrix()
         .ok()
@@ -954,21 +981,22 @@ async fn probe_cli_runtime_in(
             problem: Some(format!("{name} 尚未实现真实运行探针")),
         };
     }
-    let temp = match tempfile::Builder::new()
-        .prefix("agentflow-provider-probe-")
-        .tempdir()
-    {
-        Ok(value) => value,
-        Err(error) => {
-            return CliRuntimeProbe {
-                passed: false,
-                problem: Some(format!("无法创建真实探针目录：{error}")),
-            };
+    let temporary = if managed.is_none() {
+        match tempfile::Builder::new().prefix("agentflow-provider-probe-").tempdir() {
+            Ok(value)=>Some(value),
+            Err(error)=>return CliRuntimeProbe{passed:false,problem:Some(format!("无法创建真实探针目录：{error}"))},
         }
+    } else { None };
+    let probe_dir = match &managed {
+        Some((dir,_))=>*dir,
+        None=>match &temporary {Some(temp)=>temp.path(),None=>return CliRuntimeProbe{passed:false,problem:Some("probe directory unavailable".into())}},
     };
+    if let Err(error)=tokio::fs::create_dir_all(probe_dir).await {
+        return CliRuntimeProbe{passed:false,problem:Some(format!("无法创建真实探针目录：{error}"))};
+    }
     let git_init = Command::new("git")
         .args(["init", "--quiet"])
-        .current_dir(temp.path())
+        .current_dir(probe_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -980,7 +1008,7 @@ async fn probe_cli_runtime_in(
             problem: Some("无法初始化真实探针的临时 Git 仓库".into()),
         };
     }
-    let probe_cwd = authorized_cwd.unwrap_or_else(|| temp.path());
+    let probe_cwd = authorized_cwd.unwrap_or(probe_dir);
     if !probe_cwd.is_dir() {
         return CliRuntimeProbe {
             passed: false,
@@ -988,8 +1016,8 @@ async fn probe_cli_runtime_in(
         };
     }
 
-    let last_message = temp.path().join("last-message.json");
-    let schema_path = temp.path().join("probe.schema.json");
+    let last_message = probe_dir.join("last-message.json");
+    let schema_path = probe_dir.join("probe.schema.json");
     let schema = json!({
         "type": "object",
         "properties": {"probe": {"type": "string", "const": RUNTIME_PROBE_MARKER}},
@@ -1098,7 +1126,7 @@ async fn probe_cli_runtime_in(
     let compat = if name == "grok"
         && request_policy.as_deref() == Some("deepseek_forced_tool_choice_non_thinking")
     {
-        match deepseek_compat::prepare_grok_deepseek_compat(temp.path(), probe_cwd, &[]).await {
+        match deepseek_compat::prepare_grok_deepseek_compat(probe_dir, probe_cwd, &[]).await {
             Ok(value) => value,
             Err(error) => {
                 return CliRuntimeProbe {
@@ -1119,42 +1147,37 @@ async fn probe_cli_runtime_in(
         environment.extend(compat.environment());
         environment.remove("DEEPSEEK_API_KEY");
     }
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(probe_cwd)
-        .env_clear()
-        .envs(environment)
-        .stdin(Stdio::null())
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(45), command.output()).await;
-    if let Some(compat) = compat {
-        compat.shutdown().await;
-    }
-    let output = match output {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => {
-            return CliRuntimeProbe {
-                passed: false,
-                problem: Some(format!("无法启动真实探针：{error}")),
-            };
+    let (exit_code,stdout,stderr) = if let Some((dir,cancel)) = managed {
+        let (tx,mut rx)=mpsc::channel(64);
+        let drain=tokio::spawn(async move{while rx.recv().await.is_some(){}});
+        let spec=ProcessSpec{program:program.into(),args,cwd:probe_cwd.into(),env:environment,
+            clear_environment:true,env_denylist:Vec::new(),timeout:Duration::from_secs(45),idle_timeout:Duration::from_secs(45),
+            stdout_path:dir.join("stdout.log"),stderr_path:dir.join("stderr.log"),lease_path:dir.join("process-lease.json")};
+        let outcome=agentflow_process_supervisor::run(spec,cancel,tx).await;
+        let _=drain.await;
+        match outcome {
+            Ok(outcome) if !outcome.cancelled&&!outcome.timed_out => (outcome.exit_code,tokio::fs::read(dir.join("stdout.log")).await.unwrap_or_default(),tokio::fs::read(dir.join("stderr.log")).await.unwrap_or_default()),
+            Ok(_)=>return CliRuntimeProbe{passed:false,problem:Some("真实探针已取消或超过 45 秒，受管进程组已请求清理".into())},
+            Err(error)=>return CliRuntimeProbe{passed:false,problem:Some(format!("受管真实探针失败：{error}"))},
         }
-        Err(_) => {
-            return CliRuntimeProbe {
-                passed: false,
-                problem: Some("真实探针 45 秒未响应，已安全降级到后备 Provider".into()),
-            };
+    } else {
+        let mut command=Command::new(program);
+        command.args(args).current_dir(probe_cwd).env_clear().envs(environment).stdin(Stdio::null()).kill_on_drop(true);
+        let output=tokio::time::timeout(Duration::from_secs(45),command.output()).await;
+        if let Some(compat)=compat {compat.shutdown().await;}
+        match output {
+            Ok(Ok(output))=>(output.status.code(),output.stdout,output.stderr),
+            Ok(Err(error))=>return CliRuntimeProbe{passed:false,problem:Some(format!("无法启动真实探针：{error}"))},
+            Err(_)=>return CliRuntimeProbe{passed:false,problem:Some("真实探针 45 秒未响应，已安全降级到后备 Provider".into())},
         }
     };
-    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-    combined.push_str(&String::from_utf8_lossy(&output.stderr));
-    if let Ok(last) = tokio::fs::read_to_string(&last_message).await {
-        combined.push_str(&last);
-    }
+    let mut combined=String::from_utf8_lossy(&stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&stderr));
+    if let Ok(last)=tokio::fs::read_to_string(&last_message).await {combined.push_str(&last);}
     let deepseek_aux_protocol_error = combined.contains("400")
         && combined.to_ascii_lowercase().contains("thinking")
         && combined.contains("tool_choice");
-    if output.status.success()
+    if exit_code==Some(0)
         && combined.contains(RUNTIME_PROBE_MARKER)
         && !deepseek_aux_protocol_error
     {
@@ -1167,7 +1190,7 @@ async fn probe_cli_runtime_in(
             passed: false,
             problem: Some(classify_runtime_probe_failure(
                 &combined,
-                output.status.code(),
+                exit_code,
             )),
         }
     }

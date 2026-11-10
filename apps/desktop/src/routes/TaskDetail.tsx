@@ -25,6 +25,9 @@ import { ReviewTab } from "@/routes/detail/ReviewTab";
 import { GovernanceTab } from "@/routes/detail/GovernanceTab";
 import { isAgentRunning, isTaskExecuting } from "@/lib/taskStatus";
 
+import { useTeam } from "@/hooks/useTeam";
+import { TeamWorkspace } from "@/components/team/TeamWorkspace";
+
 const TABS: Array<{ id: DetailTab; label: string; key: string }> = [
   { id: "overview", label: "结果与验收", key: "1" },
   { id: "diff", label: "Diff", key: "2" },
@@ -41,6 +44,7 @@ const TABS: Array<{ id: DetailTab; label: string; key: string }> = [
 export function TaskDetail() {
   const { taskId, projectId } = useParams();
   const task = useTaskDetail(taskId);
+  const team = useTeam(taskId);
 
   const activeTab = useUiStore((s) => (taskId ? s.activeTab[taskId] : undefined)) ?? "overview";
   const setActiveTab = useUiStore((s) => s.setActiveTab);
@@ -93,6 +97,10 @@ export function TaskDetail() {
       </div>
     );
   }
+
+  if (team.isLoading) return <div className="p-6"><SkeletonRows rows={5} /></div>;
+  if (team.isError) return <ErrorState error={team.error} onRetry={() => team.refetch()} />;
+  if (team.data) return <TeamWorkspace view={team.data} title={detail.title} />;
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">

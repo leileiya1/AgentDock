@@ -17,6 +17,18 @@ fn main() -> anyhow::Result<()> {
         schemas.join("plan.schema.json"),
         serde_json::to_vec_pretty(&plan_result_schema())?,
     )?;
+    for (name, schema) in [
+        (
+            "team-plan.schema.json",
+            agentflow_contracts::team_plan_schema(),
+        ),
+        (
+            "team-submission.schema.json",
+            agentflow_contracts::team_submission_schema(),
+        ),
+    ] {
+        fs::write(schemas.join(name), serde_json::to_vec_pretty(&schema)?)?;
+    }
     let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
         .args([
             "run",

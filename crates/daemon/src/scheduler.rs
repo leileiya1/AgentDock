@@ -63,6 +63,20 @@ async fn scheduler_loop(
                 }
                 let limit = scheduler_limit(&settings);
                 while running.len() < limit {
+                    match orchestrator.team_claim_next(limit as u32).await {
+                        Ok(Some(claim)) => {
+                            let worker = Arc::clone(&orchestrator);
+                            running.spawn(async move {
+                                if let Err(error) = worker.team_execute_claim(claim).await {
+                                    tracing::error!(%error, "team work item failed; durable intent retained for recovery");
+                                }
+                            });
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(error) => tracing::warn!(%error, "team dispatch tick failed; retrying"),
+                    }
+
                     let task_id = match claim_next(&orchestrator).await {
                         Ok(Some(task_id)) => task_id,
                         Ok(None) => break,
@@ -187,7 +201,7 @@ async fn finish_queue_item(
 }
 
 async fn queue_depth(orchestrator: &Orchestrator) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM daemon_queue WHERE state IN ('QUEUED','RUNNING')")
+    sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM daemon_queue WHERE state IN ('QUEUED','RUNNING')) + (SELECT COUNT(*) FROM team_tasks WHERE phase IN ('planning','running','delivering'))")
         .fetch_one(orchestrator.store.pool())
         .await
 }

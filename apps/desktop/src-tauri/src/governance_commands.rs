@@ -64,17 +64,58 @@ macro_rules! task_governance_mutation {
             state: State<'_, Backend>,
             args: $args,
         ) -> Result<TaskDetail, AppError> {
-            daemon_mutate(&state, DaemonRequest::Governance { action: ($map)(args) }).await
+            daemon_mutate(
+                &state,
+                DaemonRequest::Governance {
+                    action: ($map)(args),
+                },
+            )
+            .await
         }
     };
 }
 
-task_governance_mutation!(task_plan_approve, PlanActionArgs, |args: PlanActionArgs| GovernanceRequest::PlanApprove { task_id: args.task_id, plan_id: args.plan_id });
-task_governance_mutation!(task_plan_reject, PlanRejectArgs, |args: PlanRejectArgs| GovernanceRequest::PlanReject { task_id: args.task_id, plan_id: args.plan_id, reason: args.reason });
-task_governance_mutation!(task_budget_update, BudgetUpdateArgs, |args: BudgetUpdateArgs| GovernanceRequest::BudgetUpdate { task_id: args.task_id, limits: args.limits });
-task_governance_mutation!(task_delivery_start, super::TaskIdArgs, |args: super::TaskIdArgs| GovernanceRequest::DeliveryStart { task_id: args.task_id });
-task_governance_mutation!(task_delivery_refresh, super::TaskIdArgs, |args: super::TaskIdArgs| GovernanceRequest::DeliveryRefresh { task_id: args.task_id });
-task_governance_mutation!(task_rollback, RollbackArgs, |args: RollbackArgs| GovernanceRequest::Rollback { task_id: args.task_id, strategy: args.strategy });
+task_governance_mutation!(task_plan_approve, PlanActionArgs, |args: PlanActionArgs| {
+    GovernanceRequest::PlanApprove {
+        task_id: args.task_id,
+        plan_id: args.plan_id,
+    }
+});
+task_governance_mutation!(task_plan_reject, PlanRejectArgs, |args: PlanRejectArgs| {
+    GovernanceRequest::PlanReject {
+        task_id: args.task_id,
+        plan_id: args.plan_id,
+        reason: args.reason,
+    }
+});
+task_governance_mutation!(
+    task_budget_update,
+    BudgetUpdateArgs,
+    |args: BudgetUpdateArgs| GovernanceRequest::BudgetUpdate {
+        task_id: args.task_id,
+        limits: args.limits
+    }
+);
+task_governance_mutation!(
+    task_delivery_start,
+    super::TaskIdArgs,
+    |args: super::TaskIdArgs| GovernanceRequest::DeliveryStart {
+        task_id: args.task_id
+    }
+);
+task_governance_mutation!(
+    task_delivery_refresh,
+    super::TaskIdArgs,
+    |args: super::TaskIdArgs| GovernanceRequest::DeliveryRefresh {
+        task_id: args.task_id
+    }
+);
+task_governance_mutation!(task_rollback, RollbackArgs, |args: RollbackArgs| {
+    GovernanceRequest::Rollback {
+        task_id: args.task_id,
+        strategy: args.strategy,
+    }
+});
 
 #[tauri::command]
 #[specta::specta]
@@ -82,7 +123,11 @@ pub(crate) async fn task_governance_get(
     state: State<'_, Backend>,
     args: GovernanceArgs,
 ) -> Result<TaskGovernance, AppError> {
-    state.0.task_governance_get(&args.task_id, args.revision.map(i64::from)).await.map_err(app_error)
+    state
+        .0
+        .task_governance_get(&args.task_id, args.revision.map(i64::from))
+        .await
+        .map_err(app_error)
 }
 
 #[tauri::command]
@@ -125,7 +170,8 @@ pub(crate) async fn task_quality_replay(
                 revision: args.revision.map(i64::from),
             },
         },
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -142,11 +188,15 @@ pub(crate) async fn execution_node_upsert(
     state: State<'_, Backend>,
     args: NodeUpsertArgs,
 ) -> Result<ExecutionNode, AppError> {
-    daemon_mutate(&state, DaemonRequest::ExecutionNode {
-        action: ExecutionNodeRequest::Upsert {
-            node: Box::new(args.node),
+    daemon_mutate(
+        &state,
+        DaemonRequest::ExecutionNode {
+            action: ExecutionNodeRequest::Upsert {
+                node: Box::new(args.node),
+            },
         },
-    }).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -155,9 +205,15 @@ pub(crate) async fn execution_node_check(
     state: State<'_, Backend>,
     args: NodeIdArgs,
 ) -> Result<ExecutionNode, AppError> {
-    daemon_mutate(&state, DaemonRequest::ExecutionNode {
-        action: ExecutionNodeRequest::Check { node_id: args.node_id },
-    }).await
+    daemon_mutate(
+        &state,
+        DaemonRequest::ExecutionNode {
+            action: ExecutionNodeRequest::Check {
+                node_id: args.node_id,
+            },
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -166,7 +222,13 @@ pub(crate) async fn execution_node_delete(
     state: State<'_, Backend>,
     args: NodeIdArgs,
 ) -> Result<(), AppError> {
-    daemon_mutate(&state, DaemonRequest::ExecutionNode {
-        action: ExecutionNodeRequest::Delete { node_id: args.node_id },
-    }).await
+    daemon_mutate(
+        &state,
+        DaemonRequest::ExecutionNode {
+            action: ExecutionNodeRequest::Delete {
+                node_id: args.node_id,
+            },
+        },
+    )
+    .await
 }

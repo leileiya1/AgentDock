@@ -17,6 +17,8 @@ export const AGENT_META: Record<string, AgentMeta> = {
   qwen_code: { label: "Qwen Code", mark: "Q", colorVar: "--agent-qwen", cli: true },
   qoder_cli: { label: "Qoder CLI", mark: "Q", colorVar: "--agent-qwen", cli: true },
   grok_cli: { label: "Grok CLI", mark: "X", colorVar: "--agent-codex", cli: true },
+  kimi_cli: { label: "Kimi CLI", mark: "K", colorVar: "--agent-gemini", cli: true },
+  minimax_cli: { label: "MiniMax CLI", mark: "M", colorVar: "--agent-qwen", cli: true },
   openai_api: { label: "OpenAI API", mark: "O", colorVar: "--agent-gemini", cli: false },
   anthropic_api: { label: "Anthropic API", mark: "A", colorVar: "--agent-claude", cli: false },
   deepseek_api: { label: "DeepSeek API", mark: "D", colorVar: "--agent-qwen", cli: false },

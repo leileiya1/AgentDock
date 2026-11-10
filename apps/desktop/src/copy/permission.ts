@@ -77,10 +77,10 @@ export interface RiskCopy {
 }
 
 export const RISK_COPY: Record<PermissionRiskLevel, RiskCopy> = {
-  low: { label: "低风险", tone: "ok", why: "影响范围限于当前任务，可放心处理。" },
-  medium: { label: "中风险", tone: "caution", why: "会触及依赖、网络或配置，请核对具体内容。" },
-  high: { label: "高风险", tone: "human", why: "可能影响工作树外、密钥或不可逆操作，仅提供一次/本任务授权。" },
-  forbidden: { label: "不可授权", tone: "bad", why: "属于系统级越界能力，AgentFlow 不会为其提供允许按钮。" },
+  low: { label: "低风险", tone: "ok", why: "只动这个任务自己的东西，放心。" },
+  medium: { label: "中风险", tone: "caution", why: "会碰到依赖、网络或配置，扫一眼下面再放行。" },
+  high: { label: "高风险", tone: "human", why: "会碰到工作树外、密钥或撤不回的操作，只能放行这次或本任务。" },
+  forbidden: { label: "不可授权", tone: "bad", why: "这是系统级操作，AgentFlow 不允许放行。" },
 };
 
 export function riskCopy(risk: PermissionRiskLevel): RiskCopy {
@@ -132,7 +132,7 @@ export function requestStatusCopy(status: PermissionRequestStatus): StatusCopy {
 export const NETWORK_KIND = {
   agentCommand: {
     label: "Agent 命令访问网络",
-    hint: "这是 Agent 运行的命令要连接的外部地址，与模型推理的数据外发是两回事。",
+    hint: "它跑的命令要连这些地址；跟模型推理的数据外发是两回事。",
   },
   modelEgress: {
     label: "模型 API 外发",

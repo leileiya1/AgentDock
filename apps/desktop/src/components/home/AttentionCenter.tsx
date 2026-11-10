@@ -5,13 +5,16 @@ import { attentionNav } from "@/lib/attentionNav";
 import { relativeTime, taskCode } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { StateBadge } from "@/components/StateBadge";
+import { PixelBot } from "@/components/pixel/PixelBot";
+import { PixelIcon } from "@/components/pixel/PixelIcon";
+import { taskAvatar } from "@/lib/squad";
 
 const DEFAULT_LIMIT = 8;
 
-const SEVERITY: Record<AttentionSeverity, { label: string; className: string; marker: string }> = {
-  high: { label: "高影响", className: "text-status-danger", marker: "bg-status-danger" },
-  medium: { label: "需尽快", className: "text-status-human", marker: "bg-status-human" },
-  normal: { label: "常规", className: "text-t3", marker: "bg-status-idle" },
+const SEVERITY: Record<AttentionSeverity, { label: string; className: string } | null> = {
+  high: { label: "高影响", className: "text-status-danger" },
+  medium: { label: "需尽快", className: "text-status-human" },
+  normal: null,
 };
 
 export function AttentionCenter({ tasks, onOpen, density = "comfortable" }: { tasks: TaskSummary[]; onOpen: (task: TaskSummary) => void; density?: "comfortable" | "compact" }) {
@@ -41,8 +44,8 @@ export function AttentionCenter({ tasks, onOpen, density = "comfortable" }: { ta
   };
 
   return (
-    <section className="border-y border-line-strong/70" aria-labelledby="attention-title">
-      <div className="flex min-h-11 items-center justify-between gap-3 border-b border-line/70 px-2 py-2">
+    <section className="overflow-hidden rounded-card border border-line bg-raised" aria-labelledby="attention-title">
+      <div className="flex min-h-11 items-center justify-between gap-3 border-b border-line/70 px-4 py-2">
         <div className="flex min-w-0 items-baseline gap-2">
           <h2 id="attention-title" className="text-section font-semibold text-t1">需要你处理</h2>
           <span className="tabular-nums text-meta text-t3">{items.length}</span>
@@ -51,13 +54,16 @@ export function AttentionCenter({ tasks, onOpen, density = "comfortable" }: { ta
       </div>
 
       {items.length === 0 ? (
-        <div className="px-3 py-5 text-body text-t3">当前没有等待你处理的事项。</div>
+        <div className="flex items-center gap-3 px-4 py-5 text-body text-t2">
+          <PixelBot member="you" mode="done" size={28} decorative />
+          当前没有等待你处理的事项。
+        </div>
       ) : (
         <div>
           {groups.map((group) => (
             <div key={group.key}>
               {grouped && group.items.length > 1 && (
-                <div className="border-b border-line/60 bg-panel/45 px-3 py-1.5 text-meta font-medium text-t3">
+                <div className="border-b border-line/60 bg-app px-4 py-1.5 text-meta font-bold text-t3">
                   {group.label} · <span className="tabular-nums">{group.items.length}</span>
                 </div>
               )}
@@ -82,7 +88,7 @@ export function AttentionCenter({ tasks, onOpen, density = "comfortable" }: { ta
       )}
 
       {items.length > DEFAULT_LIMIT && (
-        <div className="border-t border-line/70 px-3 py-2 text-right">
+        <div className="border-t border-line/70 px-4 py-2 text-right">
           <button
             type="button"
             onClick={() => setShowAll((current) => !current)}
@@ -108,32 +114,44 @@ const AttentionRow = forwardRef<
   }
 >(({ item, tabIndex, onFocus, onKeyDown, onOpen, density }, ref) => {
   const severity = SEVERITY[item.severity];
+  const avatar = taskAvatar(item.task);
   return (
     <button
       ref={ref}
       type="button"
       tabIndex={tabIndex}
+      data-task-row
       onFocus={onFocus}
       onKeyDown={onKeyDown}
       onClick={onOpen}
-      className={cn("group grid w-full grid-cols-[54px_minmax(0,1fr)_auto] items-center gap-3 border-b border-line/60 px-3 text-left transition-colors last:border-b-0 hover:bg-raised/70 focus-visible:bg-raised/70", density === "compact" ? "py-1" : "py-2")}
+      className={cn(
+        "group grid w-full animate-row-in grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-3.5 border-b border-line/60 px-4 text-left transition-colors last:border-b-0 hover:bg-status-human-bg/40 focus-visible:bg-status-human-bg/40",
+        density === "compact" ? "py-1.5" : "py-2.5"
+      )}
     >
-      <span className={cn("flex items-center gap-1.5 text-meta font-medium", severity.className)}>
-        <span className={cn("h-5 w-[3px] rounded-sm", severity.marker)} aria-hidden />
-        {severity.label}
-      </span>
+      <PixelBot member={avatar.member} mode={avatar.mode} size={32} />
       <span className="min-w-0">
         <span className="flex min-w-0 items-center gap-2">
-          <span className="shrink-0 font-mono text-meta text-t3">{taskCode(item.task.seq)}</span>
-          <span className="min-w-0 truncate text-body font-semibold text-t1">{item.task.title}</span>
+          <span className="min-w-0 truncate text-body font-bold text-t1">{item.task.title}</span>
+          {severity && (
+            <span className={cn("inline-flex shrink-0 items-center", severity.className)} title={severity.label}>
+              <PixelIcon name="bolt" size={11} label={severity.label} />
+            </span>
+          )}
           <StateBadge status={item.task.status} size="sm" />
         </span>
         <span className="mt-0.5 flex min-w-0 items-center gap-2 text-meta">
+          <span className="shrink-0 font-mono text-t3">{taskCode(item.task.seq)}</span>
           <span className="min-w-0 truncate text-t2">{item.reason}</span>
-          <span className="shrink-0 whitespace-nowrap tabular-nums text-t3">更新于 {relativeTime(item.task.updatedAt)}</span>
+          <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap tabular-nums text-t3">
+            <PixelIcon name="hourglass" size={9} />更新于 {relativeTime(item.task.updatedAt)}
+          </span>
         </span>
       </span>
-      <span className="shrink-0 text-meta font-medium text-status-human group-hover:underline">{item.action}</span>
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-control border border-line-strong bg-raised px-3 py-1.5 text-meta font-bold text-t1 shadow-press transition-colors group-hover:border-status-human/40 group-hover:text-status-human">
+        {item.action}
+        <PixelIcon name="chevronRight" size={9} />
+      </span>
     </button>
   );
 });

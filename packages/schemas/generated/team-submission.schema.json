@@ -1,0 +1,291 @@
+{
+  "$defs": {
+    "TeamCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expectedExit": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "stdoutContains": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeoutSecs": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "argv",
+        "expectedExit",
+        "timeoutSecs"
+      ],
+      "type": "object"
+    },
+    "TeamCriterion": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "description": "A versioned executable test package. Each check is run separately by the Runner.",
+          "items": {
+            "$ref": "#/$defs/TeamCheck"
+          },
+          "type": "array"
+        },
+        "expected": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "ownerWorkItemId": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "requirementIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "requirementIds",
+        "required",
+        "expected",
+        "checks",
+        "ownerWorkItemId"
+      ],
+      "type": "object"
+    },
+    "TeamIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "attemptId": {
+          "type": "string"
+        },
+        "inputManifestHash": {
+          "type": "string"
+        },
+        "leaseEpoch": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memberId": {
+          "type": "string"
+        },
+        "specHash": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "workItemId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "workItemId",
+        "attemptId",
+        "memberId",
+        "specHash",
+        "inputManifestHash",
+        "leaseEpoch"
+      ],
+      "type": "object"
+    },
+    "TeamPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "criteria": {
+          "items": {
+            "$ref": "#/$defs/TeamCriterion"
+          },
+          "type": "array"
+        },
+        "items": {
+          "description": "User-owned requirements are immutable; a plan refers to their IDs.",
+          "items": {
+            "$ref": "#/$defs/TeamWorkSpec"
+          },
+          "type": "array"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "schemaVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "rationale",
+        "items",
+        "criteria"
+      ],
+      "type": "object"
+    },
+    "TeamWorkKind": {
+      "enum": [
+        "plan",
+        "coverage",
+        "implement",
+        "integrate",
+        "verify",
+        "review"
+      ],
+      "type": "string"
+    },
+    "TeamWorkSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "dependsOn": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TeamWorkKind"
+        },
+        "localChecks": {
+          "items": {
+            "$ref": "#/$defs/TeamCheck"
+          },
+          "type": "array"
+        },
+        "memberIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requirementIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "writeGlobs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "instructions",
+        "kind",
+        "dependsOn",
+        "memberIds",
+        "requirementIds",
+        "writeGlobs",
+        "localChecks"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Carried in DevelopmentResult.notes as JSON. Transport success never accepts an artifact.",
+  "properties": {
+    "approved": {
+      "type": "boolean"
+    },
+    "changedFiles": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "checkIds": {
+      "description": "Tester selects exact check IDs; absent checks remain not_run.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "environmentNotes": {
+      "default": [],
+      "description": "CLI-local tool limits are observations, not product findings or passing evidence.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "identity": {
+      "$ref": "#/$defs/TeamIdentity"
+    },
+    "issues": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "plan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TeamPlan"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schemaVersion": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "identity",
+    "summary",
+    "approved",
+    "changedFiles",
+    "checkIds",
+    "issues"
+  ],
+  "title": "TeamSubmission",
+  "type": "object"
+}

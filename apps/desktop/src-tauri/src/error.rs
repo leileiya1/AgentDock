@@ -58,12 +58,24 @@ pub(super) fn app_error(error: OrchestratorError) -> AppError {
         OrchestratorError::InvalidState(value) if value.starts_with("ROLLBACK_UNSAFE") => {
             ErrorCode::RollbackUnsafe
         }
-        OrchestratorError::InvalidState(value) if value == "PERMISSION_REQUEST_STALE" => ErrorCode::PermissionRequestStale,
-        OrchestratorError::InvalidState(value) if value == "PERMISSION_PATH_ESCAPE" => ErrorCode::PermissionPathEscape,
-        OrchestratorError::InvalidState(value) if value == "PERMISSION_RULE_TOO_BROAD" => ErrorCode::PermissionRuleTooBroad,
-        OrchestratorError::InvalidState(value) if value == "PERMISSION_NOT_GRANTABLE" => ErrorCode::PermissionNotGrantable,
-        OrchestratorError::InvalidState(value) if value == "PERMISSION_EXPIRED" => ErrorCode::PermissionExpired,
-        OrchestratorError::InvalidState(value) if value == "PERMISSION_DENIED" => ErrorCode::PermissionDenied,
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_REQUEST_STALE" => {
+            ErrorCode::PermissionRequestStale
+        }
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_PATH_ESCAPE" => {
+            ErrorCode::PermissionPathEscape
+        }
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_RULE_TOO_BROAD" => {
+            ErrorCode::PermissionRuleTooBroad
+        }
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_NOT_GRANTABLE" => {
+            ErrorCode::PermissionNotGrantable
+        }
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_EXPIRED" => {
+            ErrorCode::PermissionExpired
+        }
+        OrchestratorError::InvalidState(value) if value == "PERMISSION_DENIED" => {
+            ErrorCode::PermissionDenied
+        }
         OrchestratorError::InvalidState(_) => ErrorCode::TaskInvalidState,
         _ => ErrorCode::Internal,
     };

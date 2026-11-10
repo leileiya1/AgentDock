@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots",
+    "studio:art": "python3 scripts/studio-art/export.py",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "app:dev": "tauri dev",
@@ -44,6 +45,7 @@
   },
   "devDependencies": {
     "@fontsource/noto-sans-sc": "^5.3.0",
+    "@fontsource/silkscreen": "^5.3.0",
     "@playwright/test": "^1.62.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2.11.4",

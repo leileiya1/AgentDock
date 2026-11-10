@@ -9,8 +9,11 @@
  * Inside the packaged Tauri app the real __TAURI_INTERNALS__ is present, so this
  * is inert and never bypasses the real backend (03 §1 / 02 "不 mock 上线").
  */
+import { summarizeTasks } from "@/lib/studio/projectSummary";
+import { handleStudio, summariesWithMembers } from "@/lib/devShim/studio";
 import type {
   DiffPayload,
+  ProjectSummary,
   EnvReport,
   ExecutionNode,
   GitCompatibilityReport,
@@ -140,6 +143,20 @@ const PROJECT: Project = {
   worktreeRoot: "/Users/dev/.agentflow/worktrees",
   createdAt: iso(-6 * DAY),
 };
+
+// 小镇预览用的其他项目：只有概况（不同造型、规模和状态），没有任务明细
+const DEMO_TOWN: Array<{ project: Project; summary: Omit<ProjectSummary, "projectId" | "assignedAgents" | "agentsSource"> }> = [
+  ["agentdock-desktop", { taskCount: 24, running: 3, waitingForYou: 0, done: 21, failing: 0, agents: ["claude_code", "codex", "qoder_cli", "gemini_cli"], activeAgents: ["claude_code", "codex"], lastActivityAt: iso(-5 * MIN) }],
+  ["mobile-app", { taskCount: 9, running: 1, waitingForYou: 1, done: 7, failing: 2, agents: ["kimi_api", "codex"], activeAgents: ["kimi_api"], lastActivityAt: iso(-40 * MIN) }],
+  ["data-pipeline", { taskCount: 6, running: 0, waitingForYou: 0, done: 6, failing: 0, agents: ["codex"], activeAgents: [], lastActivityAt: iso(-42 * DAY) }],
+  ["docs-site", { taskCount: 0, running: 0, waitingForYou: 0, done: 0, failing: 0, agents: [], activeAgents: [], lastActivityAt: null }],
+  ["payment-api", { taskCount: 70, running: 2, waitingForYou: 2, done: 66, failing: 0, agents: ["deepseek_api", "codex", "qwen_code"], activeAgents: ["deepseek_api"], lastActivityAt: iso(-2 * MIN) }],
+  ["infra-deploy", { taskCount: 14, running: 1, waitingForYou: 0, done: 13, failing: 0, agents: ["grok_cli", "minimax_api"], activeAgents: ["grok_cli"], lastActivityAt: iso(-20 * MIN) }],
+  ["my-blog", { taskCount: 4, running: 0, waitingForYou: 1, done: 3, failing: 0, agents: ["claude_code"], activeAgents: [], lastActivityAt: iso(-3 * HOUR) }],
+].map(([name, rest], index) => ({
+  project: { ...PROJECT, id: `town-${index + 2}`, seq: index + 2, name: name as string, repoPath: `/Users/dev/${name as string}` },
+  summary: rest as Omit<ProjectSummary, "projectId" | "assignedAgents" | "agentsSource">,
+}));
 
 function summary(
   seq: number,
@@ -837,6 +854,8 @@ function permissionDecide(input: PermissionDecisionInput): PermissionDecision {
 function handle(cmd: string, payload: any): unknown {
   const args = payload?.args ?? {};
   const visual = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("visual");
+  const studio = handleStudio(cmd, args, visual ? [PROJECT.id] : [PROJECT.id, ...DEMO_TOWN.map((d) => d.project.id)], !visual);
+  if (studio) return studio.value;
   switch (cmd) {
     case "env_check":
     case "env_set_cli_path":
@@ -851,14 +870,20 @@ function handle(cmd: string, payload: any): unknown {
     case "onboarding_complete":
       return null;
     case "project_list":
-      return [PROJECT];
+      return visual ? [PROJECT] : [PROJECT, ...DEMO_TOWN.map((d) => d.project)];
+    case "project_summaries":
+      // 预览数据：与后端同一套规则现算（真实桌面端由后端 SQL 汇总）
+      return summariesWithMembers([
+        summarizeTasks(PROJECT.id, visual === "empty" ? [] : SUMMARIES, new Date(Date.now() - 30 * 24 * HOUR).toISOString()),
+        ...(visual ? [] : DEMO_TOWN.map((d) => ({ projectId: d.project.id, assignedAgents: [], agentsSource: "derived" as const, ...d.summary }))),
+      ]);
     case "project_import":
       return PROJECT;
     case "project_git_compatibility":
     case "project_prune_stale_worktrees":
       return GIT_COMPATIBILITY;
     case "task_list":
-      if (visual === "empty") return [];
+      if (visual === "empty" || (args.projectId && args.projectId !== PROJECT.id)) return [];
       if (visual === "attention-13") {
         return Array.from({ length: 13 }, (_, index) => summary(
           30 + index,
@@ -870,6 +895,11 @@ function handle(cmd: string, payload: any): unknown {
         ));
       }
       return SUMMARIES;
+    case "team_get":
+      return null;
+    case "team_create":
+    case "team_action":
+      throw new Error("团队执行需要真实桌面后端；浏览器预览不会创建任务或伪造验收结果");
     case "task_get":
     case "task_start":
     case "task_cancel":
@@ -949,7 +979,8 @@ function handle(cmd: string, payload: any): unknown {
     case "project_config_trust_revoke":
       return { ...PROJECT_CONFIG_TRUST, trusted: false, approvedAt: null };
     case "permission_request_list":
-      return PERMISSION_REQUESTS.get(args.taskId) ?? [];
+      // 每次返回新对象，和真实后端一样；否则原地改状态会让弹窗误判「内容已变化」。
+      return (PERMISSION_REQUESTS.get(args.taskId) ?? []).map((r) => ({ ...r }));
     case "permission_decide":
       return permissionDecide(args.input as PermissionDecisionInput);
     case "permission_rule_list":
@@ -1009,7 +1040,7 @@ export function installTauriDevShim(): void {
   let cbId = 0;
   (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
     invoke: (cmd: string, payload?: unknown) =>
-      new Promise((resolve) => setTimeout(() => resolve(handle(cmd, payload)), 120)),
+      new Promise((resolve, reject) => setTimeout(() => { try { resolve(handle(cmd, payload)); } catch (error) { reject(error); } }, 120)),
     transformCallback: (cb?: (v: unknown) => void) => {
       const id = ++cbId;
       (window as any)[`_${id}`] = cb;

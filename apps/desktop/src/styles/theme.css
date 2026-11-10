@@ -4,6 +4,8 @@
  * system stack so Chinese and Latin glyphs share the same metrics and tone. */
 @import "@fontsource/ibm-plex-mono/400.css";
 @import "@fontsource/ibm-plex-mono/500.css";
+/* Pixel face for short Latin labels only (STEP 2/5, R2, SQUAD). Bundled: no network fonts. */
+@import "@fontsource/silkscreen/400.css";
 
 /* Light is the only theme in v1; density is independent from color. */
 @custom-variant dark (&:where(.dark, .dark *));
@@ -13,29 +15,38 @@
  * text-t2, border-line, text-human, text-agent-claude, …
  * ================================================================== */
 @theme {
-  /* 米白暖底 + Claude 橙主题 (light) —— 微调后更干净、暖而不黄 */
-  --color-app: #f4f0e8;      /* 米白 应用底（略降饱和，偏中性暖白） */
-  --color-panel: #fcfaf5;    /* 面板（近白，衬托卡片） */
-  --color-raised: #ffffff;   /* 卡片 / hover，靠阴影浮起 */
-  --color-line: #e8e1d4;     /* 暖色发丝线 */
-  --color-line-strong: #d8cebc;
+  /* 协作工作室 (方向 B)：奶油白底 + 白色卡片，暖而不黄；多 Provider 中立，
+   * 角色色只出现在像素机器人和它的工位底色上。 */
+  --color-app: #fbf7f1;      /* 奶油白 应用底 */
+  --color-panel: #f6f0e7;    /* 侧栏 / 次级表面 */
+  --color-raised: #ffffff;   /* 卡片 */
+  --color-line: #eee6da;     /* 暖色发丝线 */
+  --color-line-strong: #e0d5c4;
   /* 正文层级。t3 承载时间戳、耗时、阶段摘要等「次要但必读」的信息，
    * 因此和 t1/t2 一样按 WCAG AA 4.5:1 校准（旧值 #9c9284 只有 2.7:1）。
    * 具体比值由 styles/contrast.test.ts 锁定，改色前先跑测试。 */
-  --color-t1: #292420;       /* 暖近黑正文 */
-  --color-t2: #6d6459;
-  --color-t3: #766c5e;
+  --color-t1: #2b2620;       /* 墨色正文 */
+  --color-t2: #5e564b;
+  --color-t3: #6f665a;
 
   /* Brand and interaction are intentionally separate from workflow status. */
-  --color-brand: #4a413b;
-  --color-action: #3f4852;
-  --color-action-soft: #596571;
-  --color-action-bg: #edf0f2;
-  --color-focus: #28689a;
-  --color-selection: #516576;
-  --color-link: #255f8f;
+  --color-brand: #34406b;
+  --color-action: #34406b;
+  --color-action-soft: #46528a;
+  --color-action-edge: #222a49;
+  --color-action-bg: #e7e9f2;
+  --color-focus: #2563b0;
+  --color-selection: #34406b;
+  --color-link: #2563b0;
   --color-caution: #7d5600;
   --color-caution-bg: #fff2d6;
+  /* Town name boards chosen in 装修 · 门牌 (wood / neon / stone). */
+  --color-sign-wood: #8e6542;
+  --color-sign-wood-edge: #5e3f26;
+  --color-sign-neon: #1f1b2e;
+  --color-sign-neon-glow: #ff5cc8;
+  --color-sign-stone: #8a8478;
+  --color-sign-stone-edge: #5f5a50;
 
   /* Product-facing semantic aliases. Components may keep the shorter legacy
    * utilities while migration proceeds, but new primitives use these names. */
@@ -49,7 +60,7 @@
   --color-text-inverse: #ffffff;
   --color-border-subtle: var(--color-line);
   --color-border-default: var(--color-line-strong);
-  --color-border-strong: #b9ad9a;
+  --color-border-strong: #c9bfaf;
   --color-border-focus: var(--color-focus);
 
   /* Agent identity colors stay small and never tint whole surfaces. */
@@ -65,28 +76,33 @@
   --color-provider-deepseek: #3453c5;
 
   /* Canonical workflow status colors. */
-  --color-status-running: #28689a;
-  --color-status-running-soft: #3b7cab;
-  --color-status-running-bg: #e6f1f8;
-  --color-status-human: #a94b2b;
-  --color-status-human-soft: #c25e3c;
-  --color-status-human-bg: #fbe7de;
-  --color-status-review: #6a4aa3;
-  --color-status-success: #337a54;
-  --color-status-danger: #a83a2c;
-  --color-status-idle: #766c5e;
+  --color-status-running: #2563b0;
+  --color-status-running-soft: #3a78c4;
+  --color-status-running-bg: #e7f0fb;
+  --color-status-human: #a2480b;
+  --color-status-human-soft: #b5530f;
+  --color-status-human-bg: #fff0e0;
+  --color-status-review: #6b4fb8;
+  --color-status-review-bg: #f0ebfa;
+  --color-status-success: #286f45;
+  --color-status-success-bg: #e6f4ea;
+  --color-status-danger: #b8322a;
+  --color-status-danger-bg: #fceae8;
+  --color-status-idle: #6f665a;
+  --color-status-idle-bg: #f1ece4;
 
   /* Transitional status aliases. New code uses status-* names. */
-  --color-run: #28689a;
-  --color-run-soft: #3b7cab;
-  --color-run-bg: #e6f1f8;
-  --color-human: #a94b2b;
-  --color-human-soft: #c25e3c;
-  --color-human-bg: #fbe7de;
-  --color-review: #6a4aa3;
-  --color-ok: #337a54;
-  --color-bad: #a83a2c;
-  --color-idle: #766c5e;
+  --color-run: #2563b0;
+  --color-run-soft: #3a78c4;
+  --color-run-bg: #e7f0fb;
+  --color-human: #a2480b;
+  --color-human-soft: #b5530f;
+  --color-human-bg: #fff0e0;
+  --color-review: #6b4fb8;
+  --color-ok: #286f45;
+  --color-bad: #b8322a;
+  --color-idle: #6f665a;
+
 
   /* diff（浅色 wash） */
   --color-diff-add: #dceedf;
@@ -96,15 +112,17 @@
     "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas,
     monospace;
+  --font-pixel: "Silkscreen", ui-monospace, Menlo, monospace;
 
   /* 三档布局断点 (05 §8)。lg=1024 用 Tailwind 默认值；
    * wide 是「三栏能同时放下执行树 + run 列表 + 内容」的下限。 */
   --breakpoint-wide: 1440px;
 
-  --radius-row: 4px;
-  --radius-control: 6px;
-  --radius-section: 6px;
-  --radius-overlay: 10px;
+  --radius-row: 8px;
+  --radius-control: 10px;
+  --radius-section: 14px;
+  --radius-card: 16px;
+  --radius-overlay: 20px;
   --radius-pill: 9999px;
   --radius-circle: 9999px;
 
@@ -128,8 +146,11 @@
   --text-page: 20px;
   --text-page--line-height: 1.3;
 
-  --shadow-float: 0 22px 50px -14px rgba(90, 68, 42, 0.28),
-    0 6px 16px -8px rgba(90, 68, 42, 0.18);
+  --shadow-float: 0 2px 0 #d9cdba, 0 20px 48px -12px rgba(43, 38, 32, 0.22);
+  /* Buttons keep a 2px base so they read like physical keys; pressing removes it. */
+  --shadow-press: 0 2px 0 #eee6da;
+  --shadow-press-action: 0 2px 0 #222a49;
+  --shadow-press-danger: 0 2px 0 #f7dcd8;
 
   /* Motion is functional and short: state changes, overlays and drawers only. */
   --duration-fast: 120ms;
@@ -141,6 +162,80 @@
 
   --animate-pulse-dot: pulse-dot 1.5s ease-in-out infinite;
   --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+  /* Pixel motion: stepped, never smooth, and only on things that are really happening. */
+  --animate-px-bob: px-bob 1s steps(2) infinite;
+  --animate-px-wave: px-wave 2.4s steps(1) infinite;
+  --animate-px-scan: px-scan 1.2s steps(3) infinite alternate;
+  --animate-px-blink: px-blink 1s steps(1) infinite;
+  --animate-px-flip: px-flip 3s steps(1) infinite;
+  --animate-px-zz: px-zz 2.4s linear infinite;
+  --animate-relay-march: relay-march 0.6s linear infinite;
+  --animate-pop-in: pop-in 0.35s cubic-bezier(0.3, 1.6, 0.6, 1) both;
+  --animate-row-in: row-in 0.35s ease-out both;
+}
+
+/* Pixel squad tokens are read from inline SVG styles (var(--color-bot-*)), not utilities,
+ * so they are always emitted. */
+@theme static {
+  /* Pixel squad. Each robot uses body + light + station tint; ink and eye are shared.
+   * These colors identify who is acting and never carry workflow status. */
+  --color-bot-ink: #2b2620;
+  --color-bot-eye: #fff8e6;
+  --color-bot-led: #4fa36a;
+  --color-bot-claude: #e9875a;
+  --color-bot-claude-light: #f8c9ae;
+  --color-bot-claude-tint: #fff1e8;
+  --color-bot-codex: #3e9c8e;
+  --color-bot-codex-light: #a9ddd3;
+  --color-bot-codex-tint: #e8f5f2;
+  --color-bot-qoder: #d9719b;
+  --color-bot-qoder-light: #f4c2d6;
+  --color-bot-qoder-tint: #fcedf3;
+  --color-bot-gemini: #5b7fd9;
+  --color-bot-gemini-light: #bfd0f5;
+  --color-bot-gemini-tint: #edf2fc;
+  --color-bot-qwen: #8d7bd6;
+  --color-bot-qwen-light: #d2caf0;
+  --color-bot-qwen-tint: #f2effb;
+  --color-bot-grok: #6e8b5e;
+  --color-bot-grok-light: #c6d6b8;
+  --color-bot-grok-tint: #f1f4ec;
+  /* 实时昼夜：叠在像素画上的晨昏色 */
+  --color-sky-predawn: #8f9bd6;
+  --color-sky-dawn: #ffc2a1;
+  --color-sky-dusk: #ff8a3d;
+  /* 小镇：一个月没动的院子里长的杂草 */
+  --color-town-weed: #3f5f33;
+  --color-town-weed-tip: #8fb35a;
+  --color-town-weed-night: #24361f;
+  --color-bot-deepseek: #4a90b8;
+  --color-bot-deepseek-light: #bfdded;
+  --color-bot-deepseek-tint: #eaf4f9;
+  --color-bot-kimi: #c2a14a;
+  --color-bot-kimi-light: #eddda0;
+  --color-bot-kimi-tint: #fbf5e4;
+  --color-bot-minimax: #c9605f;
+  --color-bot-minimax-light: #f0c0bf;
+  --color-bot-minimax-tint: #fcedec;
+  --color-bot-runner: #8496ad;
+  --color-bot-runner-light: #c9d3e0;
+  --color-bot-runner-tint: #eef1f5;
+  --color-bot-neutral: #9a9184;
+  --color-bot-neutral-light: #d8d1c5;
+  --color-bot-neutral-tint: #f4f1ec;
+  --color-bot-you: #f2b45a;
+  --color-bot-you-light: #f5cfa8;
+  --color-bot-you-tint: #fff0e0;
+  --color-bot-you-hair: #6b4a33;
+  --color-bot-you-mouth: #d98a6a;
+  --color-station-wait: #f4f1ec;
+  /* 像素小屋画布底色：与贴图生成脚本的白天 / 夜间背景一致 */
+  --color-studio-day: #f6efe4;
+  --color-studio-night: #282a34;
+  --color-studio-day-deep: #e8dccb;
+  --color-studio-night-deep: #1c1d24;
+  --color-studio-grid-day: rgba(120, 90, 60, 0.1);
+  --color-studio-grid-night: rgba(255, 255, 255, 0.05);
 }
 
 /* shadcn/ui variable bridge (mapped to our palette, HSL-free hex). */
@@ -164,7 +259,7 @@
   --border: var(--color-line);
   --input: var(--color-line);
   --ring: var(--color-focus);
-  --radius: 6px;
+  --radius: 10px;
 }
 
 @theme inline {
@@ -267,6 +362,19 @@
 }
 
 /* thin top highlight that reads as a light source (depth) */
+/* Dashed relay link that flows toward the next station while a phase runs. */
+@utility relay-march {
+  background: repeating-linear-gradient(90deg, var(--color-status-running) 0 5px, transparent 5px 10px);
+  background-size: 20px 4px;
+}
+@utility relay-wait {
+  background: repeating-linear-gradient(90deg, var(--color-line-strong) 0 4px, transparent 4px 8px);
+}
+@utility pixelated {
+  shape-rendering: crispEdges;
+  image-rendering: pixelated;
+}
+
 @utility edge-light {
   position: relative;
 }
@@ -280,6 +388,88 @@
   50% {
     opacity: 0.4;
     transform: scale(0.82);
+  }
+}
+@keyframes px-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+@keyframes px-wave {
+  0%,
+  20%,
+  40%,
+  100% {
+    transform: translateY(0);
+  }
+  10%,
+  30% {
+    transform: translateY(-1px);
+  }
+}
+@keyframes px-scan {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(3px);
+  }
+}
+@keyframes px-blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+@keyframes px-flip {
+  0%,
+  80% {
+    transform: rotate(0);
+  }
+  81%,
+  100% {
+    transform: rotate(180deg);
+  }
+}
+@keyframes px-zz {
+  0% {
+    transform: translate(0, 0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(8px, -22px);
+    opacity: 0;
+  }
+}
+@keyframes relay-march {
+  to {
+    background-position: 20px 0;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 @keyframes shimmer {

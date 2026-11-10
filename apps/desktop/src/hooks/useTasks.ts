@@ -58,6 +58,7 @@ export function useCreateTask() {
     onSuccess: (detail) => {
       syncTaskCaches(client, detail);
       client.invalidateQueries({ queryKey: qk.tasks(detail.projectId) });
+      client.invalidateQueries({ queryKey: qk.projectSummaries });
     },
   });
 }

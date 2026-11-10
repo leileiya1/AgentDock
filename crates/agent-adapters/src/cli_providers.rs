@@ -121,6 +121,16 @@ fn claude_args(req: &AgentRunRequest) -> Vec<String> {
             command.push_str(" --allow ");
             command.push_str(&shell_quote(allowed));
         }
+        // Commands the user approved in the permission dialog. Without these the resumed
+        // session asked for the very same command again, forever.
+        for approved in approved_bash_commands(req) {
+            command.push_str(" --exact ");
+            command.push_str(&shell_quote(&approved));
+        }
+        // Planner and reviewer runs cannot pause for a human: refuse with guidance instead.
+        if req.is_read_only() {
+            command.push_str(" --read-only");
+        }
         let settings = json!({
             "hooks": {
                 "PreToolUse": [{
@@ -135,9 +145,10 @@ fn claude_args(req: &AgentRunRequest) -> Vec<String> {
         });
         args.extend(["--settings".into(), settings.to_string()]);
     }
-    if req.is_read_only() {
-        args.extend(["--disallowedTools".into(), "Write,Edit".into()]);
-    }
+    let mut disallowed = Vec::new();
+    if req.is_read_only() { disallowed.extend(["Write", "Edit"]); }
+    if req.managed_team { disallowed.extend(["Agent", "Task", "TeamCreate", "TeamDelete"]); }
+    if !disallowed.is_empty() { args.extend(["--disallowedTools".into(), disallowed.join(",")]); }
     if matches!(req.permission, PermissionTier::Yolo) {
         args.push("--dangerously-skip-permissions".into());
     }
@@ -148,6 +159,18 @@ fn claude_args(req: &AgentRunRequest) -> Vec<String> {
         args.extend(["--max-budget-usd".into(), format!("{remaining:.6}")]);
     }
     args
+}
+
+/// Bash command lines granted by the permission broker (`["Bash", "-lc", line]`).
+fn approved_bash_commands(req: &AgentRunRequest) -> Vec<String> {
+    req.effective_permissions
+        .command_argv
+        .iter()
+        .filter_map(|argv| match argv.as_slice() {
+            [shell, flag, line] if shell == "Bash" && flag == "-lc" => Some(line.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn shell_quote(value: &str) -> String {
@@ -251,12 +274,13 @@ fn codex_args(req: &AgentRunRequest, schema_path: &Path) -> Vec<String> {
         "-o".into(),
         last.to_string_lossy().into_owned(),
     ];
-    if review || matches!(req.permission, PermissionTier::ReadOnly) {
-        let output_schema = match req.role {
+    if req.managed_team { args.extend(["--disable".into(), "multi_agent".into()]); }
+    if req.managed_team || review || matches!(req.permission, PermissionTier::ReadOnly) {
+        let output_schema = if req.managed_team {req.run_dir.join("team-transport.schema.json")} else {match req.role {
             RunRole::Reviewer => schema_path.to_path_buf(),
             RunRole::Planner => schema_path.with_file_name("plan.schema.json"),
             _ => schema_path.with_file_name("result.schema.json"),
-        };
+        }};
         args.extend([
             "--output-schema".into(),
             output_schema.to_string_lossy().into_owned(),

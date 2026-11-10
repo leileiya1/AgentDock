@@ -26,8 +26,42 @@ export const commands = {
 	apiCredentialDelete: (args: ApiCredentialArgs) => typedError<EnvReport, AppError>(__TAURI_INVOKE("api_credential_delete", { args })),
 	projectImport: (args: ProjectImportArgs) => typedError<Project, AppError>(__TAURI_INVOKE("project_import", { args })),
 	projectList: () => typedError<Project[], AppError>(__TAURI_INVOKE("project_list")),
+	projectSummaries: () => typedError<ProjectSummary[], AppError>(__TAURI_INVOKE("project_summaries")),
+	projectAppearanceList: () => typedError<ProjectAppearance[], AppError>(__TAURI_INVOKE("project_appearance_list")),
+	projectAppearanceUpdate: (args: ProjectAppearanceArgs_Deserialize) => typedError<ProjectAppearance, AppError>(__TAURI_INVOKE("project_appearance_update", { args })),
+	projectMembersGet: (args: ProjectIdArgs) => typedError<ProjectMember[], AppError>(__TAURI_INVOKE("project_members_get", { args })),
+	projectMembersSet: (args: ProjectMembersArgs) => typedError<ProjectMember[], AppError>(__TAURI_INVOKE("project_members_set", { args })),
+	agentProfilesList: () => typedError<AgentProfile[], AppError>(__TAURI_INVOKE("agent_profiles_list")),
+	agentProfileUpdate: (args: AgentProfileArgs_Deserialize) => typedError<AgentProfile, AppError>(__TAURI_INVOKE("agent_profile_update", { args })),
+	agentProfileReset: (args: AgentArgs) => typedError<boolean, AppError>(__TAURI_INVOKE("agent_profile_reset", { args })),
 	projectGitCompatibility: (args: ProjectIdArgs) => typedError<GitCompatibilityReport, AppError>(__TAURI_INVOKE("project_git_compatibility", { args })),
 	projectPruneStaleWorktrees: (args: ProjectIdArgs) => typedError<GitCompatibilityReport, AppError>(__TAURI_INVOKE("project_prune_stale_worktrees", { args })),
+	teamEvidenceRead: (args: TeamEvidenceArgs) => typedError<string, AppError>(__TAURI_INVOKE("team_evidence_read", { args })),
+	teamCreate: (args: TeamCreateInput) => typedError<TeamView, AppError>(__TAURI_INVOKE("team_create", { args })),
+	teamGet: (args: TaskIdArgs) => typedError<{
+	taskId: string,
+	phase: TeamPhase,
+	originalGoal: string,
+	config: TeamConfig,
+	requirements: TeamRequirement[],
+	plan: TeamPlan | null,
+	planRevision: number,
+	items: TeamWorkView[],
+	attempts: TeamAttemptView[],
+	artifacts: TeamArtifact[],
+	candidate: TeamCandidate | null,
+	criteria: TeamCriterionView[],
+	gateBlockers: string[],
+	attemptsUsed: number,
+	reworksUsed: number,
+	detail: string | null,
+	reportPath: string | null,
+	limitations: string[],
+} | null, AppError>(__TAURI_INVOKE("team_get", { args })),
+	teamRecoveryGet: (args: TaskIdArgs) => typedError<TeamRecoveryView, AppError>(__TAURI_INVOKE("team_recovery_get", { args })),
+	teamPlanPreview: (args: TeamPlanPreviewInput) => typedError<TeamPlanPreview, AppError>(__TAURI_INVOKE("team_plan_preview", { args })),
+	teamReportExport: (args: TeamReportExportInput) => typedError<TeamReportExport, AppError>(__TAURI_INVOKE("team_report_export", { args })),
+	teamAction: (args: TeamActionArgs) => typedError<TeamView, AppError>(__TAURI_INVOKE("team_action", { args })),
 	taskCreate: (args: TaskCreateArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_create", { args })),
 	taskList: (args: ProjectIdArgs) => typedError<TaskSummary[], AppError>(__TAURI_INVOKE("task_list", { args })),
 	taskGet: (args: TaskIdArgs) => typedError<TaskDetail, AppError>(__TAURI_INVOKE("task_get", { args })),
@@ -117,6 +151,10 @@ export type AcceptanceCriterionKind = "build" | "test" | "behavior" | "manual";
 
 export type Actor = "orchestrator" | "agent" | "human" | "system";
 
+export type AgentArgs = {
+	agent: AgentKind,
+};
+
 export type AgentEvent = {
 	ts: string,
 	stream: EventStream,
@@ -134,6 +172,58 @@ export type AgentEventKind = "system" | "assistant_text" | "tool_use" | "tool_re
  *  provider id so new sidecars can be installed without changing the AgentFlow core or database.
  */
 export type AgentKind = string;
+
+/**  A user's customisation of one agent, global across projects. */
+export type AgentProfile = {
+	agent: AgentKind,
+	/**  1–16 characters; `None` = default name. */
+	nickname: string | null,
+	/**  Body colour as `#rrggbb`. */
+	color: string | null,
+	/**  "none" | "cap" | "headphones" | "glasses" | "bowtie" | "antenna" | "scarf" */
+	accessory: string | null,
+	/**  At most 40 characters. */
+	catchphrase: string | null,
+	updatedAt: string | null,
+};
+
+export type AgentProfileArgs = AgentProfileArgs_Serialize | AgentProfileArgs_Deserialize;
+
+export type AgentProfileArgs_Deserialize = {
+	agent: AgentKind,
+	patch: AgentProfilePatch_Deserialize,
+};
+
+export type AgentProfileArgs_Serialize = {
+	agent: AgentKind,
+	patch: AgentProfilePatch_Serialize,
+};
+
+/**  Partial update: an absent field is left unchanged, an explicit `null` clears it. */
+export type AgentProfilePatch = AgentProfilePatch_Serialize | AgentProfilePatch_Deserialize;
+
+/**  Partial update: an absent field is left unchanged, an explicit `null` clears it. */
+export type AgentProfilePatch_Deserialize = {
+	nickname?: string | null,
+	color?: string | null,
+	accessory?: string | null,
+	catchphrase?: string | null,
+};
+
+/**  Partial update: an absent field is left unchanged, an explicit `null` clears it. */
+export type AgentProfilePatch_Serialize = {
+	nickname?: string | null,
+	color?: string | null,
+	accessory?: string | null,
+	catchphrase?: string | null,
+};
+
+/**  Where the town takes a project's robots from. */
+export type AgentsSource =
+/**  The user assigned members to the project. */
+"assigned" |
+/**  No members yet: agents are derived from recent tasks. */
+"derived";
 
 export type ApiCredentialArgs = {
 	provider: string,
@@ -292,6 +382,8 @@ export type CouncilMemberVote = {
 	decision: ReviewDecision,
 	summary: string | null,
 };
+
+export type CriterionStatus = "not_run" | "passed" | "failed" | "blocked" | "inconclusive";
 
 export type DataEgress = "none" | "metadata" | "diff" | "full_files";
 
@@ -487,6 +579,9 @@ export type GuidanceArgs = {
 	guidance: string,
 };
 
+/**  What an assigned agent does in a project. */
+export type MemberRole = "developer" | "reviewer" | "both";
+
 export type NodeDiagnosticStatus = "passed" | "failed" | "skipped";
 
 export type NodeDiagnosticStep = "dns" | "tcp" | "ssh_authentication" | "work_root" | "network_isolation" | "platform" | "git" | "archive_tool" | "toolchain";
@@ -679,6 +774,54 @@ export type Project = {
 	createdAt: string,
 };
 
+/**
+ *  How a project looks in the town. Every field is optional; unknown `kind` strings are kept
+ *  as-is so newer clients can add building types (older ones draw a cottage).
+ */
+export type ProjectAppearance = {
+	projectId: string,
+	/**  Building type chosen by the user; `None` means the client guesses from the name. */
+	kind: string | null,
+	/**  Roof / main colour as `#rrggbb`. */
+	roof: string | null,
+	/**  "wood" | "neon" | "stone" */
+	sign: string | null,
+	/**  Yard decorations, distinct, at most 6. */
+	yard: string[],
+	updatedAt: string | null,
+};
+
+export type ProjectAppearanceArgs = ProjectAppearanceArgs_Serialize | ProjectAppearanceArgs_Deserialize;
+
+export type ProjectAppearanceArgs_Deserialize = {
+	projectId: string,
+	patch: ProjectAppearancePatch_Deserialize,
+};
+
+export type ProjectAppearanceArgs_Serialize = {
+	projectId: string,
+	patch: ProjectAppearancePatch_Serialize,
+};
+
+/**  Partial update: an absent field is left unchanged, an explicit `null` clears it. */
+export type ProjectAppearancePatch = ProjectAppearancePatch_Serialize | ProjectAppearancePatch_Deserialize;
+
+/**  Partial update: an absent field is left unchanged, an explicit `null` clears it. */
+export type ProjectAppearancePatch_Deserialize = {
+	kind?: string | null,
+	roof?: string | null,
+	sign?: string | null,
+	yard?: string[] | null,
+};
+
+/**  Partial update: an absent field is left unchanged, an explicit `null` clears it. */
+export type ProjectAppearancePatch_Serialize = {
+	kind?: string | null,
+	roof?: string | null,
+	sign?: string | null,
+	yard?: string[] | null,
+};
+
 export type ProjectConfigApprovalArgs = {
 	projectId: string,
 	expectedSha256: string,
@@ -732,6 +875,25 @@ export type ProjectImportArgs = {
 	path: string,
 };
 
+/**  An agent the user assigned to a project. The town draws exactly these robots. */
+export type ProjectMember = {
+	agent: AgentKind,
+	role: MemberRole,
+	/**  Display order, smallest first. */
+	position: number,
+	addedAt: string,
+};
+
+export type ProjectMemberInput = {
+	agent: AgentKind,
+	role: MemberRole,
+};
+
+export type ProjectMembersArgs = {
+	projectId: string,
+	members: ProjectMemberInput[],
+};
+
 export type ProjectSettings = {
 	claudePath?: string | null,
 	codexPath?: string | null,
@@ -760,6 +922,31 @@ export type ProjectSettings = {
 export type ProjectSettingsArgs = {
 	projectId: string,
 	patch: ProjectSettings,
+};
+
+/**  Per-project overview for the town view: one row per project, computed from task state only. */
+export type ProjectSummary = {
+	projectId: string,
+	/**  Tasks that are not deleted. */
+	taskCount: number,
+	/**  Tasks still moving (neither waiting for a human nor finished). */
+	running: number,
+	/**  Tasks waiting for a human decision (approval, conflict, blocked). */
+	waitingForYou: number,
+	/**  Merged, rolled back or cancelled. */
+	done: number,
+	/**  Tasks whose latest validation in the last 7 days failed. */
+	failing: number,
+	/**  Distinct developer/reviewer agents on tasks touched in the last 30 days, most recent first. */
+	agents: AgentKind[],
+	/**  Agents executing right now (planning, developing, revising or reviewing). */
+	activeAgents: AgentKind[],
+	/**  Latest task update, if the project has any task. */
+	lastActivityAt: string | null,
+	/**  Members the user assigned, in display order. Empty when none were assigned. */
+	assignedAgents: AgentKind[],
+	/**  `assigned` when the project has members, otherwise `derived` (use `agents`). */
+	agentsSource: AgentsSource,
 };
 
 export type ProviderCapabilities = {
@@ -1232,6 +1419,269 @@ export type TaskSummary = {
 	developerAgent: AgentKind,
 	reviewerAgent: AgentKind,
 	updatedAt: string,
+};
+
+export type TeamAction =
+/**  Reap only quarantined/cancelled attempts whose old resources can be proved stopped. */
+{ action: "reconcile_resources" } | { action: "revise_acceptance"; expected_revision: number; criteria: TeamCriterion[]; reason: string } | { action: "refresh_target" } | { action: "start" } | { action: "approve_plan"; expected_revision: number } | { action: "pause" } | { action: "resume" } | { action: "cancel" } | { action: "cancel_work"; work_item_id: string } | { action: "retry_work"; work_item_id: string } | { action: "replace_member"; member: TeamMember } | { action: "revise_plan"; expected_revision: number; plan: TeamPlan } | { action: "deliver" };
+
+export type TeamActionArgs = {
+	taskId: string,
+	action: TeamAction,
+};
+
+export type TeamArtifact = {
+	id: string,
+	workItemId: string,
+	attemptId: string,
+	memberId: string,
+	provider: AgentKind,
+	inputBaseSha: string,
+	resultSha: string,
+	patchSha256: string,
+	changedFiles: string[],
+	includedArtifactIds: string[],
+};
+
+export type TeamAttemptView = {
+	identity: TeamIdentity,
+	provider: AgentKind,
+	status: RunStatus,
+	worktree: string | null,
+	inputBaseSha: string | null,
+	failureClass: string | null,
+	costUsd: number | null,
+	tokensIn: number | null,
+	tokensOut: number | null,
+};
+
+export type TeamCandidate = {
+	id: string,
+	commitSha: string,
+	treeSha: string,
+	baseSha: string,
+	artifactIds: string[],
+	contributorMemberIds: string[],
+	contributorProviders: AgentKind[],
+	planHash: string,
+};
+
+export type TeamCheck = {
+	id: string,
+	argv: string[],
+	expectedExit: number,
+	stdoutContains: string | null,
+	timeoutSecs: number,
+};
+
+export type TeamConfig = {
+	teamCapacity: number,
+	maxConcurrentAttempts: number,
+	plannerMemberId: string,
+	members: TeamMember[],
+	maxAttempts: number,
+	verificationReserve: number,
+	maxReworks: number,
+	maxPlanRevisions: number,
+	attemptTimeoutSecs: number,
+	/**  Actual OS/sandbox guarantees come from the adapter, not this path policy. */
+	writeGlobs: string[],
+	/**  Command prefixes explicitly authorized by the user. No implicit shell. */
+	allowedCommands: string[][],
+	requirePlanApproval: boolean,
+	crossVendorReview: boolean,
+};
+
+export type TeamCreateInput = {
+	projectId: string,
+	title: string,
+	goal: string,
+	requirements: string[],
+	targetBranch: string | null,
+	config: TeamConfig,
+};
+
+export type TeamCriterion = {
+	id: string,
+	text: string,
+	requirementIds: string[],
+	required: boolean,
+	expected: string,
+	/**  A versioned executable test package. Each check is run separately by the Runner. */
+	checks: TeamCheck[],
+	ownerWorkItemId: string,
+};
+
+export type TeamCriterionView = {
+	criterion: TeamCriterion,
+	status: CriterionStatus,
+	stale: boolean,
+	evidence: TeamEvidence[],
+};
+
+export type TeamEvidence = {
+	id: string,
+	criterionId: string,
+	criterionHash: string,
+	candidateId: string,
+	candidateTree: string,
+	attemptId: string,
+	memberId: string,
+	checkId: string,
+	checkHash: string,
+	status: CriterionStatus,
+	source: string,
+	environmentHash: string,
+	rawPath: string,
+	rawSha256: string,
+	detail: string,
+};
+
+export type TeamEvidenceArgs = {
+	taskId: string,
+	evidenceId: string,
+};
+
+export type TeamIdentity = {
+	taskId: string,
+	workItemId: string,
+	attemptId: string,
+	memberId: string,
+	specHash: string,
+	inputManifestHash: string,
+	leaseEpoch: number,
+};
+
+export type TeamMember = {
+	id: string,
+	name: string,
+	roles: TeamRole[],
+	/**  Ordered, task-owned profile snapshot. Replacement preserves this logical seat. */
+	providers: AgentKind[],
+};
+
+export type TeamPhase = "draft" | "planning" | "plan_approval" | "running" | "paused" | "blocked" | "ready_for_delivery" | "delivering" | "delivered" | "cancelled";
+
+export type TeamPlan = {
+	schemaVersion: number,
+	rationale: string,
+	/**  User-owned requirements are immutable; a plan refers to their IDs. */
+	items: TeamWorkSpec[],
+	criteria: TeamCriterion[],
+};
+
+export type TeamPlanPreview = {
+	baseRevision: number,
+	proposalHash: string,
+	added: string[],
+	removed: string[],
+	changed: string[],
+	affected: string[],
+	preserved: string[],
+	blockingAttemptIds: string[],
+	acceptanceChanged: boolean,
+	blockers: string[],
+};
+
+export type TeamPlanPreviewInput = {
+	taskId: string,
+	expectedRevision: number,
+	plan: TeamPlan,
+};
+
+export type TeamRecoveryView = {
+	taskId: string,
+	phase: TeamPhase,
+	resources: TeamResourceInspection[],
+	attemptsRemaining: number,
+	reworksRemaining: number,
+	targetBase: string | null,
+	targetCurrent: string | null,
+	targetChanged: boolean,
+	configChanged: boolean,
+	notices: string[],
+	inspectedAt: string,
+};
+
+export type TeamReportExport = {
+	directory: string,
+	candidateId: string | null,
+	evidenceCount: number,
+	reportSha256: string,
+	manifestSha256: string,
+};
+
+export type TeamReportExportInput = {
+	taskId: string,
+	parentDirectory: string,
+};
+
+export type TeamRequirement = {
+	id: string,
+	originalText: string,
+	source: string,
+	required: boolean,
+};
+
+export type TeamResourceInspection = {
+	attemptId: string,
+	workItemId: string,
+	memberId: string,
+	provider: AgentKind | null,
+	failureClass: string | null,
+	cancelRequested: boolean,
+	state: TeamResourceState,
+	detail: string,
+};
+
+export type TeamResourceState = "not_started" | "present" | "stopped" | "unknown";
+
+export type TeamRole = "planner" | "developer" | "tester" | "reviewer";
+
+export type TeamView = {
+	taskId: string,
+	phase: TeamPhase,
+	originalGoal: string,
+	config: TeamConfig,
+	requirements: TeamRequirement[],
+	plan: TeamPlan | null,
+	planRevision: number,
+	items: TeamWorkView[],
+	attempts: TeamAttemptView[],
+	artifacts: TeamArtifact[],
+	candidate: TeamCandidate | null,
+	criteria: TeamCriterionView[],
+	gateBlockers: string[],
+	attemptsUsed: number,
+	reworksUsed: number,
+	detail: string | null,
+	reportPath: string | null,
+	limitations: string[],
+};
+
+export type TeamWorkKind = "plan" | "coverage" | "implement" | "integrate" | "verify" | "review";
+
+export type TeamWorkSpec = {
+	id: string,
+	title: string,
+	instructions: string,
+	kind: TeamWorkKind,
+	dependsOn: string[],
+	memberIds: string[],
+	requirementIds: string[],
+	writeGlobs: string[],
+	localChecks: TeamCheck[],
+};
+
+export type TeamWorkState = "pending" | "active" | "submitted" | "output_accepted" | "blocked" | "cancelled" | "superseded";
+
+export type TeamWorkView = {
+	spec: TeamWorkSpec,
+	specHash: string,
+	state: TeamWorkState,
+	epoch: number,
+	artifactId: string | null,
+	detail: string | null,
 };
 
 export type ToolStatus = {

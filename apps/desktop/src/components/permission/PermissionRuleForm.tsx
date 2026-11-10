@@ -26,7 +26,7 @@ export function PermissionRuleForm({ request }: { request: PermissionRequest }) 
         ))}
       </dl>
       <p className="mt-2 text-meta text-t3">
-        规则只匹配完全相同的命令与域名，不会放行其它操作；之后可在项目设置里查看命中、停用或撤销。
+        只认完全相同的命令和域名，别的操作照样会来问你；随时可以在项目设置里停用或撤销。
       </p>
     </div>
   );

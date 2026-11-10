@@ -76,6 +76,7 @@ version = "0.1.0"
 dependencies = [
  "agentflow-contracts",
  "agentflow-orchestrator",
+ "agentflow-persistence",
  "anyhow",
  "chrono",
  "clap",
@@ -146,6 +147,7 @@ dependencies = [
  "chrono",
  "getrandom 0.3.4",
  "security-framework",
+ "serde",
  "serde_json",
  "sha2",
  "sqlx",

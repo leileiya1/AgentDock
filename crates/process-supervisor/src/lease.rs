@@ -64,6 +64,35 @@ pub fn inspect_process_lease(lease: &ProcessLease) -> LeaseState {
     }
 }
 
+/// Includes descendants after the group leader exits. A missing leader alone is not evidence
+/// that managed servers/browsers stopped. Unknown/reused identity remains quarantined.
+pub async fn inspect_process_group_lease(lease: &ProcessLease) -> Result<Option<bool>, io::Error> {
+    if lease.process_group == 0 || lease.process_group != lease.pid || lease.os_started_at_secs == 0
+    {
+        return Ok(None);
+    }
+    match inspect_process_lease(lease) {
+        LeaseState::PidReused => return Ok(None),
+        LeaseState::Alive => return Ok(Some(true)),
+        LeaseState::Exited => {}
+    }
+    let output = Command::new("/bin/kill")
+        .args(["-0", "--", &format!("-{}", lease.process_group)])
+        .output()
+        .await?;
+    if output.status.success() {
+        Ok(Some(true))
+    } else if String::from_utf8_lossy(&output.stderr)
+        .to_lowercase()
+        .contains("no such process")
+    {
+        Ok(Some(false))
+    } else {
+        // Permission errors, unexpected diagnostics and localized output are not proof of exit.
+        Ok(None)
+    }
+}
+
 /// Terminate the recorded process group only if the PID still refers to the original process.
 /// SIGKILL is sent after the grace period even when the leader exits, because grandchildren can
 /// remain alive in the same process group after their parent has gone.
@@ -71,7 +100,7 @@ pub async fn terminate_process_lease(
     lease: &ProcessLease,
     grace: Duration,
 ) -> Result<bool, io::Error> {
-    if inspect_process_lease(lease) != LeaseState::Alive || lease.process_group == 0 {
+    if inspect_process_group_lease(lease).await? != Some(true) {
         return Ok(false);
     }
     #[cfg(unix)]

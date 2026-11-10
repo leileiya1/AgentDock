@@ -51,7 +51,10 @@ pub struct Store {
 }
 
 mod protection;
+mod schema_check;
+pub use schema_check::{SchemaCheck, schema_check};
 mod resume_tokens;
+pub mod team;
 
 impl Store {
     pub async fn open(path: &Path) -> Result<Self, PersistenceError> {

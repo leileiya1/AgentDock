@@ -236,7 +236,11 @@ pub(super) async fn permission_request_list(
     state: State<'_, Backend>,
     args: TaskIdArgs,
 ) -> Result<Vec<agentflow_contracts::PermissionRequest>, AppError> {
-    state.0.permission_requests(&args.task_id).await.map_err(app_error)
+    state
+        .0
+        .permission_requests(&args.task_id)
+        .await
+        .map_err(app_error)
 }
 
 #[tauri::command]
@@ -245,7 +249,11 @@ pub(super) async fn permission_decide(
     state: State<'_, Backend>,
     args: PermissionDecisionArgs,
 ) -> Result<agentflow_contracts::PermissionDecision, AppError> {
-    daemon_mutate(&state, DaemonRequest::PermissionDecide { input: args.input }).await
+    daemon_mutate(
+        &state,
+        DaemonRequest::PermissionDecide { input: args.input },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -254,7 +262,11 @@ pub(super) async fn permission_rule_list(
     state: State<'_, Backend>,
     args: ProjectIdArgs,
 ) -> Result<Vec<agentflow_contracts::PermissionRule>, AppError> {
-    state.0.permission_rules(&args.project_id).await.map_err(app_error)
+    state
+        .0
+        .permission_rules(&args.project_id)
+        .await
+        .map_err(app_error)
 }
 
 #[tauri::command]
@@ -263,5 +275,12 @@ pub(super) async fn permission_rule_revoke(
     state: State<'_, Backend>,
     args: PermissionRuleRevokeArgs,
 ) -> Result<agentflow_contracts::PermissionRule, AppError> {
-    daemon_mutate(&state, DaemonRequest::PermissionRuleRevoke { project_id: args.project_id, rule_id: args.rule_id }).await
+    daemon_mutate(
+        &state,
+        DaemonRequest::PermissionRuleRevoke {
+            project_id: args.project_id,
+            rule_id: args.rule_id,
+        },
+    )
+    .await
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { argvHumanHint, argvLine, parseEndpoint } from "./format";
+import { argvHumanHint, argvLine, argvPlainHint, parseEndpoint } from "./format";
 
 describe("网络端点解析 (06 §9 第 8 条)", () => {
   it("拆出域名、端口与协议", () => {
@@ -37,5 +37,14 @@ describe("命令展示 (06 §9 第 6 条)", () => {
   });
   it("命令行对含空格参数加引号", () => {
     expect(argvLine(["git", "commit", "-m", "fix bug"])).toBe('git commit -m "fix bug"');
+  });
+});
+
+describe("argvPlainHint", () => {
+  it("常见命令给人话，认不出时退回可执行文件 + 子命令", () => {
+    expect(argvPlainHint(["bun", "add", "zod"])).toBe("装依赖包");
+    expect(argvPlainHint(["npm", "test"])).toBe("跑测试");
+    expect(argvPlainHint(["sudo", "apt-get", "install"])).toBe("用管理员权限运行");
+    expect(argvPlainHint(["/usr/bin/make", "all"])).toBe("make all");
   });
 });

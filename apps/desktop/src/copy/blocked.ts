@@ -21,7 +21,11 @@ export type BlockedAction =
   /** requeue from the saved checkpoint; the backend chooses the first ready Provider */
   | "retryAvailable"
   /** open the project fallback-chain editor */
-  | "editFallback";
+  | "editFallback"
+  /** open project settings at the review-council switch */
+  | "councilSetup"
+  /** council is on now: review the same revision again (no new development round) */
+  | "reReview";
 
 export interface BlockedCopy {
   title: string;
@@ -174,4 +178,44 @@ export const BLOCKED_ACTION_LABEL: Record<BlockedAction, string> = {
   redetect: "刷新 Provider 状态",
   retryAvailable: "用可用 Provider 继续",
   editFallback: "调整 Provider 顺序",
+  councilSetup: "去开启审查委员会",
+  reReview: "已开启，重新审查",
 };
+
+/**
+ * 改动碰到测试、CI、权限或安全控制面时，后端要求至少两个独立 Provider 组成的审查委员会。
+ * 这不是"质量分太低"，代码和验证都没问题，只是还没人审：开启委员会后重新审查同一个修订即可。
+ */
+export const COUNCIL_REQUIRED_COPY: BlockedCopy = {
+  title: "这次改动需要审查委员会",
+  explanation:
+    "改动涉及测试、CI、权限或安全相关文件，必须由至少两个独立的 Provider 一起审查。先在项目设置里开启「多 Agent 审查委员会」并选好成员，再回来重新审查；代码不用重写。",
+  detailIsQuestion: false,
+  actions: ["councilSetup", "reReview", "forceApprove", "cancel"],
+};
+
+/** 质量门禁里最后一个与审查相关的事件；后端用它区分"还没审"和"审了没过"。 */
+const GATE_EVENTS = new Set([
+  "integrity:security_review_required",
+  "quality:gate_failed",
+  "review:failed",
+  "review:pass",
+  "review:block",
+  "review:request_changes",
+  "review:council_pass",
+  "review:council_block",
+  "review:council_request_changes",
+]);
+
+export function latestGateEvent(events: ReadonlyArray<{ id: number; eventType: string }> | undefined): string | null {
+  let best: { id: number; eventType: string } | null = null;
+  for (const e of events ?? []) if (GATE_EVENTS.has(e.eventType) && (!best || e.id > best.id)) best = e;
+  return best?.eventType ?? null;
+}
+
+/** BlockedReason（+ 质量门禁的具体原因）→ 卡片文案和动作。 */
+export function blockedCopyFor(reason: BlockedReason | null | undefined, gateEvent: string | null): BlockedCopy | null {
+  if (!reason) return null;
+  if (reason === "quality_gate" && gateEvent === "integrity:security_review_required") return COUNCIL_REQUIRED_COPY;
+  return BLOCKED_COPY[reason];
+}

@@ -191,20 +191,19 @@ impl Orchestrator {
             )
         };
         if !developer_capable {
-            return Err(OrchestratorError::InvalidState(
-                "selected provider does not support development".into(),
-            ));
+            return Err(OrchestratorError::InvalidInput(format!(
+                "{developer} 不能担任开发 Agent：API 类 Provider 只能做审查。请选 Claude Code、Codex 这类能改代码的 CLI 作为开发 Agent。"
+            )));
         }
         if policy.require_plan_approval && !planning_capable {
-            return Err(OrchestratorError::InvalidState(format!(
-                "Provider {} does not declare protocol planning capability",
-                developer
+            return Err(OrchestratorError::InvalidInput(format!(
+                "{developer} 没有声明能做计划，不能用于需要先审批计划的任务。请换一个开发 Agent，或关闭「先审批计划」。"
             )));
         }
         if !reviewer_capable {
-            return Err(OrchestratorError::InvalidState(
-                "selected provider does not support review".into(),
-            ));
+            return Err(OrchestratorError::InvalidInput(format!(
+                "{reviewer} 不能担任审查 Agent，请换一个支持审查的 Provider。"
+            )));
         }
         let council_egress = project.settings.review_council.enabled
             && project

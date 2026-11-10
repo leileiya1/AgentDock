@@ -55,6 +55,7 @@ impl Orchestrator {
             run_log_cursors: Arc::new(RwLock::new(HashMap::new())),
         };
         if recover {
+            orchestrator.team_recover().await?;
             orchestrator.recover_interrupted_runs().await?;
         }
         Ok(orchestrator)
@@ -69,7 +70,8 @@ impl Orchestrator {
         let mut task_ids = Vec::new();
         if let Ok(tokens) = self.active_cancellations.read() {
             for (task_id, token) in tokens.iter() {
-                task_ids.push(task_id.clone());
+                if task_id.starts_with("delivery/") {continue;}
+                task_ids.push(if task_id.starts_with("team/") { task_id.split('/').nth(1).unwrap_or(task_id).to_string() } else { task_id.clone() });
                 token.cancel();
             }
         }
@@ -82,6 +84,7 @@ impl Orchestrator {
         task_ids: &[String],
     ) -> Result<(), OrchestratorError> {
         for task_id in task_ids {
+            if self.store.is_team_task(task_id).await? { continue; }
             let task = self.task(task_id).await?;
             let (to, revision) = match task.status {
                 TaskStatus::Planning => (TaskStatus::Planning, task.revision),
@@ -267,6 +270,10 @@ impl Orchestrator {
         })
         .collect::<Vec<_>>();
         let recommended_developer = [
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            AgentKind::GeminiCli,
+            AgentKind::QwenCode,
             AgentKind::QoderCli,
             AgentKind::GrokCli,
         ]

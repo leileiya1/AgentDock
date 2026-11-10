@@ -204,6 +204,7 @@ impl Orchestrator {
             None => None,
         };
         let request = AgentRunRequest {
+            managed_team: false,
             task_id: task.id.clone(),
             revision: task.revision,
             commit_sha,
@@ -221,7 +222,7 @@ impl Orchestrator {
                 .await?,
             resume_session_id,
             permission_hook_program: self.claude_permission_hook_program(),
-            extra_allowed_commands: config.agents.extra_allowed_commands.clone(),
+            extra_allowed_commands: run_allowed_commands(config, role),
             env_denylist: project.settings.env_denylist.clone(),
             budget,
         };
@@ -425,4 +426,66 @@ fn looks_like_permission_prompt(text: &str) -> bool {
     ]
     .iter()
     .any(|marker| lower.contains(marker))
+}
+
+/// The trusted project validation steps, as single command lines a CLI allowlist can match.
+/// Steps whose arguments could change how a CLI parses its allowlist are left out (they still
+/// run in AgentFlow's own validation; the agent just has to ask before running them itself).
+pub(crate) fn trusted_validation_commands(config: &ProjectConfig) -> Vec<String> {
+    config
+        .validate
+        .steps
+        .iter()
+        .map(|step| step.argv.join(" "))
+        .filter(|line| agentflow_agent_adapters::validate_extra_allowed_command(line).is_ok())
+        .collect()
+}
+
+/// Commands a run may execute without asking: the project's own allowlist, plus, for the
+/// developer, the trusted validation commands AgentFlow will run after delivery anyway.
+pub(crate) fn run_allowed_commands(config: &ProjectConfig, role: RunRole) -> Vec<String> {
+    let mut commands = config.agents.extra_allowed_commands.clone();
+    if role == RunRole::Developer {
+        for line in trusted_validation_commands(config) {
+            if !commands.contains(&line) {
+                commands.push(line);
+            }
+        }
+    }
+    commands
+}
+
+#[cfg(test)]
+mod validation_allow_tests {
+    use super::*;
+
+    fn config(toml_text: &str) -> Result<ProjectConfig, toml::de::Error> {
+        toml::from_str(toml_text)
+    }
+
+    #[test]
+    fn developers_may_run_trusted_validation_without_asking() -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = config(
+            r#"
+schema_version = 1
+[agents]
+extra_allowed_commands = ["npm run lint"]
+[[validate.steps]]
+name = "unit tests"
+argv = ["python3", "-m", "unittest", "discover", "-s", "tests", "-v"]
+[[validate.steps]]
+name = "shell glue"
+argv = ["/bin/sh", "-c", "pytest && echo ok"]
+"#,
+        )?;
+        let dev = run_allowed_commands(&cfg, RunRole::Developer);
+        assert!(dev.contains(&"npm run lint".to_string()));
+        assert!(dev.contains(&"python3 -m unittest discover -s tests -v".to_string()));
+        assert!(
+            !dev.iter().any(|line| line.contains("&&")),
+            "a step that could widen a CLI allowlist is left out: {dev:?}"
+        );
+        assert_eq!(run_allowed_commands(&cfg, RunRole::Reviewer), vec!["npm run lint".to_string()]);
+        Ok(())
+    }
 }

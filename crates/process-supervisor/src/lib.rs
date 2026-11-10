@@ -21,7 +21,8 @@ use tokio_util::sync::CancellationToken;
 
 mod lease;
 pub use lease::{
-    LeaseState, ProcessLease, inspect_process_lease, read_process_lease, terminate_process_lease,
+    LeaseState, ProcessLease, inspect_process_group_lease, inspect_process_lease,
+    read_process_lease, terminate_process_lease,
 };
 
 const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
@@ -151,6 +152,23 @@ pub async fn run(
     log_stop.cancel();
     let a = out_task.await??;
     let b = err_task.await??;
+    // The command may have backgrounded a service and exited successfully. Reclaim the whole
+    // managed process group before releasing its lease/resource reservation.
+    lease::terminate_process_lease(&lease, Duration::from_millis(100)).await?;
+    let mut stopped = false;
+    for _ in 0..25 {
+        if lease::inspect_process_group_lease(&lease).await? == Some(false) {
+            stopped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    if !stopped {
+        return Err(std::io::Error::other(
+            "managed process group cleanup could not be proved; durable lease retained",
+        )
+        .into());
+    }
     let _ = tokio::fs::remove_file(&spec.lease_path).await;
     let outcome = ProcessOutcome {
         pid,

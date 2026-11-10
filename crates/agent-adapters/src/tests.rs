@@ -3,6 +3,7 @@ mod tests {
     use super::*;
     fn test_request(role: RunRole, permission: PermissionTier) -> AgentRunRequest {
         AgentRunRequest {
+            managed_team: false,
             task_id: "TASK-test".into(),
             revision: 1,
             commit_sha: (role == RunRole::Reviewer).then(|| "1234567".into()),
@@ -31,6 +32,16 @@ mod tests {
             env_denylist: Vec::new(),
             budget: RunBudget::default(),
         }
+    }
+
+    #[test]
+    fn managed_team_disables_nested_agents_and_uses_authoritative_transport_schema() {
+        let mut req=test_request(RunRole::Developer,PermissionTier::Normal);req.managed_team=true;
+        let args=codex_args(&req,Path::new("/schemas/review.schema.json"));
+        assert!(args.windows(2).any(|pair|pair==["--disable","multi_agent"]));
+        assert!(args.windows(2).any(|pair|pair[0]=="--output-schema"&&pair[1].ends_with("team-transport.schema.json")));
+        let args=claude_args(&req);let tools=args.windows(2).find(|pair|pair[0]=="--disallowedTools").map(|pair|pair[1].as_str()).unwrap_or("");
+        assert!(tools.split(',').any(|tool|tool=="Agent"));assert!(tools.split(',').any(|tool|tool=="Task"));
     }
 
     #[test]
@@ -98,6 +109,29 @@ mod tests {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))?;
         let result = probe_cli_runtime("claude", &fake).await;
         assert!(result.passed, "{:?}", result.problem);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_probe_cancellation_cannot_accept_a_printed_marker_or_orphan_its_group()
+    -> Result<(),Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let temp=tempfile::tempdir()?;
+        let fake=temp.path().join("fake-claude");
+        tokio::fs::write(&fake,"#!/bin/sh\nprintf '%s\\n' '{\"probe\":\"AGENTFLOW_PROBE_OK\"}'\nsleep 30 &\nwait\n").await?;
+        std::fs::set_permissions(&fake,std::fs::Permissions::from_mode(0o755))?;
+        let dir=temp.path().join("managed-probe");let path=dir.clone();let cwd=temp.path().to_path_buf();
+        let cancel=CancellationToken::new();let token=cancel.clone();
+        let running=tokio::spawn(async move{probe_cli_runtime_managed("claude",&fake,&cwd,&path,token).await});
+        for _ in 0..100 {if dir.join("process-lease.json").exists(){break;}tokio::time::sleep(Duration::from_millis(10)).await;}
+        let lease=agentflow_process_supervisor::read_process_lease(&dir.join("process-lease.json")).await?;
+        cancel.cancel();
+        let verdict=running.await?;
+        assert!(!verdict.passed);
+        assert_eq!(agentflow_process_supervisor::inspect_process_group_lease(&lease).await?,Some(false));
+        assert!(dir.join("process-outcome.json").exists());
+        assert!(!dir.join("process-lease.json").exists());
         Ok(())
     }
 
@@ -513,6 +547,31 @@ mod tests {
         assert_eq!(caps.tokens, BudgetMode::Soft);
         assert_eq!(caps.cost, BudgetMode::Hard);
         assert_eq!(CodexAdapter::new("codex", "review.json").budget_capabilities().cost, BudgetMode::Soft);
+    }
+
+    #[test]
+    fn claude_hook_receives_approvals_and_read_only_role() {
+        let hook_command = |request: &AgentRunRequest| {
+            let args = claude_args(request);
+            args.windows(2)
+                .find(|pair| pair[0] == "--settings")
+                .map(|pair| pair[1].clone())
+                .unwrap_or_default()
+        };
+        let mut developer = test_request(RunRole::Developer, PermissionTier::Normal);
+        developer.permission_hook_program = Some("/bin/agentflowd".into());
+        developer.effective_permissions.command_argv = vec![
+            vec!["Bash".into(), "-lc".into(), "python3 -m unittest".into()],
+            vec!["npm".into(), "install".into()],
+        ];
+        let settings = hook_command(&developer);
+        assert!(settings.contains("--exact 'python3 -m unittest'"), "{settings}");
+        assert!(!settings.contains("--read-only"), "developers may ask the broker");
+        assert!(!settings.contains("npm"), "only Bash grants map to hook approvals");
+
+        let mut reviewer = test_request(RunRole::Reviewer, PermissionTier::Normal);
+        reviewer.permission_hook_program = Some("/bin/agentflowd".into());
+        assert!(hook_command(&reviewer).contains("--read-only"));
     }
 
     #[test]
@@ -968,6 +1027,7 @@ mod tests {
         let running = adapter
             .start(
                 AgentRunRequest {
+                    managed_team: false,
                     task_id: "TASK-test".into(),
                     revision: 1,
                     commit_sha: Some("1234567".into()),

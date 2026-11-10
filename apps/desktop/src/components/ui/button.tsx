@@ -4,27 +4,27 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-control text-body font-medium transition-[background,border-color,box-shadow,transform] duration-150 ease-[var(--ease-out-expo)] outline-none focus-visible:ring-2 focus-visible:ring-focus/70 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98] select-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-control text-body font-semibold transition-[background,border-color,box-shadow,transform] duration-100 ease-[var(--ease-out-expo)] outline-none focus-visible:ring-2 focus-visible:ring-focus/70 disabled:pointer-events-none disabled:opacity-50 active:translate-y-0.5 active:shadow-none select-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default:
-          "border border-line bg-raised text-t1 hover:border-line-strong hover:bg-panel",
+          "border border-line-strong bg-raised text-t1 shadow-press hover:bg-app",
         primary:
-          "border border-action bg-action text-white hover:bg-action-soft",
+          "border border-action bg-action text-white shadow-press-action hover:bg-action-soft",
         human:
-          "border border-status-human bg-status-human text-white hover:bg-status-human-soft",
+          "border border-status-human bg-status-human text-white shadow-press-action hover:bg-status-human-soft",
         danger:
-          "border border-status-danger/45 text-status-danger hover:border-status-danger/70 hover:bg-status-human-bg/45",
-        outline: "border border-line text-t1 hover:bg-raised",
+          "border border-status-danger/35 bg-raised text-status-danger shadow-press-danger hover:bg-status-danger-bg",
+        outline: "border border-line-strong bg-raised text-t1 shadow-press hover:bg-app",
         ghost: "text-t2 hover:bg-raised hover:text-t1",
         subtle: "bg-raised/60 text-t2 hover:bg-raised hover:text-t1",
       },
       size: {
-        default: "h-8 px-3",
-        sm: "h-7 px-2 text-meta",
-        lg: "h-9 px-4 text-sm",
-        icon: "size-8",
+        default: "h-9 px-3.5",
+        sm: "h-8 px-2.5 text-meta",
+        lg: "h-10 px-4 text-sm",
+        icon: "size-9",
       },
     },
     defaultVariants: { variant: "default", size: "default" },

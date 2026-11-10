@@ -43,6 +43,16 @@ pub enum DaemonError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum DaemonRequest {
+    TeamCreate {
+        input: agentflow_contracts::TeamCreateInput,
+    },
+    TeamReportExport {
+        input: agentflow_contracts::TeamReportExportInput,
+    },
+    TeamAction {
+        task_id: String,
+        action: agentflow_contracts::TeamAction,
+    },
     Ping,
     Enqueue {
         task_id: String,
@@ -139,6 +149,21 @@ pub enum DaemonRequest {
     ProjectSettingsUpdate {
         project_id: String,
         settings: Box<ProjectSettings>,
+    },
+    ProjectAppearanceUpdate {
+        project_id: String,
+        patch: agentflow_contracts::ProjectAppearancePatch,
+    },
+    ProjectMembersSet {
+        project_id: String,
+        members: Vec<agentflow_contracts::ProjectMemberInput>,
+    },
+    AgentProfileUpdate {
+        agent: AgentKind,
+        patch: agentflow_contracts::AgentProfilePatch,
+    },
+    AgentProfileReset {
+        agent: AgentKind,
     },
     ProjectConfigTrustApprove {
         project_id: String,
@@ -502,6 +527,13 @@ async fn dispatch(
                 .project_prune_stale_worktrees(&project_id)
                 .await?,
         ),
+        DaemonRequest::TeamCreate { input } => value(orchestrator.team_create(input).await?),
+        DaemonRequest::TeamReportExport { input } => {
+            value(orchestrator.team_report_export(input).await?)
+        }
+        DaemonRequest::TeamAction { task_id, action } => {
+            value(orchestrator.team_action(&task_id, action).await?)
+        }
         DaemonRequest::TaskCreate {
             project_id,
             title,
@@ -531,6 +563,17 @@ async fn dispatch(
             value(orchestrator.task_get(&task.id).await?)
         }
         DaemonRequest::TaskStart { task_id } => {
+            if orchestrator
+                .store
+                .is_team_task(&task_id)
+                .await
+                .map_err(agentflow_orchestrator::OrchestratorError::from)?
+            {
+                orchestrator
+                    .team_action(&task_id, agentflow_contracts::TeamAction::Start)
+                    .await?;
+                return value(orchestrator.task_get(&task_id).await?);
+            }
             orchestrator.task_start(&task_id).await?;
             enqueue_task(orchestrator, &task_id).await?;
             value(orchestrator.task_get(&task_id).await?)
@@ -625,6 +668,25 @@ async fn dispatch(
                 .project_settings_update(&project_id, &settings)
                 .await?,
         ),
+        DaemonRequest::ProjectAppearanceUpdate { project_id, patch } => value(
+            orchestrator
+                .project_appearance_update(&project_id, &patch)
+                .await?,
+        ),
+        DaemonRequest::ProjectMembersSet {
+            project_id,
+            members,
+        } => value(
+            orchestrator
+                .project_members_set(&project_id, &members)
+                .await?,
+        ),
+        DaemonRequest::AgentProfileUpdate { agent, patch } => {
+            value(orchestrator.agent_profile_update(&agent, &patch).await?)
+        }
+        DaemonRequest::AgentProfileReset { agent } => {
+            value(orchestrator.agent_profile_reset(&agent).await?)
+        }
         DaemonRequest::ProjectConfigTrustApprove {
             project_id,
             expected_sha256,
@@ -772,6 +834,9 @@ async fn queue_task_state(
 }
 
 async fn enqueue_task(orchestrator: &Orchestrator, task_id: &str) -> Result<(), DaemonError> {
+    if orchestrator.team_get(task_id).await?.is_some() {
+        return Ok(());
+    }
     let task = orchestrator.task_get(task_id).await?;
     if !is_runnable(task.summary.status) {
         return Err(DaemonError::Protocol(format!(

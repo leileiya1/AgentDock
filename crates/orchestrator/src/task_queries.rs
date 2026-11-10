@@ -12,6 +12,63 @@ impl Orchestrator {
     pub async fn project_list(&self) -> Result<Vec<Project>, OrchestratorError> {
         self.store.projects().await.map_err(Into::into)
     }
+    /// One overview row per project for the town view. Read-only; derived from task rows and
+    /// recent validation events, never from guesses.
+    pub async fn project_summaries(
+        &self,
+    ) -> Result<Vec<agentflow_contracts::ProjectSummary>, OrchestratorError> {
+        let projects = self.store.projects().await?;
+        let rows = sqlx::query(
+            "SELECT id,project_id,status,developer_agent,reviewer_agent,updated_at FROM tasks WHERE deleted_at IS NULL",
+        )
+        .fetch_all(self.store.pool())
+        .await?;
+        let mut tasks = Vec::with_capacity(rows.len());
+        for r in rows {
+            let parse_err = |e: String| OrchestratorError::Config(e);
+            tasks.push(SummaryTask {
+                id: r.get("id"),
+                project_id: r.get("project_id"),
+                status: r.get::<String, _>("status").parse().map_err(parse_err)?,
+                developer: r
+                    .get::<String, _>("developer_agent")
+                    .parse()
+                    .map_err(parse_err)?,
+                reviewer: r
+                    .get::<String, _>("reviewer_agent")
+                    .parse()
+                    .map_err(parse_err)?,
+                updated_at: r.get("updated_at"),
+            });
+        }
+        let now = chrono::Utc::now();
+        let week_ago = (now - chrono::Duration::days(7)).to_rfc3339();
+        let month_ago = (now - chrono::Duration::days(30)).to_rfc3339();
+        let events = sqlx::query(
+            "SELECT task_id,event_type FROM events WHERE event_type IN ('validation:failed','validation:passed') AND created_at >= ? ORDER BY id",
+        )
+        .bind(&week_ago)
+        .fetch_all(self.store.pool())
+        .await?;
+        let mut latest: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+        for e in events {
+            let task: Option<String> = e.get("task_id");
+            if let Some(task) = task {
+                latest.insert(
+                    task,
+                    e.get::<String, _>("event_type") == "validation:failed",
+                );
+            }
+        }
+        let failing = latest
+            .into_iter()
+            .filter(|(_, failed)| *failed)
+            .map(|(task, _)| task)
+            .collect();
+        let mut rows = summarize_projects(&projects, &tasks, &failing, &month_ago);
+        apply_members(&mut rows, &self.project_members_all().await?);
+        Ok(rows)
+    }
     pub async fn task_list(&self, project_id: &str) -> Result<Vec<TaskSummary>, OrchestratorError> {
         let ids: Vec<String> = sqlx::query_scalar(
             "SELECT id FROM tasks WHERE project_id=? AND deleted_at IS NULL ORDER BY seq",
@@ -211,6 +268,21 @@ impl Orchestrator {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
         }
         let blocked_reason = self.store.task_summary(task_id).await?.blocked_reason;
+        // A quality-gate block raised *before* any review ran (the change touched tests / CI /
+        // permissions and needs a review council) has nothing to rework: the commit and its
+        // validation are fine. Resume by reviewing that same revision again.
+        let latest_gate_event: Option<String> = sqlx::query_scalar(
+            "SELECT event_type FROM events WHERE task_id=? AND event_type IN \
+             ('integrity:security_review_required','quality:gate_failed','review:failed','review:pass', \
+             'review:block','review:request_changes','review:council_pass','review:council_block', \
+             'review:council_request_changes') \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(task_id)
+        .fetch_optional(self.store.pool())
+        .await?;
+        let council_required = blocked_reason == Some(BlockedReason::QualityGate)
+            && latest_gate_event.as_deref() == Some("integrity:security_review_required");
         sqlx::query("UPDATE tasks SET blocked_detail=?,blocked_reason=NULL WHERE id=?")
             .bind(guidance)
             .bind(task_id)
@@ -222,7 +294,7 @@ impl Orchestrator {
             TaskStatus::Planning
         } else if task.revision == 0 {
             TaskStatus::ReadyForDevelopment
-        } else if blocked_reason == Some(BlockedReason::ReviewFailed) {
+        } else if blocked_reason == Some(BlockedReason::ReviewFailed) || council_required {
             // The revision commit and validation evidence are already durable. A reviewer process
             // or result-contract failure must retry that read-only checkpoint, not create a new
             // development revision that can only end as a misleading "no changes" failure.
@@ -244,6 +316,11 @@ impl Orchestrator {
         self.store.task_summary(task_id).await.map_err(Into::into)
     }
     pub async fn force_approve(&self, task_id: &str) -> Result<TaskSummary, OrchestratorError> {
+        if self.store.is_team_task(task_id).await? {
+            return Err(OrchestratorError::InvalidState(
+                "team mode does not allow force approval".into(),
+            ));
+        }
         let task = self.task(task_id).await?;
         if task.status != TaskStatus::Blocked || task.revision == 0 {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
@@ -262,6 +339,10 @@ impl Orchestrator {
         self.store.task_summary(task_id).await.map_err(Into::into)
     }
     pub async fn cancel(&self, task_id: &str) -> Result<TaskSummary, OrchestratorError> {
+        if self.store.is_team_task(task_id).await? {
+            self.team_action(task_id, TeamAction::Cancel).await?;
+            return Ok(self.store.task_summary(task_id).await?);
+        }
         let task = self.task(task_id).await?;
         if matches!(
             task.status,
@@ -313,6 +394,29 @@ impl Orchestrator {
         self.store.task_summary(task_id).await.map_err(Into::into)
     }
     pub async fn merge(&self, task_id: &str) -> Result<TaskSummary, OrchestratorError> {
+        self.team_assert_gate(task_id).await?;
+        if let Some(view) = self.team_get(task_id).await? {
+            if view.phase != TeamPhase::Delivering {
+                return Err(OrchestratorError::InvalidState(
+                    "use the sealed team delivery operation".into(),
+                ));
+            }
+            let task = self.task(task_id).await?;
+            let project = self.project(&task.project_id).await?;
+            if self.git.resolve(&project.repo, &task.target_branch).await?
+                != view
+                    .candidate
+                    .as_ref()
+                    .ok_or_else(|| {
+                        OrchestratorError::MergePrecondition("candidate missing".into())
+                    })?
+                    .base_sha
+            {
+                return Err(OrchestratorError::MergePrecondition(
+                    "team target changed; reintegrate and reverify".into(),
+                ));
+            }
+        }
         let task = self.task(task_id).await?;
         if !matches!(
             task.status,
@@ -351,7 +455,26 @@ impl Orchestrator {
             .branch
             .as_deref()
             .ok_or_else(|| OrchestratorError::InvalidState("branch missing".into()))?;
-        match self.git.merge(&project.repo, branch, &message).await {
+        let merge_result = if let Some(view) = self.team_get(task_id).await? {
+            let candidate = view
+                .candidate
+                .ok_or_else(|| OrchestratorError::MergePrecondition("candidate missing".into()))?;
+            {
+                let operation_id:String=sqlx::query_scalar("SELECT operation_id FROM team_project_locks WHERE task_id=? AND kind='deliver'").bind(task_id).fetch_one(self.store.pool()).await?;
+                self.git
+                    .team_fast_forward_checkout(
+                        &project.repo,
+                        &task.target_branch,
+                        &candidate.base_sha,
+                        &candidate.commit_sha,
+                        &operation_id,
+                    )
+                    .await
+            }
+        } else {
+            self.git.merge(&project.repo, branch, &message).await
+        };
+        match merge_result {
             Ok(()) => {
                 let merge_commit = self.git.resolve(&project.repo, "HEAD").await?;
                 self.store
@@ -373,7 +496,9 @@ impl Orchestrator {
                     .bind(task_id).execute(self.store.pool()).await?;
             }
             Err(e) => {
-                let _ = self.git.abort_merge(&project.repo).await;
+                if !self.store.is_team_task(task_id).await? {
+                    let _ = self.git.abort_merge(&project.repo).await;
+                }
                 self.store
                     .transition(
                         task_id,
@@ -393,6 +518,11 @@ impl Orchestrator {
         &self,
         task_id: &str,
     ) -> Result<TaskSummary, OrchestratorError> {
+        if self.store.is_team_task(task_id).await? {
+            return Err(OrchestratorError::InvalidState(
+                "team delivery must reconcile its tested tree and durable receipt".into(),
+            ));
+        }
         let task = self.task(task_id).await?;
         if !matches!(
             task.status,

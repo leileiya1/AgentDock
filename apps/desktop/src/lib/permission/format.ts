@@ -54,3 +54,24 @@ export function argvLine(argv: string[]): string {
     .map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg))
     .join(" ");
 }
+
+const PKG_MANAGERS = new Set(["bun", "npm", "pnpm", "yarn", "pip", "pip3", "cargo", "go", "uv", "poetry"]);
+const INSTALL_SUBS = new Set(["add", "install", "i", "get"]);
+
+/**
+ * 命令在做什么的一句人话 (§9 第 6 条)，识别不了时退回「可执行文件 + 子命令」。
+ * 只做常见形态的字面匹配，不猜测意图。
+ */
+export function argvPlainHint(argv: string[]): string {
+  if (argv.length === 0) return "无命令";
+  const bin = (argv[0].split(/[/\\]/).pop() || argv[0]).toLowerCase();
+  const sub = (argv[1] ?? "").toLowerCase();
+  if (bin === "sudo") return "用管理员权限运行";
+  if (PKG_MANAGERS.has(bin) && INSTALL_SUBS.has(sub)) return "装依赖包";
+  if (sub === "test" || bin === "pytest" || bin === "vitest" || bin === "jest") return "跑测试";
+  if (sub === "build" || bin === "tsc") return "构建项目";
+  if (bin === "git") return `Git ${sub || "操作"}`;
+  if (bin === "rm") return "删除文件";
+  if (bin === "curl" || bin === "wget") return "下载内容";
+  return argvHumanHint(argv);
+}

@@ -1,8 +1,8 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { X } from "lucide-react";
 import { trapTab } from "@/lib/focus";
+import { PixelIcon } from "@/components/pixel/PixelIcon";
 import { dialogChildClosedRecently } from "@/lib/dialogChildOverlay";
 
 interface Props {
@@ -14,6 +14,12 @@ interface Props {
   width?: number;
   /** allow Cmd/Ctrl+Enter to trigger the confirm action */
   onConfirmKey?: () => void;
+  /** Avatar or icon tile shown before the title (a squad member, an action icon). */
+  leading?: ReactNode;
+  /** Short line under the title, e.g. who is asking. */
+  subtitle?: ReactNode;
+  /** CSS background for the header band, e.g. the asking robot's station tint. */
+  headerTint?: string;
 }
 
 const OPEN_DIALOG_CHILD_SELECTOR = '[data-slot="select-content"]';
@@ -33,7 +39,7 @@ export function shouldDeferDialogEscape(root: DialogEscapeRoot): boolean {
 }
 
 /** Modal with short fade/translate motion; Escape and explicit controls dismiss. */
-export function Dialog({ open, onClose, title, children, footer, width = 480, onConfirmKey }: Props) {
+export function Dialog({ open, onClose, title, children, footer, width = 480, onConfirmKey, leading, subtitle, headerTint }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
   // Keep the latest callbacks without restarting the focus-trap effect. Dialog
   // callers commonly pass inline functions, so depending on those identities
@@ -90,7 +96,7 @@ export function Dialog({ open, onClose, title, children, footer, width = 480, on
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-50 grid place-items-center p-5 bg-black/55 backdrop-blur-[3px]"
+          className="fixed inset-0 z-50 grid place-items-center bg-t1/35 p-5 backdrop-blur-[2px]"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -103,26 +109,33 @@ export function Dialog({ open, onClose, title, children, footer, width = 480, on
             aria-label={title}
             tabIndex={-1}
             style={{ "--dialog-width": `${width}px` } as CSSProperties}
-            className="relative flex max-h-[90vh] w-[min(var(--dialog-width),calc(100vw-2.5rem))] flex-col overflow-hidden rounded-overlay border border-line/80 glass shadow-[var(--shadow-float)] outline-none max-sm:h-full max-sm:max-h-full max-sm:w-full max-sm:rounded-none"
+            className="relative flex max-h-[90vh] w-[min(var(--dialog-width),calc(100vw-2.5rem))] flex-col overflow-hidden rounded-overlay border border-line bg-raised shadow-[var(--shadow-float)] outline-none max-sm:h-full max-sm:max-h-full max-sm:w-full max-sm:rounded-none"
             onMouseDown={(e) => e.stopPropagation()}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 4 }}
-            transition={{ duration: 0.16, ease: [0.2, 0, 0, 1] }}
+            initial={{ opacity: 0, y: 14, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={{ duration: 0.24, ease: [0.2, 1.2, 0.4, 1] }}
           >
-            <div className="flex items-center justify-between border-b border-line/70 px-4 py-3">
-              <h2 className="text-section font-semibold text-t1">{title}</h2>
+            <div
+              className="flex items-center gap-3 border-b border-line/70 px-5 py-3.5"
+              style={headerTint ? { background: headerTint } : undefined}
+            >
+              {leading}
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate text-section font-extrabold text-t1">{title}</h2>
+                {subtitle && <div className="mt-0.5 truncate text-meta text-t2">{subtitle}</div>}
+              </div>
               <button
                 onClick={onClose}
-                className="grid size-6 place-items-center rounded-control text-t3 transition-colors hover:bg-raised hover:text-t1"
+                className="grid size-8 shrink-0 place-items-center rounded-control bg-raised/70 text-t2 transition-colors hover:bg-raised hover:text-t1"
                 aria-label="关闭"
               >
-                <X className="size-4" />
+                <PixelIcon name="cross" size={10} />
               </button>
             </div>
-            <div className="overflow-y-auto px-4 py-4">{children}</div>
+            <div className="overflow-y-auto px-5 py-4">{children}</div>
             {footer && (
-              <div className="flex justify-end gap-2 border-t border-line/70 px-4 py-3">{footer}</div>
+              <div className="flex justify-end gap-2 border-t border-line/70 bg-app px-5 py-3">{footer}</div>
             )}
           </motion.div>
         </motion.div>

@@ -62,6 +62,8 @@ include!("governance.rs");
 include!("permissions.rs");
 // Task preflight readiness (developer/reviewer chain probe) gates a run before it is created.
 include!("preflight.rs");
+include!("team.rs");
+include!("studio.rs");
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
 #[serde(rename_all = "camelCase")]
@@ -91,6 +93,38 @@ pub struct TaskSummary {
     pub developer_agent: AgentKind,
     pub reviewer_agent: AgentKind,
     pub updated_at: String,
+}
+
+/// Per-project overview for the town view: one row per project, computed from task state only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSummary {
+    pub project_id: String,
+    /// Tasks that are not deleted.
+    #[specta(type = i32)]
+    pub task_count: i64,
+    /// Tasks still moving (neither waiting for a human nor finished).
+    #[specta(type = i32)]
+    pub running: i64,
+    /// Tasks waiting for a human decision (approval, conflict, blocked).
+    #[specta(type = i32)]
+    pub waiting_for_you: i64,
+    /// Merged, rolled back or cancelled.
+    #[specta(type = i32)]
+    pub done: i64,
+    /// Tasks whose latest validation in the last 7 days failed.
+    #[specta(type = i32)]
+    pub failing: i64,
+    /// Distinct developer/reviewer agents on tasks touched in the last 30 days, most recent first.
+    pub agents: Vec<AgentKind>,
+    /// Agents executing right now (planning, developing, revising or reviewing).
+    pub active_agents: Vec<AgentKind>,
+    /// Latest task update, if the project has any task.
+    pub last_activity_at: Option<String>,
+    /// Members the user assigned, in display order. Empty when none were assigned.
+    pub assigned_agents: Vec<AgentKind>,
+    /// `assigned` when the project has members, otherwise `derived` (use `agents`).
+    pub agents_source: AgentsSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]

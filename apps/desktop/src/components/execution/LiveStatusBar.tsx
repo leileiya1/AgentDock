@@ -32,14 +32,15 @@ export function LiveStatusBar({ status }: { status: LiveStatus | null }) {
       role="status"
       aria-live="polite"
       className={cn(
-        "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-section border px-3 py-2 text-body",
-        running && "border-status-running/40 bg-status-running/5",
-        status.tone === "attention" && "border-status-human/50 bg-status-human-bg",
-        status.tone === "pending" && "border-line bg-panel/60"
+        "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-section px-3.5 py-2 text-body",
+        running && "bg-status-running-bg",
+        status.tone === "attention" && "bg-status-human-bg",
+        status.tone === "failed" && "bg-status-danger-bg",
+        (status.tone === "pending" || status.tone === "ok" || status.tone === "info") && "border border-line bg-raised"
       )}
     >
       <StateMark state={status.tone} iconOnly />
-      <span className="font-medium text-t1">{status.headline}</span>
+      <span className="font-bold text-t1">{status.headline}</span>
       {elapsed != null && (
         <span className="tabular-nums text-t2">已运行 {formatElapsed(elapsed)}</span>
       )}

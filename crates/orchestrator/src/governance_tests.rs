@@ -319,6 +319,14 @@ async fn sensitive_test_change_requires_independent_security_council()
             .iter()
             .any(|event| event.event_type == "integrity:security_review_required")
     );
+    // Nothing needs rework: once the user enables the council, continuing must review this
+    // same revision again instead of starting a new development round (live test 2026-11-07).
+    let revision_before = orchestrator.task(&task.id).await?.revision;
+    let resumed = orchestrator
+        .resume_with_guidance(&task.id, "已开启审查委员会")
+        .await?;
+    assert_eq!(resumed.status, TaskStatus::ReadyForReview);
+    assert_eq!(orchestrator.task(&task.id).await?.revision, revision_before);
     Ok(())
 }
 

@@ -21,7 +21,7 @@ impl Orchestrator {
             }
         }
         let run_rows = sqlx::query(
-            "SELECT id,task_id,revision,role,run_dir FROM agent_runs WHERE status='RUNNING'",
+            "SELECT id,task_id,revision,role,run_dir FROM agent_runs WHERE status='RUNNING' AND team_work_item_id IS NULL",
         )
         .fetch_all(self.store.pool())
         .await?;
@@ -36,7 +36,7 @@ impl Orchestrator {
         // or final transition was written. Run this before the missing-worktree check because a
         // completed merge may have intentionally removed its worktree just before a crash.
         let stage_rows = sqlx::query(
-            "SELECT id,status FROM tasks t WHERE t.deleted_at IS NULL \
+            "SELECT id,status FROM tasks t WHERE t.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM team_tasks tt WHERE tt.task_id=t.id) \
              AND t.status IN ('DEVELOPING','REVISING','REVIEWING','MERGING') \
              AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.task_id=t.id AND r.status='RUNNING')",
         )
@@ -55,7 +55,7 @@ impl Orchestrator {
         }
         self.recover_provider_dispatches().await?;
         let active = sqlx::query(
-            "SELECT id,status,worktree_path FROM tasks WHERE status NOT IN ('DRAFT','MERGED','ROLLED_BACK','CANCELLED')",
+            "SELECT id,status,worktree_path FROM tasks WHERE NOT EXISTS (SELECT 1 FROM team_tasks tt WHERE tt.task_id=tasks.id) AND status NOT IN ('DRAFT','MERGED','ROLLED_BACK','CANCELLED')",
         )
         .fetch_all(self.store.pool())
         .await?;

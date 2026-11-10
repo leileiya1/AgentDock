@@ -504,3 +504,69 @@ fn overnight_run_windows_are_evaluated_without_rejecting_midnight() {
     settings.run_window_end = Some("01:00".into());
     let _ = inside_run_window(&settings); // Must accept an overnight window without panicking.
 }
+
+#[tokio::test]
+async fn town_customisation_writes_are_daemon_owned() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("local-data.key"), [9_u8; 32])?;
+    let orchestrator = Orchestrator::open(root.path()).await?;
+    let project = orchestrator
+        .store
+        .import_project("town", "/tmp/town", "main", "/tmp/town-wt")
+        .await?;
+    let run = |request: DaemonRequest| {
+        let orchestrator = &orchestrator;
+        async move {
+            dispatch(
+                request,
+                orchestrator,
+                &CancellationToken::new(),
+                &AtomicI64::new(Utc::now().timestamp()),
+            )
+            .await
+        }
+    };
+    // the request crosses the IPC boundary as JSON: an explicit null must still mean "clear"
+    let wire: DaemonRequest = serde_json::from_value(json!({
+        "command": "project_appearance_update",
+        "project_id": project.id,
+        "patch": {"kind": "team", "roof": "#336699", "sign": null},
+    }))?;
+    let saved = run(wire).await?;
+    assert_eq!(saved["kind"], "team");
+    assert_eq!(saved["roof"], "#336699");
+
+    let members = run(DaemonRequest::ProjectMembersSet {
+        project_id: project.id.clone(),
+        members: vec![agentflow_contracts::ProjectMemberInput {
+            agent: AgentKind::External("my-sidecar".into()),
+            role: agentflow_contracts::MemberRole::Both,
+        }],
+    })
+    .await?;
+    assert_eq!(members[0]["agent"], "my-sidecar");
+    assert_eq!(
+        orchestrator.project_summaries().await?[0].assigned_agents,
+        vec![AgentKind::External("my-sidecar".into())]
+    );
+
+    let profile = run(DaemonRequest::AgentProfileUpdate {
+        agent: AgentKind::Codex,
+        patch: serde_json::from_value(json!({"nickname": "小码", "accessory": "cap"}))?,
+    })
+    .await?;
+    assert_eq!(profile["nickname"], "小码");
+    let reset = run(DaemonRequest::AgentProfileReset {
+        agent: AgentKind::Codex,
+    })
+    .await?;
+    assert_eq!(reset, json!(true));
+
+    let rejected = run(DaemonRequest::AgentProfileUpdate {
+        agent: AgentKind::Codex,
+        patch: serde_json::from_value(json!({"color": "blue"}))?,
+    })
+    .await;
+    assert!(rejected.is_err_and(|e| e.to_string().contains("#rrggbb")));
+    Ok(())
+}

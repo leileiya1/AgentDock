@@ -83,10 +83,7 @@ fn harden_schema(value: &mut Value, review: bool) {
 
 fn set_optional_type(properties: &mut serde_json::Map<String, Value>, key: &str, kind: &str) {
     if let Some(field) = properties.get_mut(key).and_then(Value::as_object_mut) {
-        field.insert(
-            "type".into(),
-            serde_json::json!([kind, "null"]),
-        );
+        field.insert("type".into(), serde_json::json!([kind, "null"]));
     }
 }
 
@@ -111,6 +108,15 @@ fn require_all_object_properties(value: &mut Value) {
     }
 }
 
+/// Team v1 payloads travel inside the legacy transport notes string.
+pub fn team_plan_schema() -> Value {
+    serde_json::to_value(schemars::schema_for!(TeamPlan)).unwrap_or_else(|_| serde_json::json!({}))
+}
+pub fn team_submission_schema() -> Value {
+    serde_json::to_value(schemars::schema_for!(TeamSubmission))
+        .unwrap_or_else(|_| serde_json::json!({}))
+}
+
 #[cfg(test)]
 mod structured_output_schema_tests {
     use super::*;
@@ -131,7 +137,10 @@ mod structured_output_schema_tests {
                     expected.sort();
                     required.sort();
                     assert_eq!(required, expected);
-                    assert_eq!(object.get("additionalProperties"), Some(&Value::Bool(false)));
+                    assert_eq!(
+                        object.get("additionalProperties"),
+                        Some(&Value::Bool(false))
+                    );
                 }
                 for child in object.values() {
                     assert_all_object_properties_are_required(child);

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Clock, Info, Layers, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import type {
   PermissionDecisionKind,
   PermissionGrantScope,
@@ -12,6 +12,7 @@ import {
   groupPendingRequests,
   isProjectRuleRestricted,
   isStale,
+  canGrant,
   scopeOptions,
 } from "@/lib/permission/model";
 import { Dialog } from "@/components/Dialog";
@@ -21,6 +22,14 @@ import { PermissionRequestCard } from "@/components/permission/PermissionRequest
 import { PermissionRuleForm } from "@/components/permission/PermissionRuleForm";
 import { errorLine } from "@/copy/errors";
 import { toast } from "@/stores/toastStore";
+import { roleLabel } from "@/copy/permission";
+import { PixelBot, botTint, memberShortLabel } from "@/components/pixel/PixelBot";
+import { PixelIcon, type PixelIconName } from "@/components/pixel/PixelIcon";
+
+const SCOPE_ICON: Partial<Record<PermissionGrantScope, PixelIconName>> = {
+  task: "list",
+  project_rule: "shield",
+};
 
 interface Props {
   taskId: string;
@@ -101,7 +110,7 @@ export function PermissionRequestDialog({ taskId, projectId, requests, open, onC
           guidance: decision === "deny" ? guidance.trim() || null : null,
         });
       }
-      const label = decision === "approve" ? "已授权" : decision === "deny" ? "已拒绝并提交指引" : "已取消任务";
+      const label = decision === "approve" ? "已放行，它继续干活了" : decision === "deny" ? "已告诉它换个办法" : "任务已取消";
       toast.info(label);
       setSub({ kind: "decide" });
       setGuidance("");
@@ -110,116 +119,190 @@ export function PermissionRequestDialog({ taskId, projectId, requests, open, onC
     }
   };
 
-  const mergedNote = active.requests.length > 1;
+  const mergedCount = active.requests.length;
+  const who = memberShortLabel(request.providerId);
+  const restrictedNote = isProjectRuleRestricted(request) && request.riskLevel !== "high";
 
   const footer =
     sub.kind === "ruleConfirm" ? (
       <>
-        <Button variant="outline" onClick={() => setSub({ kind: "decide" })} disabled={busy}>返回</Button>
+        <Button variant="outline" onClick={() => setSub({ kind: "decide" })} disabled={busy}>
+          <PixelIcon name="chevronLeft" size={9} /> 返回
+        </Button>
         <Button variant="human" onClick={() => submit("approve", "project_rule")} disabled={approveBlocked}>
-          确认保存并允许
+          <PixelIcon name="shield" size={10} /> 确认保存并允许
         </Button>
       </>
     ) : sub.kind === "deny" ? (
       <>
-        <Button variant="outline" onClick={() => setSub({ kind: "decide" })} disabled={busy}>返回</Button>
-        <Button variant="danger" onClick={() => submit("deny", "once")} disabled={busy}>确认拒绝</Button>
+        <Button variant="outline" onClick={() => setSub({ kind: "decide" })} disabled={busy}>
+          <PixelIcon name="chevronLeft" size={9} /> 返回
+        </Button>
+        <Button variant="danger" onClick={() => submit("deny", "once")} disabled={busy}>
+          <PixelIcon name="swap" size={10} /> 拒绝并告诉它
+        </Button>
       </>
     ) : (
-      <div className="flex w-full flex-wrap items-center justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={() => submit("cancel_task", "once")} disabled={busy}>
-          取消任务
+      <div className="flex w-full flex-wrap items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => submit("cancel_task", "once")}
+          disabled={busy}
+          title="整个任务停下来，不再继续"
+          className="text-t3"
+        >
+          <PixelIcon name="stop" size={9} /> 取消任务
         </Button>
-        <Button variant="danger" size="sm" onClick={() => setSub({ kind: "deny" })} disabled={busy}>
-          拒绝并补充指引
-        </Button>
-        {scopes.map((scope) => {
-          const isRule = scope === "project_rule";
-          return (
-            <Button
-              key={scope}
-              variant={scope === "once" ? "primary" : "human"}
-              size="sm"
-              disabled={approveBlocked}
-              onClick={() => (isRule ? setSub({ kind: "ruleConfirm" }) : submit("approve", scope))}
-            >
-              {SCOPE_COPY[scope].label}
-            </Button>
-          );
-        })}
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => setSub({ kind: "deny" })}
+            disabled={busy}
+            title="不放行，告诉它换个办法；任务不会因此失败"
+          >
+            <PixelIcon name="swap" size={10} /> 换个办法
+          </Button>
+          {scopes.map((scope) => {
+            const isRule = scope === "project_rule";
+            return (
+              <Button
+                key={scope}
+                variant={scope === "once" ? "primary" : "human"}
+                size="sm"
+                disabled={approveBlocked}
+                title={SCOPE_COPY[scope].hint}
+                onClick={() => (isRule ? setSub({ kind: "ruleConfirm" }) : submit("approve", scope))}
+              >
+                {scope === "once" ? (
+                  <span className="font-pixel text-micro" aria-hidden>×1</span>
+                ) : SCOPE_ICON[scope] ? (
+                  <PixelIcon name={SCOPE_ICON[scope]!} size={10} />
+                ) : null}
+                {SCOPE_BUTTON[scope]}
+              </Button>
+            );
+          })}
+        </div>
       </div>
     );
+
+  const subtitle = (
+    <span className="flex items-center gap-1.5">
+      <span>{roleLabel(request.role)}阶段</span>
+      {!expiry.expired && expiry.remainingLabel && (
+        <span className="inline-flex items-center gap-1 rounded-row bg-raised/70 px-1.5 py-px font-semibold text-t1" title="到期前它会停在这一步等你">
+          <PixelIcon name="hourglass" size={9} /> {expiry.remainingLabel}内
+        </span>
+      )}
+      {groups.length > 1 && (
+        <span className="inline-flex items-center gap-1 rounded-row bg-raised/70 px-1.5 py-px font-semibold text-t1" title="不同的请求会一件一件问你">
+          <PixelIcon name="list" size={9} /> 还有 {groups.length - 1} 件
+        </span>
+      )}
+    </span>
+  );
 
   return (
     <Dialog
       open
       onClose={onClose}
-      title="等待你授权一项执行权限"
-      width={560}
+      title={sub.kind === "deny" ? `告诉 ${who} 换个办法` : sub.kind === "ruleConfirm" ? "存成项目规则前，再确认一下" : canGrant(request) ? `${who} 想请你点个头` : `${who} 想做一件不能放行的事`}
+      subtitle={subtitle}
+      leading={<PixelBot member={request.providerId} mode="hand" size={44} />}
+      headerTint={botTint(request.providerId)}
+      width={640}
       footer={footer}
     >
-      {groups.length > 1 && (
-        <div className="mb-3 flex items-center gap-1.5 rounded-control border border-line bg-app px-2.5 py-1.5 text-meta text-t2">
-          <Layers className="size-3.5 shrink-0 text-t3" aria-hidden />
-          还有 {groups.length - 1} 组不同的请求待处理，将逐个确认。
-        </div>
-      )}
-
       {stale ? (
-        <div className="flex flex-col items-start gap-2 rounded-control border border-status-human/60 bg-status-human-bg px-3 py-2.5 text-body text-status-human">
-          <div className="flex items-center gap-1.5 font-medium">
-            <AlertTriangle className="size-4 shrink-0" aria-hidden /> 请求内容已变化
+        <div className="flex flex-col items-start gap-2 rounded-section bg-status-human-bg px-3.5 py-3 text-body text-status-human">
+          <div className="flex items-center gap-1.5 font-bold">
+            <PixelIcon name="alert" size={12} /> 它要做的事刚刚变了
           </div>
-          <p className="text-meta">打开弹窗后操作、策略或任务已改变，原来的批准按钮已作废。请重新加载后再决定。</p>
+          <p className="text-meta text-t2">为了安全，刚才的按钮已经失效。看一眼新内容再决定。</p>
           <Button variant="human" size="sm" onClick={reload}>
-            <RotateCcw className="size-3.5" aria-hidden /> 重新加载
+            <RotateCcw className="size-3.5" aria-hidden /> 看新内容
           </Button>
         </div>
       ) : (
         <>
           {expiry.expired && (
-            <div className="mb-3 flex items-center gap-1.5 rounded-control border border-line bg-app px-2.5 py-1.5 text-meta text-t2">
-              <Clock className="size-3.5 shrink-0" aria-hidden /> 该请求已过期，需 Agent 重新发起后才能授权。
-            </div>
-          )}
-          {!expiry.expired && expiry.remainingLabel && (
-            <div className="mb-3 flex items-center gap-1.5 text-meta text-t3">
-              <Clock className="size-3.5 shrink-0" aria-hidden /> 剩余有效期 {expiry.remainingLabel}，到期前会停在动作之前。
-            </div>
-          )}
-          {mergedNote && (
-            <div className="mb-3 flex items-center gap-1.5 rounded-control border border-line bg-app px-2.5 py-1.5 text-meta text-t2">
-              <Info className="size-3.5 shrink-0 text-t3" aria-hidden />
-              这组包含 {active.requests.length} 个完全相同的请求，将一并处理（每次执行仍单独审计）。
+            <div className="mb-3 flex items-center gap-2 rounded-control bg-status-idle-bg px-3 py-2 text-meta text-t2">
+              <PixelIcon name="hourglass" size={11} className="shrink-0 text-t3" />
+              等太久，这个请求已过期。它需要的话会重新举手。
             </div>
           )}
 
           {sub.kind === "ruleConfirm" ? (
             <PermissionRuleForm request={request} />
           ) : sub.kind === "deny" ? (
-            <div className="flex flex-col gap-2">
-              <p className="text-body text-t2">拒绝不会让任务直接失败。补充一句指引，Agent 会尝试换用安全方案。</p>
-              <Textarea
-                autoFocus
-                value={guidance}
-                onChange={(e) => setGuidance(e.target.value)}
-                placeholder="例如：不要访问工作树外文件，改用项目内的类型定义。"
-                className="min-h-20"
-              />
-            </div>
+            <DenyGuidance value={guidance} onChange={setGuidance} />
           ) : (
             <>
               <PermissionRequestCard request={request} />
-              {isProjectRuleRestricted(request) && (
-                <p className="mt-3 flex items-center gap-1.5 text-meta text-t3">
-                  <Info className="size-3.5 shrink-0" aria-hidden />
-                  高风险请求只提供「允许一次 / 本任务允许」，不能保存为项目规则。
-                </p>
+              {(mergedCount > 1 || restrictedNote) && (
+                <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-meta text-t3">
+                  {mergedCount > 1 && (
+                    <span className="inline-flex items-center gap-1.5">
+                      <PixelIcon name="squad" size={10} /> 同样的请求有 {mergedCount} 个，一起处理（每次仍单独记录）
+                    </span>
+                  )}
+                  {restrictedNote && (
+                    <span className="inline-flex items-center gap-1.5">
+                      <PixelIcon name="lock" size={10} /> 这类请求不能存成项目规则
+                    </span>
+                  )}
+                </div>
               )}
             </>
           )}
         </>
       )}
     </Dialog>
+  );
+}
+
+const SCOPE_BUTTON: Record<PermissionGrantScope, string> = {
+  once: "允许这次",
+  task: "本任务都允许",
+  project_rule: "存为项目规则",
+};
+
+/** 一键填入的常用指引，点了还能再改。 */
+const GUIDANCE_PRESETS = [
+  "别装新依赖，用项目里已有的",
+  "不要碰工作树外的文件",
+  "这一步我来手动做，你先跳过",
+  "先停一下，说说还有什么办法",
+];
+
+function DenyGuidance({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="flex flex-col gap-2.5">
+      <p className="flex items-center gap-2 text-body text-t2">
+        <PixelIcon name="check" size={11} className="shrink-0 text-status-success" />
+        放心，拒绝不会让任务失败。说一句怎么做，它会换个安全的办法。
+      </p>
+      <div className="flex flex-wrap gap-1.5" aria-label="常用指引">
+        {GUIDANCE_PRESETS.map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            onClick={() => onChange(value.trim() ? `${value.trim()}；${preset}` : preset)}
+            className="rounded-pill border border-line-strong bg-raised px-2.5 py-1 text-meta font-semibold text-t2 transition-colors hover:bg-app hover:text-t1"
+          >
+            {preset}
+          </button>
+        ))}
+      </div>
+      <Textarea
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="也可以自己写，例如：改用项目内的类型定义。"
+        className="min-h-20"
+      />
+    </div>
   );
 }

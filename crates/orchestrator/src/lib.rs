@@ -60,8 +60,13 @@ pub enum OrchestratorError {
     MergePrecondition(String),
     #[error("invalid project config: {0}")]
     Config(String),
-    #[error("project config is not trusted (sha256 {sha256})")]
+    #[error(
+        "项目配置 .agentflow/project.toml 还没确认信任（或确认后又改过）。请到 设置 › 项目 › 配置信任 核对其中的验证命令并确认，再开始任务。（sha256 {sha256}）"
+    )]
     UntrustedProjectConfig { sha256: String },
+    /// User input that failed validation; the message is shown to the user as-is (Chinese).
+    #[error("{0}")]
+    InvalidInput(String),
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -283,6 +288,7 @@ pub struct RunLogWindow {
 }
 
 // Same-module includes preserve private invariants while keeping each workflow concern reviewable.
+mod team;
 include!("lifecycle.rs");
 include!("recovery.rs");
 include!("task_start.rs");
@@ -319,6 +325,13 @@ include!("approval_seal.rs");
 include!("audit_export.rs");
 include!("storage.rs");
 include!("task_queries.rs");
+mod project_summary;
+pub use project_summary::{SummaryTask, apply_members, summarize_projects};
+mod studio_profiles;
+pub use studio_profiles::{
+    ACCESSORIES, MAX_MEMBERS, MAX_YARD, SIGN_STYLES, YARD_ITEMS, apply_appearance_patch,
+    apply_profile_patch, validate_members,
+};
 include!("support.rs");
 #[cfg(test)]
 include!("test_support.rs");
@@ -348,3 +361,5 @@ mod review_council_tests;
 mod review_issue_tests;
 #[cfg(test)]
 mod settings_tests;
+#[cfg(test)]
+mod studio_profiles_tests;

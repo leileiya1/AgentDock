@@ -24,13 +24,24 @@ import { toast } from "@/stores/toastStore";
 import { Dialog } from "@/components/Dialog";
 import { PreflightBlockedDialog, PreflightProgress } from "@/components/PreflightBlockedDialog";
 import { Button } from "@/components/ui/button";
+import { PixelBot, botTint } from "@/components/pixel/PixelBot";
+import { PixelIcon, type PixelIconName } from "@/components/pixel/PixelIcon";
 import { Input, Textarea } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { maxRevisionsError, parseMaxRevisions } from "@/lib/taskForm";
 
+import { TeamTaskForm } from "@/components/team/TeamTaskForm";
+
 type AcceptanceDraft = AcceptanceCriterionInput & { id: string };
+
+const ACCEPTANCE_KIND_ICON: Record<AcceptanceCriterionKind, PixelIconName> = {
+  build: "package",
+  test: "flask",
+  behavior: "play",
+  manual: "eye",
+};
 
 const ACCEPTANCE_KIND_LABEL: Record<AcceptanceCriterionKind, string> = {
   build: "构建",
@@ -84,6 +95,7 @@ export function NewTaskDialog() {
   const developerProviders = catalog.filter((provider) => provider.capabilities.development);
   const reviewerProviders = catalog.filter((provider) => provider.capabilities.review);
 
+  const [teamMode, setTeamMode] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [acceptanceCriteria, setAcceptanceCriteria] = useState<AcceptanceDraft[]>([]);
@@ -143,6 +155,7 @@ export function NewTaskDialog() {
   );
 
   const reset = () => {
+    setTeamMode(false);
     setTitle("");
     setDescription("");
     setAcceptanceCriteria([]);
@@ -255,6 +268,7 @@ export function NewTaskDialog() {
   };
 
   if (!open) return null;
+  if (teamMode && projectId) return <Dialog open={open} onClose={onClose} title="新建团队任务" subtitle={project?.name ?? "本机 Git 项目"} width={800}><TeamTaskForm projectId={projectId} onClose={onClose} onBack={() => setTeamMode(false)} /></Dialog>;
 
   return (
     <>
@@ -262,6 +276,12 @@ export function NewTaskDialog() {
       open={open}
       onClose={onClose}
       title="新建任务"
+      subtitle={project ? `${project.name} · 派给小队接力完成` : "派给小队接力完成"}
+      leading={(
+        <span className="grid size-9 shrink-0 place-items-center rounded-control bg-action text-white shadow-press-action" aria-hidden>
+          <PixelIcon name="plus" size={12} />
+        </span>
+      )}
       width={720}
       onConfirmKey={() => submit(true)}
       footer={
@@ -277,6 +297,7 @@ export function NewTaskDialog() {
       }
     >
       <fieldset disabled={preflight.isPending} className="flex flex-col gap-4 disabled:opacity-90">
+        <Button variant="outline" onClick={() => setTeamMode(true)}>切换到多 Agent 团队执行</Button>
         {preflight.isPending && <PreflightProgress roles={pendingRoles} />}
         {(gitCompatibility.data?.prunableWorktrees.length ?? 0) > 0 && (
           <div className="flex items-start gap-2 rounded-control border border-caution/50 bg-caution-bg px-3 py-2 text-body">
@@ -295,10 +316,10 @@ export function NewTaskDialog() {
           <Input id="nt-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="一句话说清要做什么" autoFocus />
         </div>
 
-        <div className="flex flex-col gap-2 rounded-control border border-line bg-app/50 p-3">
+        <div className="flex flex-col gap-2 rounded-section border border-line bg-app p-3">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <Label>结构化验收条件（可选）</Label>
+              <Label className="flex items-center gap-1.5"><PixelIcon name="check" size={11} className="text-status-success" />结构化验收条件（可选）</Label>
               <p className="mt-1 text-meta text-t3">构建、测试、行为和人工要求会独立保存，并在验证、审查和最终批准时逐条回显。</p>
             </div>
             <Button
@@ -318,7 +339,10 @@ export function NewTaskDialog() {
           ) : (
             <div className="flex flex-col gap-2">
               {acceptanceCriteria.map((criterion, index) => (
-                <div key={criterion.id} className="grid grid-cols-[7.5rem_minmax(0,1fr)_auto] items-center gap-2">
+                <div key={criterion.id} className="grid grid-cols-[1.75rem_7.5rem_minmax(0,1fr)_auto] items-center gap-2">
+                  <span className="grid size-7 place-items-center rounded-row bg-status-idle-bg text-t2" title={ACCEPTANCE_KIND_LABEL[criterion.kind]} aria-hidden>
+                    <PixelIcon name={ACCEPTANCE_KIND_ICON[criterion.kind]} size={11} />
+                  </span>
                   <Select
                     value={criterion.kind}
                     onValueChange={(value) => setAcceptanceCriteria((current) => current.map((item) => (
@@ -376,32 +400,44 @@ export function NewTaskDialog() {
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4 max-sm:grid-cols-1">
-          <div className="flex flex-col gap-2">
-            <Label>开发 Agent</Label>
-            <Select value={developerAgent} onValueChange={(v) => setDeveloperAgent(v as AgentKind)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {developerProviders.map((provider) => (
-                  <SelectItem key={provider.id} value={provider.id} disabled={!provider.available}>
-                    {provider.displayName}{provider.source === "external" ? "（协议）" : ""}{provider.available ? "" : "（不可用）"}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <Label className="flex items-center gap-1.5"><PixelIcon name="squad" size={11} />组队</Label>
+            <span
+              className={`ml-auto inline-flex items-center gap-1.5 rounded-row px-2 py-0.5 text-meta font-bold ${sameAgent ? "bg-caution-bg text-caution" : "bg-status-success-bg text-status-success"}`}
+              title="开发与审查必须由不同 Agent 执行"
+            >
+              <span className="size-2.5 rounded-row" style={{ background: botTint(developerAgent) }} aria-hidden />
+              {sameAgent ? "=" : "≠"}
+              <span className="size-2.5 rounded-row" style={{ background: botTint(reviewerAgent) }} aria-hidden />
+              {sameAgent ? "同一个 Agent" : "互相制衡"}
+            </span>
           </div>
-          <div className="flex flex-col gap-2">
-            <Label>审查 Agent</Label>
-            <Select value={reviewerAgent} onValueChange={(v) => setReviewerAgent(v as AgentKind)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {reviewerProviders.map((provider) => (
-                  <SelectItem key={provider.id} value={provider.id} disabled={!provider.available}>
-                    {provider.displayName}{provider.capabilities.development ? "" : "（只读审查）"}{provider.source === "external" ? "（协议）" : ""}{provider.available ? "" : "（不可用）"}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+            <RoleSlot role="BUILD" label="开发 Agent" agent={developerAgent}>
+              <Select value={developerAgent} onValueChange={(v) => setDeveloperAgent(v as AgentKind)}>
+                <SelectTrigger aria-label="开发 Agent" className="bg-raised"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {developerProviders.map((provider) => (
+                    <SelectItem key={provider.id} value={provider.id} disabled={!provider.available}>
+                      {provider.displayName}{provider.source === "external" ? "（协议）" : ""}{provider.available ? "" : "（不可用）"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </RoleSlot>
+            <RoleSlot role="REVIEW" label="审查 Agent" agent={reviewerAgent}>
+              <Select value={reviewerAgent} onValueChange={(v) => setReviewerAgent(v as AgentKind)}>
+                <SelectTrigger aria-label="审查 Agent" className="bg-raised"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {reviewerProviders.map((provider) => (
+                    <SelectItem key={provider.id} value={provider.id} disabled={!provider.available}>
+                      {provider.displayName}{provider.capabilities.development ? "" : "（只读审查）"}{provider.source === "external" ? "（协议）" : ""}{provider.available ? "" : "（不可用）"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </RoleSlot>
           </div>
         </div>
 
@@ -441,15 +477,18 @@ export function NewTaskDialog() {
 
         <button
           type="button"
-          className="flex w-full items-center gap-3 rounded-control border border-line bg-panel px-3 py-2.5 text-left transition-colors hover:bg-raised"
+          className="flex w-full items-center gap-3 rounded-section bg-panel px-3.5 py-3 text-left transition-colors hover:bg-status-idle-bg"
           aria-expanded={advancedOpen}
           aria-controls="new-task-governance"
           onClick={() => setAdvancedOpen((current) => !current)}
         >
           <span className="min-w-0 flex-1">
-            <span className="block text-body font-medium text-t1">运行与治理</span>
-            <span className="mt-0.5 block truncate text-meta text-t3">
-              {targetBranch.trim() || project?.defaultBranch || "main"} · {executionNodeId === "local" ? "本机" : "远端节点"} · 最多 {maxRevisions || "—"} 轮 · ${costBudgetUsd}
+            <span className="block text-body font-bold text-t1">运行与治理</span>
+            <span className="mt-1 flex flex-wrap items-center gap-1.5 text-meta text-t2">
+              <span className="inline-flex items-center gap-1 rounded-row bg-raised px-2 py-0.5 font-mono" title="目标分支"><PixelIcon name="branch" size={9} />{targetBranch.trim() || project?.defaultBranch || "main"}</span>
+              <span className="inline-flex items-center gap-1 rounded-row bg-raised px-2 py-0.5" title="执行位置"><PixelIcon name="shield" size={9} />{executionNodeId === "local" ? "本机" : "远端节点"}</span>
+              <span className="inline-flex items-center gap-1 rounded-row bg-raised px-2 py-0.5" title="最大返工轮数"><PixelIcon name="swap" size={9} />最多 {maxRevisions || "—"} 轮</span>
+              <span className="inline-flex items-center gap-1 rounded-row bg-raised px-2 py-0.5" title="费用预算"><PixelIcon name="bolt" size={9} />${costBudgetUsd}</span>
             </span>
           </span>
           <ChevronDown className={`size-4 shrink-0 text-t3 transition-transform ${advancedOpen ? "rotate-180" : ""}`} aria-hidden />
@@ -565,6 +604,21 @@ function BudgetField({ label, value, onChange, step, max }: {
     <div className="flex flex-col gap-1.5">
       <Label>{label}</Label>
       <Input type="number" min={1} max={max} step={step} value={value} onChange={(event) => onChange(Math.max(1, Number(event.target.value) || 1))} />
+    </div>
+  );
+}
+
+function RoleSlot({ role, label, agent, children }: { role: string; label: string; agent: AgentKind; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 rounded-section p-3" style={{ background: botTint(agent) }}>
+      <PixelBot member={agent} mode="done" size={44} decorative />
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <span className="flex items-center gap-2">
+          <span className="font-pixel text-micro text-t2">{role}</span>
+          <span className="text-meta font-bold text-t1">{label}</span>
+        </span>
+        {children}
+      </div>
     </div>
   );
 }

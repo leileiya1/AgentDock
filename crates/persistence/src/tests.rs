@@ -103,6 +103,18 @@ const MIGRATION_MANIFEST: &[(&str, &str)] = &[
         "0024_execution_node_network_isolation.sql",
         "27f4fc844852d92b6b78bbe3dfebeb06246dd80c01298636422323f9e72959879bd0531847b90050082cf42f167e33a0",
     ),
+    (
+        "0025_team_execution.sql",
+        "13343482aa6fd3ea89b86c0ae2f4be07f580144d695c5183e6d7ce94ff27fea585d27502e0a7e54e88c254c77aa2eb12",
+    ),
+    (
+        "0026_team_plan_approval.sql",
+        "9df0af029d606ede71f66dd153baac47e236428842d5d1b85275c0817116aca7d4231e773ade8495ac109353ffbfb6a9",
+    ),
+    (
+        "0027_studio_profiles.sql",
+        "c3ee2ebc2937648a36c08f54ea9aaef0e905fb48806eb4dff7a5ffea06e9011193f35d4734e27e1e681af48ea53f6933",
+    ),
 ];
 
 #[test]
@@ -352,5 +364,85 @@ async fn protected_logs_are_authenticated_and_transparently_readable()
         store.read_protected_file(&log).await?,
         b"private prompt and model output\n"
     );
+    Ok(())
+}
+
+async fn pre_team_database(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let all = sqlx::migrate!();
+    let mut old = sqlx::migrate::Migrator::DEFAULT;
+    old.migrations =
+        std::borrow::Cow::Owned(all.iter().filter(|m| m.version <= 24).cloned().collect());
+    old.run(&pool).await?;
+    sqlx::raw_sql("INSERT INTO projects(id,seq,name,repo_path,default_branch,worktree_root,created_at,updated_at) VALUES('legacy-project',1,'Legacy','/tmp/legacy-team-migration','main','/tmp/legacy-team-wt','before','before'); INSERT INTO tasks(id,project_id,seq,title,description,status,developer_agent,reviewer_agent,target_branch,created_at,updated_at) VALUES('legacy-task','legacy-project',1,'Original task','Original text','DRAFT','codex','claude_code','main','before','before');").execute(&pool).await?;
+    pool.close().await;
+    Ok(())
+}
+#[tokio::test]
+async fn team_migration_backs_up_preserves_legacy_and_does_not_invent_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("old.db");
+    pre_team_database(&path).await?;
+    let store = Store::open(&path).await?;
+    assert_eq!(
+        store.task_summary("legacy-task").await?.title,
+        "Original task"
+    );
+    assert!(!store.is_team_task("legacy-task").await?);
+    let evidence: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM team_evidence")
+        .fetch_one(store.pool())
+        .await?;
+    assert_eq!(evidence, 0);
+    assert!(!store.backups().await?.is_empty());
+    store.integrity_check().await?;
+    let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(store.pool())
+        .await?;
+    assert_eq!(version, 27);
+    Ok(())
+}
+#[tokio::test]
+async fn failed_team_migration_restores_the_verified_pre_migration_backup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("broken-upgrade.db");
+    pre_team_database(&path).await?;
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(&path);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    sqlx::query("ALTER TABLE agent_runs ADD COLUMN team_work_item_id TEXT")
+        .execute(&pool)
+        .await?;
+    pool.close().await;
+    assert!(Store::open(&path).await.is_err());
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+        .await?;
+    let title: String = sqlx::query_scalar("SELECT title FROM tasks WHERE id='legacy-task'")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(title, "Original task");
+    let tables: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='team_tasks'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(tables, 0);
+    let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(version, 24);
+    pool.close().await;
     Ok(())
 }

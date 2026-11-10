@@ -18,6 +18,7 @@ mod error;
 mod event_bridge;
 mod governance_commands;
 mod management_commands;
+mod studio_commands;
 mod view_types;
 #[macro_use]
 mod repair_commands;
@@ -30,8 +31,94 @@ use provider_setup::{
     cli_install,
 };
 use repair_commands::{task_repair_apply, task_repair_inspect};
+use studio_commands::*;
 
 struct Backend(Arc<Orchestrator>, PathBuf, tokio::sync::Mutex<()>);
+
+#[derive(Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+struct TeamActionArgs {
+    task_id: String,
+    action: agentflow_contracts::TeamAction,
+}
+
+#[derive(Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+struct TeamEvidenceArgs {
+    task_id: String,
+    evidence_id: String,
+}
+#[tauri::command]
+#[specta::specta]
+async fn team_evidence_read(
+    state: State<'_, Backend>,
+    args: TeamEvidenceArgs,
+) -> Result<String, AppError> {
+    state
+        .0
+        .team_evidence_read(&args.task_id, &args.evidence_id)
+        .await
+        .map_err(app_error)
+}
+#[tauri::command]
+#[specta::specta]
+async fn team_create(
+    state: State<'_, Backend>,
+    args: agentflow_contracts::TeamCreateInput,
+) -> Result<agentflow_contracts::TeamView, AppError> {
+    daemon_client::mutate(&state, DaemonRequest::TeamCreate { input: args }).await
+}
+#[tauri::command]
+#[specta::specta]
+async fn team_get(
+    state: State<'_, Backend>,
+    args: TaskIdArgs,
+) -> Result<Option<agentflow_contracts::TeamView>, AppError> {
+    state.0.team_get(&args.task_id).await.map_err(app_error)
+}
+#[tauri::command]
+#[specta::specta]
+async fn team_recovery_get(
+    state: State<'_, Backend>,
+    args: TaskIdArgs,
+) -> Result<agentflow_contracts::TeamRecoveryView, AppError> {
+    state
+        .0
+        .team_recovery_get(&args.task_id)
+        .await
+        .map_err(app_error)
+}
+#[tauri::command]
+#[specta::specta]
+async fn team_plan_preview(
+    state: State<'_, Backend>,
+    args: agentflow_contracts::TeamPlanPreviewInput,
+) -> Result<agentflow_contracts::TeamPlanPreview, AppError> {
+    state.0.team_plan_preview(args).await.map_err(app_error)
+}
+#[tauri::command]
+#[specta::specta]
+async fn team_report_export(
+    state: State<'_, Backend>,
+    args: agentflow_contracts::TeamReportExportInput,
+) -> Result<agentflow_contracts::TeamReportExport, AppError> {
+    daemon_client::mutate(&state, DaemonRequest::TeamReportExport { input: args }).await
+}
+#[tauri::command]
+#[specta::specta]
+async fn team_action(
+    state: State<'_, Backend>,
+    args: TeamActionArgs,
+) -> Result<agentflow_contracts::TeamView, AppError> {
+    daemon_client::mutate(
+        &state,
+        DaemonRequest::TeamAction {
+            task_id: args.task_id,
+            action: args.action,
+        },
+    )
+    .await
+}
 
 #[derive(Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -270,6 +357,13 @@ async fn project_list(
     state: State<'_, Backend>,
 ) -> Result<Vec<agentflow_contracts::Project>, AppError> {
     state.0.project_list().await.map_err(app_error)
+}
+#[tauri::command]
+#[specta::specta]
+async fn project_summaries(
+    state: State<'_, Backend>,
+) -> Result<Vec<agentflow_contracts::ProjectSummary>, AppError> {
+    state.0.project_summaries().await.map_err(app_error)
 }
 #[tauri::command]
 #[specta::specta]
@@ -548,8 +642,23 @@ fn command_builder() -> Builder<tauri::Wry> {
         api_credential_delete,
         project_import,
         project_list,
+        project_summaries,
+        project_appearance_list,
+        project_appearance_update,
+        project_members_get,
+        project_members_set,
+        agent_profiles_list,
+        agent_profile_update,
+        agent_profile_reset,
         project_git_compatibility,
         project_prune_stale_worktrees,
+        team_evidence_read,
+        team_create,
+        team_get,
+        team_recovery_get,
+        team_plan_preview,
+        team_report_export,
+        team_action,
         task_create,
         task_list,
         task_get,
@@ -605,6 +714,10 @@ fn initialize_backend(
     app: &tauri::App,
 ) -> Result<(PathBuf, Arc<Orchestrator>), Box<dyn std::error::Error>> {
     let path = app.path().app_data_dir()?;
+    #[cfg(debug_assertions)]
+    let path = std::env::var_os("AGENTFLOW_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or(path);
     tauri::async_runtime::block_on(ensure_daemon(&path))?;
     let orchestrator = tauri::async_runtime::block_on(Orchestrator::open_client(&path))?;
     Ok((path, Arc::new(orchestrator)))

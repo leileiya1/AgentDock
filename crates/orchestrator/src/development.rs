@@ -1,5 +1,6 @@
 impl Orchestrator {
     pub async fn drive_task(&self, task_id: &str) -> Result<TaskSummary, OrchestratorError> {
+        if self.store.is_team_task(task_id).await? { return Err(OrchestratorError::InvalidState("team tasks are dispatched per work item".into())); }
         // A long-running daemon notices Provider installs and compatibility-shim replacements.
         self.refresh_provider_registry().await;
         loop {

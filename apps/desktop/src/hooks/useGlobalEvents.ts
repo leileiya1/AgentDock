@@ -4,6 +4,9 @@ import { qk } from "@/lib/queryKeys";
 import { useTauriEvent } from "@/lib/tauriEvents";
 import { toast } from "@/stores/toastStore";
 import { errorLine } from "@/copy/errors";
+import { groupForStatus } from "@/copy/status";
+import { chimeEnabled, playChime } from "@/lib/chime";
+import { useCelebrateStore } from "@/stores/celebrateStore";
 
 /**
  * App-wide event → cache wiring (02 §5). Mounted once at the root.
@@ -14,6 +17,20 @@ export function useGlobalEvents(): void {
   const client = useQueryClient();
 
   useTauriEvent("task:changed", ({ task }) => {
+    // 8-bit 提示音：只在状态组真的变了的时候响（开关在 ⌘K 里）。
+    const before = client.getQueryData<TaskSummary[]>(qk.tasks(task.projectId))?.find((t) => t.id === task.id);
+    if (chimeEnabled()) {
+      const kind = chimeFor(before?.status, task.status);
+      if (kind) playChime(kind);
+    }
+    // 合并成功放烟花，开发它的机器人在小屋里蹦一蹦。
+    if (task.status === "MERGED" && before?.status !== "MERGED") {
+      useCelebrateStore.getState().celebrate({
+        text: `TASK-${String(task.seq).padStart(3, "0")}「${task.title}」合并上线！`,
+        projectId: task.projectId,
+        agent: task.developerAgent,
+      });
+    }
     // Precise row update in the list.
     client.setQueryData<TaskSummary[]>(qk.tasks(task.projectId), (prev) => {
       if (!prev) return prev;
@@ -59,4 +76,13 @@ export function useGlobalEvents(): void {
   useTauriEvent("app:error", (payload) => {
     toast.error(errorLine({ code: payload.code, message: payload.message, detail: null }));
   });
+}
+
+/** 状态变化 → 该响哪段提示音；没变或不值得打扰就不响。 */
+export function chimeFor(before: TaskSummary["status"] | undefined, after: TaskSummary["status"]): "done" | "attention" | "failed" | null {
+  if (before === after) return null;
+  if (after === "MERGED") return "done";
+  if (after === "MERGE_CONFLICT" || after === "ROLLED_BACK") return "failed";
+  if (groupForStatus(after) === "attention" && (!before || groupForStatus(before) !== "attention")) return "attention";
+  return null;
 }

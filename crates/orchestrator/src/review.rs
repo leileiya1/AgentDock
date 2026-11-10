@@ -500,6 +500,21 @@ impl Orchestrator {
             .unwrap_or_else(|| {
                 "## 编码计划\n\n此任务未启用计划审批；结果的 `plan_sha256` 必须为 null。".into()
             });
+        // Trusted validation steps: AgentFlow runs them after delivery and the developer may run
+        // them verbatim without asking. Untrusted config never reaches here (development is gated).
+        let validation = match self.load_trusted_config(project).await {
+            Ok(config) if !config.validate.steps.is_empty() => {
+                let listed = crate::trusted_validation_commands(&config)
+                    .iter()
+                    .map(|line| format!("- `{line}`"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "## 验证\n\nAgentFlow 会在你交付后自动运行项目的验证命令，你不必为了自检再跑别的代码。确实需要自检时，请原样使用下面这些已预授权的命令：\n\n{listed}"
+                )
+            }
+            _ => "## 验证\n\n项目没有配置验证命令；交付后由审查 Agent 判断改动是否正确。".to_string(),
+        };
         Ok(include_str!("../templates/input.md")
             .replace("{{TASK_SEQ}}", &task.seq.to_string())
             .replace("{{TASK_ID}}", &task.id)
@@ -510,6 +525,7 @@ impl Orchestrator {
             .replace("{{RULES}}", &rules)
             .replace("{{HISTORY}}", &history)
             .replace("{{APPROVED_PLAN}}", &plan)
+            .replace("{{VALIDATION}}", &validation)
             .replace("{{RESULT_SCHEMA}}", &schema))
     }
     async fn build_review_input(

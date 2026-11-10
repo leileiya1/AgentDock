@@ -88,6 +88,8 @@ pub enum PermissionTier {
 }
 #[derive(Debug, Clone)]
 pub struct AgentRunRequest {
+    /// Managed team runs disable CLI-internal delegation; not inferred from prompt text.
+    pub managed_team: bool,
     /// Authoritative identity supplied by the orchestrator. Providers must echo it
     /// in structured results instead of trying to recover it from the prompt.
     pub task_id: String,

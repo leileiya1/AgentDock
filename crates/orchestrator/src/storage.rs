@@ -6,6 +6,7 @@ impl Orchestrator {
         sha: &str,
         diff_sha: &str,
     ) -> Result<TaskSummary, OrchestratorError> {
+        self.team_assert_gate(task_id).await?;
         let task = self.task(task_id).await?;
         if task.status != TaskStatus::WaitingForHumanApproval || task.revision != revision {
             return Err(OrchestratorError::InvalidState("TASK_INVALID_STATE".into()));
@@ -464,6 +465,9 @@ impl Orchestrator {
             return;
         }
         let message = match summary.status {
+            TaskStatus::WaitingForPlanApproval if settings.notifications.on_attention => {
+                Some("执行计划已生成，正在等待你的确认")
+            }
             TaskStatus::WaitingForHumanApproval if settings.notifications.on_attention => {
                 Some("代码和审查已完成，正在等待你的批准")
             }

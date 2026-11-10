@@ -71,3 +71,8 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
+
+# Xcode 27's dyld rejects sqlx-macros without aligned LINKEDIT data when built without
+# debug info. This host-only proc macro is not shipped in the application or sidecar.
+[profile.release.package.sqlx-macros]
+debug = 1
